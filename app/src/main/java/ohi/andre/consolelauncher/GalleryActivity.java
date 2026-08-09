@@ -2,6 +2,7 @@ package ohi.andre.consolelauncher;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
@@ -12,6 +13,8 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
 import android.provider.MediaStore;
 import android.view.MotionEvent;
 import android.view.View;
@@ -59,14 +62,9 @@ public class GalleryActivity extends AppCompatActivity {
     private List<String> selectedItems = new ArrayList<>();
     private LinearLayout bottomBar, selectionBar;
 
-
-
-
-
     private enum FilterMode { ALL, IMAGES, VIDEOS, FAVORITES, BIN }
     private FilterMode currentFilter = FilterMode.ALL;
 
-    // Video player
     private RelativeLayout videoPlayerContainer;
     private VideoView videoView;
     private ImageButton btnPlayPause, btnSkipForward, btnSkipBackward;
@@ -78,9 +76,6 @@ public class GalleryActivity extends AppCompatActivity {
     private Runnable hideControlsRunnable;
     private boolean isLandscape = false;
     private boolean isPlaying = false;
-
-    // Add these fields
-    private int currentOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
     private boolean isVideoPlaying = false;
     private String currentVideoPath = null;
     private boolean controlsVisible = true;
@@ -106,6 +101,10 @@ public class GalleryActivity extends AppCompatActivity {
                         }
                     });
 
+    private boolean isActivityAlive() {
+        return !isFinishing() && !isDestroyed();
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -118,7 +117,6 @@ public class GalleryActivity extends AppCompatActivity {
         }
         getWindow().setBackgroundDrawableResource(android.R.color.transparent);
 
-        // Setup views
         recyclerView = findViewById(R.id.galleryRecycler);
         albumRecycler = findViewById(R.id.albumRecycler);
         titleView = findViewById(R.id.titleGallery);
@@ -140,11 +138,9 @@ public class GalleryActivity extends AppCompatActivity {
         bottomBar = findViewById(R.id.bottomBar);
         selectionBar = findViewById(R.id.selectionBar);
 
-        // Back button
         ImageButton btnBack = findViewById(R.id.btnBackGallery);
         btnBack.setOnClickListener(v -> finish());
 
-        // Bottom bar
         TextView btnHome = findViewById(R.id.btnHome);
         TextView btnAlbums = findViewById(R.id.btnAlbums);
         TextView btnSort = findViewById(R.id.btnSort);
@@ -153,8 +149,6 @@ public class GalleryActivity extends AppCompatActivity {
         TextView btnCopySelected = findViewById(R.id.btnCopySelected);
         TextView btnMoveSelected = findViewById(R.id.btnMoveSelected);
 
-
-        // Sort options
         TextView sortImages = findViewById(R.id.sortImages);
         TextView sortVideos = findViewById(R.id.sortVideos);
         TextView sortFavorites = findViewById(R.id.sortFavorites);
@@ -230,16 +224,660 @@ public class GalleryActivity extends AppCompatActivity {
             sortOptions.setVisibility(View.GONE);
         });
 
-        // Video controls
         setupVideoControls();
-
-        // Apply glassmorphism
         applyGlassmorphism(findViewById(R.id.bottomBar));
         applyGlassmorphism(sortOptions);
-
         checkAndRequestMediaPermissions();
     }
 
+    private void loadMedia() {
+        executor.execute(() -> {
+            List<MediaItem> newItems = new ArrayList<>();
+
+            String[] imageProjection = {
+                    MediaStore.Images.Media._ID,
+                    MediaStore.Images.Media.DATA,
+                    MediaStore.Images.Media.DISPLAY_NAME,
+                    MediaStore.Images.Media.DATE_MODIFIED,
+                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+            };
+
+            Cursor imageCursor = null;
+            try {
+                imageCursor = getContentResolver().query(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        imageProjection,
+                        null,
+                        null,
+                        null
+                );
+
+                if (imageCursor != null) {
+                    int dataIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.DATA);
+                    int nameIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME);
+                    int dateIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED);
+                    int albumIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
+                    while (imageCursor.moveToNext()) {
+                        String path = dataIndex >= 0 ? imageCursor.getString(dataIndex) : null;
+                        String name = nameIndex >= 0 ? imageCursor.getString(nameIndex) : "image";
+                        long date = dateIndex >= 0 ? imageCursor.getLong(dateIndex) : 0;
+                        String album = albumIndex >= 0 ? imageCursor.getString(albumIndex) : "";
+                        if (path != null && new File(path).exists()) {
+                            boolean isTrashed = path.contains(".trashed.");
+                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_IMAGE, date, isTrashed, album));
+                        }
+                    }
+                }
+            } catch (SecurityException e) {
+                runOnUiThread(() -> {
+                    if (isActivityAlive()) {
+                        applyFilter();
+                        setupRecyclerView();
+                    }
+                });
+                return;
+            } finally {
+                if (imageCursor != null) imageCursor.close();
+            }
+
+            String[] videoProjection = {
+                    MediaStore.Video.Media._ID,
+                    MediaStore.Video.Media.DATA,
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    MediaStore.Video.Media.DATE_MODIFIED,
+                    MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+            };
+
+            Cursor videoCursor = null;
+            try {
+                videoCursor = getContentResolver().query(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                        videoProjection,
+                        null,
+                        null,
+                        null
+                );
+
+                if (videoCursor != null) {
+                    int dataIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.DATA);
+                    int nameIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME);
+                    int dateIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED);
+                    int albumIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME);
+                    while (videoCursor.moveToNext()) {
+                        String path = dataIndex >= 0 ? videoCursor.getString(dataIndex) : null;
+                        String name = nameIndex >= 0 ? videoCursor.getString(nameIndex) : "video";
+                        long date = dateIndex >= 0 ? videoCursor.getLong(dateIndex) : 0;
+                        String album = albumIndex >= 0 ? videoCursor.getString(albumIndex) : "";
+                        if (path != null && new File(path).exists()) {
+                            boolean isTrashed = path.contains(".trashed.");
+                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_VIDEO, date, isTrashed, album));
+                        }
+                    }
+                }
+            } catch (SecurityException e) {
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Cannot access media files", Toast.LENGTH_SHORT).show();
+                    finish();
+                });
+                return;
+            } finally {
+                if (videoCursor != null) videoCursor.close();
+            }
+
+            Collections.sort(newItems, (a, b) -> Long.compare(b.dateModified, a.dateModified));
+
+            mediaItems.clear();
+            mediaItems.addAll(newItems);
+
+            runOnUiThread(() -> {
+                applyFilter();
+                setupRecyclerView();
+            });
+        });
+    }
+
+    private List<MediaItem> scanForTrashedFiles() {
+        List<MediaItem> trashedItems = new ArrayList<>();
+        List<File> directories = getStorageDirectoriesProper();
+
+        for (File dir : directories) {
+            if (dir != null && dir.exists()) {
+                scanDirectoryForTrashedFiles(dir, trashedItems, 0, 6);
+            }
+        }
+
+        return trashedItems;
+    }
+
+    private List<File> getStorageDirectoriesProper() {
+        List<File> directories = new ArrayList<>();
+        List<String> normalizedPaths = new ArrayList<>();
+
+        try {
+            StorageManager storageManager = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+            if (storageManager != null) {
+                List<StorageVolume> volumes = storageManager.getStorageVolumes();
+
+                for (StorageVolume volume : volumes) {
+                    try {
+                        File volumeFile = volume.getDirectory();
+                        if (volumeFile != null && volumeFile.exists()) {
+                            String normalizedPath = normalizePath(volumeFile.getAbsolutePath());
+                            if (!normalizedPaths.contains(normalizedPath)) {
+                                directories.add(volumeFile);
+                                normalizedPaths.add(normalizedPath);
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
+        } catch (Exception ignored) {}
+
+        String[] commonPaths = {
+                "/storage/extSdCard",
+                "/storage/sdcard1",
+                "/storage/external_SD",
+                "/storage/emulated/0",
+                "/mnt/extSdCard",
+                "/mnt/sdcard1",
+                "/mnt/external_sd",
+                "/sdcard1",
+                "/external_sd"
+        };
+
+        for (String path : commonPaths) {
+            File file = new File(path);
+            if (file.exists() && file.isDirectory()) {
+                String normalizedPath = normalizePath(file.getAbsolutePath());
+                if (!normalizedPaths.contains(normalizedPath)) {
+                    directories.add(file);
+                    normalizedPaths.add(normalizedPath);
+                }
+            }
+        }
+
+        File storage = new File("/storage");
+        if (storage.exists() && storage.isDirectory()) {
+            File[] children = storage.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    if (child.isDirectory() && !directories.contains(child)) {
+                        String path = child.getAbsolutePath().toLowerCase();
+                        if (!path.contains("self") && !path.contains("usb")) {
+                            String normalizedPath = normalizePath(child.getAbsolutePath());
+                            File dcim = new File(child, "DCIM");
+                            File pictures = new File(child, "Pictures");
+                            File movies = new File(child, "Movies");
+                            File downloads = new File(child, "Download");
+
+                            if ((dcim.exists() || pictures.exists() || movies.exists() || downloads.exists()) &&
+                                    !normalizedPaths.contains(normalizedPath)) {
+                                directories.add(child);
+                                normalizedPaths.add(normalizedPath);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        try {
+            File[] externalDirs = getExternalFilesDirs(null);
+            if (externalDirs != null) {
+                for (File dir : externalDirs) {
+                    if (dir != null) {
+                        File current = dir;
+                        while (current != null && current.getParentFile() != null) {
+                            String path = current.getAbsolutePath().toLowerCase();
+                            if (path.contains("storage") &&
+                                    !path.contains("emulated") &&
+                                    !path.contains("self")) {
+
+                                String normalizedPath = normalizePath(current.getAbsolutePath());
+                                if (!normalizedPaths.contains(normalizedPath)) {
+                                    directories.add(current);
+                                    normalizedPaths.add(normalizedPath);
+                                }
+                                break;
+                            }
+                            current = current.getParentFile();
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        List<File> uniqueDirectories = new ArrayList<>();
+        List<String> uniqueNormalizedPaths = new ArrayList<>();
+        for (File dir : directories) {
+            try {
+                String canonicalPath = dir.getCanonicalPath();
+                if (!uniqueNormalizedPaths.contains(canonicalPath)) {
+                    uniqueDirectories.add(dir);
+                    uniqueNormalizedPaths.add(canonicalPath);
+                }
+            } catch (Exception e) {
+                String absPath = dir.getAbsolutePath();
+                if (!uniqueNormalizedPaths.contains(absPath)) {
+                    uniqueDirectories.add(dir);
+                    uniqueNormalizedPaths.add(absPath);
+                }
+            }
+        }
+
+        return uniqueDirectories;
+    }
+
+    private void scanDirectoryForTrashedFiles(File directory, List<MediaItem> items, int depth, int maxDepth) {
+        if (depth > maxDepth || directory == null || !directory.exists() || !directory.isDirectory()) {
+            return;
+        }
+
+        try {
+            try {
+                String canonicalPath = directory.getCanonicalPath();
+                if (canonicalPath.equals("/storage/emulated/0") &&
+                        !directory.getAbsolutePath().equals("/storage/emulated/0")) {
+                    return;
+                }
+            } catch (Exception ignored) {}
+
+            File[] files = directory.listFiles();
+            if (files == null) {
+                return;
+            }
+
+            for (File file : files) {
+                if (file.isDirectory()) {
+                    String name = file.getName().toLowerCase();
+                    if (!name.startsWith(".") &&
+                            !name.equals("android") &&
+                            !name.equals("system") &&
+                            !name.equals("cache") &&
+                            !name.equals("tmp") &&
+                            !name.equals("lost+found") &&
+                            !name.equals("app") &&
+                            !name.equals("data") &&
+                            !name.equals("obb") &&
+                            !name.equals("media")) {
+                        scanDirectoryForTrashedFiles(file, items, depth + 1, maxDepth);
+                    }
+                } else {
+                    String fileName = file.getName().toLowerCase();
+                    if (file.getName().contains(".trashed.")) {
+                        boolean isImage = fileName.endsWith(".jpg") || fileName.endsWith(".jpeg") ||
+                                fileName.endsWith(".png") || fileName.endsWith(".gif") ||
+                                fileName.endsWith(".bmp") || fileName.endsWith(".webp") ||
+                                fileName.endsWith(".heic") || fileName.endsWith(".heif");
+
+                        boolean isVideo = fileName.endsWith(".mp4") || fileName.endsWith(".avi") ||
+                                fileName.endsWith(".mkv") || fileName.endsWith(".mov") ||
+                                fileName.endsWith(".wmv") || fileName.endsWith(".flv") ||
+                                fileName.endsWith(".3gp") || fileName.endsWith(".m4v") ||
+                                fileName.endsWith(".webm");
+
+                        if (isImage || isVideo) {
+                            String path = file.getAbsolutePath();
+                            boolean exists = false;
+                            try {
+                                String canonicalPath = new File(path).getCanonicalPath();
+                                for (MediaItem item : items) {
+                                    try {
+                                        String itemCanonicalPath = new File(item.path).getCanonicalPath();
+                                        if (itemCanonicalPath.equals(canonicalPath)) {
+                                            exists = true;
+                                            break;
+                                        }
+                                    } catch (Exception e) {
+                                        if (item.path.equals(path)) {
+                                            exists = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            } catch (Exception e) {
+                                for (MediaItem item : items) {
+                                    if (item.path.equals(path)) {
+                                        exists = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!exists) {
+                                String album = file.getParentFile() != null ? file.getParentFile().getName() : "";
+                                long dateModified = file.lastModified() / 1000;
+                                int type = isImage ? MediaItem.TYPE_IMAGE : MediaItem.TYPE_VIDEO;
+                                items.add(new MediaItem(path, file.getName(), type, dateModified, true, album));
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void applyFilter() {
+        if (!isActivityAlive()) return;
+
+        displayedItems.clear();
+
+        if (currentFilter == FilterMode.BIN) {
+            List<MediaItem> trashedItems = scanForTrashedFiles();
+
+            for (MediaItem item : mediaItems) {
+                if (item.path.contains(".trashed.")) {
+                    boolean exists = false;
+                    try {
+                        String canonicalPath = new File(item.path).getCanonicalPath();
+                        for (MediaItem existing : trashedItems) {
+                            try {
+                                String existingCanonical = new File(existing.path).getCanonicalPath();
+                                if (existingCanonical.equals(canonicalPath)) {
+                                    exists = true;
+                                    break;
+                                }
+                            } catch (Exception e) {
+                                if (existing.path.equals(item.path)) {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        for (MediaItem existing : trashedItems) {
+                            if (existing.path.equals(item.path)) {
+                                exists = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!exists) {
+                        trashedItems.add(item);
+                    }
+                }
+            }
+
+            displayedItems.addAll(trashedItems);
+        } else {
+            for (MediaItem item : mediaItems) {
+                boolean matchesAlbum = currentAlbum == null || (item.album != null && item.album.equals(currentAlbum));
+                if (!matchesAlbum) continue;
+
+                boolean isCurrentlyTrashed = item.path.contains(".trashed.");
+                item.isTrashed = isCurrentlyTrashed;
+
+                switch (currentFilter) {
+                    case ALL:
+                        if (!isCurrentlyTrashed) displayedItems.add(item);
+                        break;
+                    case IMAGES:
+                        if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_IMAGE) displayedItems.add(item);
+                        break;
+                    case VIDEOS:
+                        if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_VIDEO) displayedItems.add(item);
+                        break;
+                    case FAVORITES:
+                        if (!isCurrentlyTrashed && item.isFavorite) displayedItems.add(item);
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        if (isActivityAlive() && adapter != null) {
+            adapter.updateItems(displayedItems);
+            adapter.updateSelectedItems(selectedItems);
+            updateSelectionUI();
+        }
+    }
+
+    private void checkAndRequestMediaPermissions() {
+        String[] permissionsToRequest;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissionsToRequest = new String[]{
+                    Manifest.permission.READ_MEDIA_IMAGES,
+                    Manifest.permission.READ_MEDIA_VIDEO
+            };
+        } else {
+            permissionsToRequest = new String[]{
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+            };
+        }
+
+        boolean allGranted = true;
+        for (String permission : permissionsToRequest) {
+            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
+                allGranted = false;
+                break;
+            }
+        }
+
+        if (allGranted) {
+            loadMedia();
+        } else {
+            requestMultiplePermissionsLauncher.launch(permissionsToRequest);
+        }
+    }
+
+    private void setupRecyclerView() {
+        if (!isActivityAlive()) return;
+
+        if (displayedItems.isEmpty()) {
+            Toast.makeText(this, "No media found", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        adapter = new GalleryAdapter(this, displayedItems, selectedItems, new GalleryAdapter.OnItemClickListener() {
+            @Override
+            public void onImageClick(String path) {
+                if (!selectionMode && isActivityAlive()) openImageViewer(path);
+            }
+
+            @Override
+            public void onVideoClick(String path) {
+                if (!selectionMode && isActivityAlive()) playVideo(path);
+            }
+
+            @Override
+            public void onFavoriteToggle(MediaItem item) {
+                if (isActivityAlive()) {
+                    item.isFavorite = !item.isFavorite;
+                    applyFilter();
+                }
+            }
+
+            @Override
+            public void onDelete(MediaItem item) {
+                if (isActivityAlive()) moveToTrash(item);
+            }
+
+            @Override
+            public void onItemClick(String path) {
+                if (isActivityAlive()) toggleSelection(path);
+            }
+
+            @Override
+            public boolean isSelectionMode() {
+                return selectionMode && isActivityAlive();
+            }
+
+            @Override
+            public void onRestore(MediaItem item) {
+                if (isActivityAlive()) restoreFromTrash(item);
+            }
+        });
+
+        GridLayoutManager layoutManager = new GridLayoutManager(this, 3);
+        recyclerView.setLayoutManager(layoutManager);
+        recyclerView.setAdapter(adapter);
+        recyclerView.setHasFixedSize(true);
+        recyclerView.setItemViewCacheSize(20);
+        recyclerView.setDrawingCacheEnabled(true);
+        recyclerView.setDrawingCacheQuality(View.DRAWING_CACHE_QUALITY_HIGH);
+    }
+
+    private void moveToTrash(MediaItem item) {
+        if (item.isTrashed) {
+            Toast.makeText(this, "File is already in Bin", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        File file = new File(item.path);
+        if (!file.exists()) {
+            Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String parent = file.getParent();
+        String name = file.getName();
+
+        String cleanName = cleanFileName(name);
+        String trashedName = ".trashed." + cleanName;
+        File trashedFile = new File(parent, trashedName);
+
+        if (trashedFile.exists()) {
+            int count = 1;
+            String newName = trashedName;
+            File newFile = trashedFile;
+            while (newFile.exists()) {
+                String baseName = cleanName;
+                int dotIndex = cleanName.lastIndexOf(".");
+                if (dotIndex > 0) {
+                    baseName = cleanName.substring(0, dotIndex);
+                    String ext = cleanName.substring(dotIndex);
+                    newName = ".trashed." + baseName + "_" + count + ext;
+                } else {
+                    newName = ".trashed." + cleanName + "_" + count;
+                }
+                newFile = new File(parent, newName);
+                count++;
+            }
+            trashedFile = newFile;
+        }
+
+        if (file.renameTo(trashedFile)) {
+            String oldPath = item.path;
+            item.path = trashedFile.getAbsolutePath();
+            item.isTrashed = true;
+            item.name = trashedFile.getName();
+
+            MediaScannerConnection.scanFile(this, new String[]{trashedFile.getAbsolutePath()}, null, null);
+            MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
+
+            for (int i = 0; i < mediaItems.size(); i++) {
+                if (mediaItems.get(i).path.equals(oldPath)) {
+                    mediaItems.set(i, item);
+                    break;
+                }
+            }
+
+            applyFilter();
+            Toast.makeText(this, "Moved to Bin: " + cleanName, Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "Failed to move to Bin", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void restoreFromTrash(MediaItem item) {
+        File file = new File(item.path);
+        if (!file.exists()) {
+            Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String parent = file.getParent();
+        String name = file.getName();
+
+        String cleanName = cleanFileName(name);
+        File restoredFile = new File(parent, cleanName);
+
+        if (restoredFile.exists()) {
+            int count = 1;
+            String baseName = cleanName;
+            String ext = "";
+            int dotIndex = cleanName.lastIndexOf(".");
+            if (dotIndex > 0) {
+                baseName = cleanName.substring(0, dotIndex);
+                ext = cleanName.substring(dotIndex);
+            }
+            while (restoredFile.exists()) {
+                String newName = baseName + "_" + count + ext;
+                restoredFile = new File(parent, newName);
+                count++;
+            }
+        }
+
+        if (file.renameTo(restoredFile)) {
+            String oldPath = item.path;
+            item.path = restoredFile.getAbsolutePath();
+            item.isTrashed = false;
+            item.name = restoredFile.getName();
+
+            MediaScannerConnection.scanFile(this, new String[]{restoredFile.getAbsolutePath()}, null, null);
+            MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
+
+            for (int i = 0; i < mediaItems.size(); i++) {
+                if (mediaItems.get(i).path.equals(oldPath)) {
+                    mediaItems.set(i, item);
+                    break;
+                }
+            }
+
+            applyFilter();
+            Toast.makeText(this, "Restored: " + cleanName, Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "Failed to restore", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private String cleanFileName(String name) {
+        while (name.startsWith(".trashed.")) {
+            name = name.substring(9);
+        }
+        return name;
+    }
+
+    private void toggleSelection(String path) {
+        if (selectedItems.contains(path)) {
+            selectedItems.remove(path);
+        } else {
+            selectedItems.add(path);
+        }
+
+        updateSelectionUI();
+        if (adapter != null) {
+            adapter.updateSelectedItems(selectedItems);
+        }
+    }
+
+    private void updateSelectionUI() {
+        if (!isActivityAlive()) return;
+
+        if (selectedItems.isEmpty()) {
+            selectionMode = false;
+            if (bottomBar != null) bottomBar.setVisibility(View.VISIBLE);
+            if (selectionBar != null) selectionBar.setVisibility(View.GONE);
+        } else {
+            selectionMode = true;
+            if (bottomBar != null) bottomBar.setVisibility(View.GONE);
+            if (selectionBar != null) selectionBar.setVisibility(View.VISIBLE);
+            TextView btnBin = findViewById(R.id.btnBinSelected);
+            if (btnBin != null) {
+                btnBin.setText("🗑️ Bin (" + selectedItems.size() + ")");
+            }
+        }
+    }
+
+    private void clearSelection() {
+        selectedItems.clear();
+        selectionMode = false;
+        bottomBar.setVisibility(View.VISIBLE);
+        selectionBar.setVisibility(View.GONE);
+    }
 
     private void deleteSelectedItems() {
         if (selectedItems.isEmpty()) return;
@@ -277,528 +915,174 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
-    private void toggleSelection(String path) {
-        if (selectedItems.contains(path)) {
-            selectedItems.remove(path);
-        } else {
-            selectedItems.add(path);
-        }
-
-        updateSelectionUI();
-        if (adapter != null) {
-            adapter.updateSelectedItems(selectedItems);
-        }
-    }
-
-    private void restoreFromTrash(MediaItem item) {
-        File file = new File(item.path);
-        if (!file.exists()) {
-            Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        String parent = file.getParent();
-        String name = file.getName();
-
-        // Clean the name - remove all .trashed. prefixes
-        String cleanName = cleanFileName(name);
-        File restoredFile = new File(parent, cleanName);
-
-        // Check if restored file already exists
-        if (restoredFile.exists()) {
-            int count = 1;
-            String baseName = cleanName;
-            String ext = "";
-            int dotIndex = cleanName.lastIndexOf(".");
-            if (dotIndex > 0) {
-                baseName = cleanName.substring(0, dotIndex);
-                ext = cleanName.substring(dotIndex);
-            }
-            while (restoredFile.exists()) {
-                String newName = baseName + "_" + count + ext;
-                restoredFile = new File(parent, newName);
-                count++;
-            }
-        }
-
-        if (file.renameTo(restoredFile)) {
-            String oldPath = item.path;
-            item.path = restoredFile.getAbsolutePath();
-            item.isTrashed = false;
-            item.name = restoredFile.getName();
-
-            // Scan the restored file
-            MediaScannerConnection.scanFile(this, new String[]{restoredFile.getAbsolutePath()}, null, null);
-
-            // Scan the old path to remove from MediaStore
-            MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
-
-            // Update in mediaItems list
-            for (int i = 0; i < mediaItems.size(); i++) {
-                if (mediaItems.get(i).path.equals(oldPath)) {
-                    mediaItems.set(i, item);
-                    break;
-                }
-            }
-
-            applyFilter();
-            Toast.makeText(this, "Restored: " + cleanName, Toast.LENGTH_SHORT).show();
-        } else {
-            Toast.makeText(this, "Failed to restore", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private void updateSelectionUI() {
-        if (selectedItems.isEmpty()) {
-            selectionMode = false;
-            bottomBar.setVisibility(View.VISIBLE);
-            selectionBar.setVisibility(View.GONE);
-        } else {
-            selectionMode = true;
-            bottomBar.setVisibility(View.GONE);
-            selectionBar.setVisibility(View.VISIBLE);
-
-            // Update bin button text with count
-            TextView btnBin = findViewById(R.id.btnBinSelected);
-            btnBin.setText("🗑️ Bin (" + selectedItems.size() + ")");
-        }
-    }
-
-    private void clearSelection() {
-        selectedItems.clear();
-        selectionMode = false;
-        bottomBar.setVisibility(View.VISIBLE);
-        selectionBar.setVisibility(View.GONE);
-    }
-    private void checkAndRequestMediaPermissions() {
-        String[] permissionsToRequest;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissionsToRequest = new String[]{
-                    Manifest.permission.READ_MEDIA_IMAGES,
-                    Manifest.permission.READ_MEDIA_VIDEO
-            };
-        } else {
-            permissionsToRequest = new String[]{
-                    Manifest.permission.READ_EXTERNAL_STORAGE
-            };
-        }
-
-        boolean allGranted = true;
-        for (String permission : permissionsToRequest) {
-            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
-                allGranted = false;
-                break;
-            }
-        }
-
-        if (allGranted) {
-            loadMedia();
-        } else {
-            requestMultiplePermissionsLauncher.launch(permissionsToRequest);
-        }
-    }
-
-    private void loadMedia() {
-        executor.execute(() -> {
-            List<MediaItem> newItems = new ArrayList<>();
-
-            // First, check if there are any .trashed. files in the directories
-            // This is a fallback for files that MediaStore doesn't know about
-            File[] externalDirs = getExternalMediaDirs();
-            List<File> trashedFiles = new ArrayList<>();
-
-            // Check Download directory and DCIM directory for trashed files
-            File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            File dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM);
-            File picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-
-            // Function to scan directory for .trashed. files
-            scanDirectoryForTrashedFiles(downloadDir, trashedFiles);
-            scanDirectoryForTrashedFiles(dcimDir, trashedFiles);
-            scanDirectoryForTrashedFiles(picturesDir, trashedFiles);
-
-            String[] imageProjection = {
-                    MediaStore.Images.Media._ID,
-                    MediaStore.Images.Media.DATA,
-                    MediaStore.Images.Media.DISPLAY_NAME,
-                    MediaStore.Images.Media.DATE_MODIFIED,
-                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME
-            };
-
-            Cursor imageCursor = null;
-            try {
-                imageCursor = getContentResolver().query(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        imageProjection,
-                        null,
-                        null,
-                        null
-                );
-
-                if (imageCursor != null) {
-                    int dataIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.DATA);
-                    int nameIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME);
-                    int dateIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED);
-                    int albumIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
-                    while (imageCursor.moveToNext()) {
-                        String path = dataIndex >= 0 ? imageCursor.getString(dataIndex) : null;
-                        String name = nameIndex >= 0 ? imageCursor.getString(nameIndex) : "image";
-                        long date = dateIndex >= 0 ? imageCursor.getLong(dateIndex) : 0;
-                        String album = albumIndex >= 0 ? imageCursor.getString(albumIndex) : "";
-                        if (path != null) {
-                            boolean isTrashed = path.contains(".trashed.");
-                            // Check if file exists OR if it's a trashed file
-                            if (new File(path).exists() || isTrashed) {
-                                // If the path doesn't exist but it's trashed, try to find the actual trashed file
-                                if (!new File(path).exists() && isTrashed) {
-                                    // Try to find the trashed file by scanning directories
-                                    String fileName = new File(path).getName();
-                                    String parentDir = new File(path).getParent();
-                                    if (parentDir != null) {
-                                        File parent = new File(parentDir);
-                                        if (parent.exists()) {
-                                            File[] files = parent.listFiles();
-                                            if (files != null) {
-                                                for (File f : files) {
-                                                    if (f.getName().contains(fileName) && f.getName().contains(".trashed.")) {
-                                                        path = f.getAbsolutePath();
-                                                        name = f.getName();
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                newItems.add(new MediaItem(path, name, MediaItem.TYPE_IMAGE, date, isTrashed, album));
-                            }
-                        }
-                    }
-                }
-            } catch (SecurityException e) {
-                runOnUiThread(() -> {
-                    Toast.makeText(this, "Cannot access media files", Toast.LENGTH_SHORT).show();
-                    finish();
-                });
-                return;
-            } finally {
-                if (imageCursor != null) imageCursor.close();
-            }
-
-            String[] videoProjection = {
-                    MediaStore.Video.Media._ID,
-                    MediaStore.Video.Media.DATA,
-                    MediaStore.Video.Media.DISPLAY_NAME,
-                    MediaStore.Video.Media.DATE_MODIFIED,
-                    MediaStore.Video.Media.BUCKET_DISPLAY_NAME
-            };
-
-            Cursor videoCursor = null;
-            try {
-                videoCursor = getContentResolver().query(
-                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                        videoProjection,
-                        null,
-                        null,
-                        null
-                );
-
-                if (videoCursor != null) {
-                    int dataIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.DATA);
-                    int nameIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME);
-                    int dateIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED);
-                    int albumIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME);
-                    while (videoCursor.moveToNext()) {
-                        String path = dataIndex >= 0 ? videoCursor.getString(dataIndex) : null;
-                        String name = nameIndex >= 0 ? videoCursor.getString(nameIndex) : "video";
-                        long date = dateIndex >= 0 ? videoCursor.getLong(dateIndex) : 0;
-                        String album = albumIndex >= 0 ? videoCursor.getString(albumIndex) : "";
-                        if (path != null) {
-                            boolean isTrashed = path.contains(".trashed.");
-                            if (new File(path).exists() || isTrashed) {
-                                if (!new File(path).exists() && isTrashed) {
-                                    String fileName = new File(path).getName();
-                                    String parentDir = new File(path).getParent();
-                                    if (parentDir != null) {
-                                        File parent = new File(parentDir);
-                                        if (parent.exists()) {
-                                            File[] files = parent.listFiles();
-                                            if (files != null) {
-                                                for (File f : files) {
-                                                    if (f.getName().contains(fileName) && f.getName().contains(".trashed.")) {
-                                                        path = f.getAbsolutePath();
-                                                        name = f.getName();
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                newItems.add(new MediaItem(path, name, MediaItem.TYPE_VIDEO, date, isTrashed, album));
-                            }
-                        }
-                    }
-                }
-            } catch (SecurityException e) {
-                runOnUiThread(() -> {
-                    Toast.makeText(this, "Cannot access media files", Toast.LENGTH_SHORT).show();
-                    finish();
-                });
-                return;
-            } finally {
-                if (videoCursor != null) videoCursor.close();
-            }
-
-            // Add any trashed files found in directory scan that weren't in MediaStore
-            for (File trashedFile : trashedFiles) {
-                boolean alreadyAdded = false;
-                for (MediaItem item : newItems) {
-                    if (item.path.equals(trashedFile.getAbsolutePath())) {
-                        alreadyAdded = true;
-                        break;
-                    }
-                }
-                if (!alreadyAdded) {
-                    boolean isImage = isImageFile(trashedFile.getName());
-                    int type = isImage ? MediaItem.TYPE_IMAGE : MediaItem.TYPE_VIDEO;
-                    newItems.add(new MediaItem(
-                            trashedFile.getAbsolutePath(),
-                            trashedFile.getName(),
-                            type,
-                            trashedFile.lastModified() / 1000,
-                            true,
-                            ""
-                    ));
-                }
-            }
-
-            Collections.sort(newItems, (a, b) -> Long.compare(b.dateModified, a.dateModified));
-
-            mediaItems.clear();
-            mediaItems.addAll(newItems);
-
-            runOnUiThread(() -> {
-                applyFilter();
-                setupRecyclerView();
-            });
-        });
-    }
-
-    private void scanDirectoryForTrashedFiles(File directory, List<File> trashedFiles) {
-        if (directory == null || !directory.exists()) return;
-
-        File[] files = directory.listFiles();
-        if (files == null) return;
-
-        for (File file : files) {
-            if (file.isDirectory()) {
-                // Recursively scan subdirectories (but limit depth to avoid performance issues)
-                scanDirectoryForTrashedFiles(file, trashedFiles);
-            } else if (file.getName().contains(".trashed.")) {
-                trashedFiles.add(file);
-            }
-        }
-    }
-
-    private boolean isImageFile(String fileName) {
-        String ext = fileName.substring(fileName.lastIndexOf(".") + 1).toLowerCase();
-        return ext.matches("jpg|jpeg|png|gif|bmp|webp|heic|heif");
-    }
-
-    private void applyFilter() {
-        displayedItems.clear();
-        for (MediaItem item : mediaItems) {
-            // Check if item should be shown based on current filter
-            boolean matchesAlbum = currentAlbum == null || (item.album != null && item.album.equals(currentAlbum));
-            if (!matchesAlbum) continue;
-
-            // Re-check if file is trashed (in case it was moved after initial load)
-            boolean isCurrentlyTrashed = item.path.contains(".trashed.");
-            item.isTrashed = isCurrentlyTrashed; // Update the flag
-
-            switch (currentFilter) {
-                case ALL:
-                    if (!isCurrentlyTrashed) displayedItems.add(item);
-                    break;
-                case IMAGES:
-                    if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_IMAGE) displayedItems.add(item);
-                    break;
-                case VIDEOS:
-                    if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_VIDEO) displayedItems.add(item);
-                    break;
-                case FAVORITES:
-                    if (!isCurrentlyTrashed && item.isFavorite) displayedItems.add(item);
-                    break;
-                case BIN:
-                    if (isCurrentlyTrashed) displayedItems.add(item);
-                    break;
-            }
-        }
-        if (adapter != null) {
-            adapter.updateItems(displayedItems);
-            adapter.updateSelectedItems(selectedItems);
-            updateSelectionUI();
-        }
-    }
-
-    private void setupRecyclerView() {
-        if (displayedItems.isEmpty()) {
-            Toast.makeText(this, "No media found", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        adapter = new GalleryAdapter(this, displayedItems, selectedItems, new GalleryAdapter.OnItemClickListener() {
-            @Override
-            public void onImageClick(String path) {
-                if (!selectionMode) openImageViewer(path);
-            }
-
-            @Override
-            public void onVideoClick(String path) {
-                if (!selectionMode) playVideo(path);
-            }
-
-            @Override
-            public void onFavoriteToggle(MediaItem item) {
-                item.isFavorite = !item.isFavorite;
-                applyFilter();
-            }
-
-            @Override
-            public void onDelete(MediaItem item) {
-                moveToTrash(item);
-            }
-
-            @Override
-            public void onItemClick(String path) {
-                toggleSelection(path);
-            }
-
-            @Override
-            public boolean isSelectionMode() {
-                return selectionMode;
-            }
-
-            // Add this new method for restore
-            @Override
-            public void onRestore(MediaItem item) {
-                restoreFromTrash(item);
-            }
-        });
-
-        GridLayoutManager layoutManager = new GridLayoutManager(this, 3);
-        recyclerView.setLayoutManager(layoutManager);
-        recyclerView.setAdapter(adapter);
-        recyclerView.setHasFixedSize(true);
-        recyclerView.setItemViewCacheSize(20);
-        recyclerView.setDrawingCacheEnabled(true);
-        recyclerView.setDrawingCacheQuality(View.DRAWING_CACHE_QUALITY_HIGH);
-    }
-
-    private void moveToTrash(MediaItem item) {
-        // Check if file is already trashed
-        if (item.isTrashed) {
-            Toast.makeText(this, "File is already in Bin", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        File file = new File(item.path);
-        if (!file.exists()) {
-            Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        String parent = file.getParent();
-        String name = file.getName();
-
-        // Remove any existing .trashed. prefix from name (if any)
-        String cleanName = cleanFileName(name);
-        String trashedName = ".trashed." + cleanName;
-        File trashedFile = new File(parent, trashedName);
-
-        // Check if trashed file already exists
-        if (trashedFile.exists()) {
-            int count = 1;
-            String newName = trashedName;
-            File newFile = trashedFile;
-            while (newFile.exists()) {
-                String baseName = cleanName;
-                int dotIndex = cleanName.lastIndexOf(".");
-                if (dotIndex > 0) {
-                    baseName = cleanName.substring(0, dotIndex);
-                    String ext = cleanName.substring(dotIndex);
-                    newName = ".trashed." + baseName + "_" + count + ext;
-                } else {
-                    newName = ".trashed." + cleanName + "_" + count;
-                }
-                newFile = new File(parent, newName);
-                count++;
-            }
-            trashedFile = newFile;
-        }
-
-        if (file.renameTo(trashedFile)) {
-            // Update the item path and trashed status
-            String oldPath = item.path;
-            item.path = trashedFile.getAbsolutePath();
-            item.isTrashed = true;
-            item.name = trashedFile.getName();
-
-            // Scan the new file to update MediaStore
-            MediaScannerConnection.scanFile(this, new String[]{trashedFile.getAbsolutePath()}, null, null);
-
-            // IMPORTANT: Also scan the old path to remove from MediaStore
-            MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
-
-            // Update in mediaItems list
-            for (int i = 0; i < mediaItems.size(); i++) {
-                if (mediaItems.get(i).path.equals(oldPath)) {
-                    mediaItems.set(i, item);
-                    break;
-                }
-            }
-
-            applyFilter();
-            Toast.makeText(this, "Moved to Bin: " + cleanName, Toast.LENGTH_SHORT).show();
-        } else {
-            Toast.makeText(this, "Failed to move to Bin", Toast.LENGTH_SHORT).show();
-        }
-    }
     private void openImageViewer(String path) {
         Intent intent = new Intent(this, ImageViewerActivity.class);
         intent.putExtra("image_path", path);
         startActivity(intent);
     }
 
+    private void playVideo(String path) {
+        currentVideoPath = path;
+        isVideoPlaying = true;
 
-    private void refreshMediaStore(String path) {
-        try {
-            // Notify MediaStore about the file change
-            MediaScannerConnection.scanFile(this, new String[]{path}, null, new MediaScannerConnection.OnScanCompletedListener() {
-                @Override
-                public void onScanCompleted(String path, Uri uri) {
-                    // MediaStore updated
-                    runOnUiThread(() -> {
-                        // Reload media after scan completes
-                        loadMedia();
-                    });
+        findViewById(R.id.bottomBar).setVisibility(View.GONE);
+        findViewById(R.id.sortOptions).setVisibility(View.GONE);
+
+        videoPlayerContainer.setVisibility(View.VISIBLE);
+        videoView.setVideoPath(path);
+        videoView.start();
+        isPlaying = true;
+        controlsVisible = true;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+        }
+
+        btnPlayPause.setImageResource(android.R.drawable.ic_media_pause);
+        btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
+
+        updateVideoProgress();
+        updateFavoriteButton(path);
+        showControls();
+    }
+
+    private void setupVideoControls() {
+        videoPlayerContainer.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                toggleControlsVisibility();
+                return true;
+            }
+            return false;
+        });
+
+        videoView.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                toggleControlsVisibility();
+                return true;
+            }
+            return false;
+        });
+
+        btnCenterPlayPause.setOnClickListener(v -> togglePlayPause());
+        btnPlayPause.setOnClickListener(v -> togglePlayPause());
+
+        btnSkipForward.setOnClickListener(v -> {
+            int current = videoView.getCurrentPosition();
+            int duration = videoView.getDuration();
+            videoView.seekTo(Math.min(current + 15000, duration));
+        });
+
+        btnSkipBackward.setOnClickListener(v -> {
+            int current = videoView.getCurrentPosition();
+            videoView.seekTo(Math.max(current - 5000, 0));
+        });
+
+        btnCloseVideo.setOnClickListener(v -> closeVideo());
+
+        btnRotate.setOnClickListener(v -> {
+            if (getRequestedOrientation() == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
+                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            } else {
+                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+            }
+        });
+
+        btnFavorite.setOnClickListener(v -> {
+            if (currentVideoPath == null) return;
+            for (MediaItem item : mediaItems) {
+                if (item.path.equals(currentVideoPath)) {
+                    item.isFavorite = !item.isFavorite;
+                    updateFavoriteButton(currentVideoPath);
+                    Toast.makeText(this, item.isFavorite ? "⭐ Added to Favorites" : "Removed from Favorites", Toast.LENGTH_SHORT).show();
+                    break;
                 }
-            });
-        } catch (Exception e) {
-            e.printStackTrace();
+            }
+        });
+
+        btnDelete.setOnClickListener(v -> {
+            if (currentVideoPath == null) return;
+            for (MediaItem item : mediaItems) {
+                if (item.path.equals(currentVideoPath)) {
+                    moveToTrash(item);
+                    closeVideoInternal();
+                    break;
+                }
+            }
+        });
+
+        btnInfo.setOnClickListener(v -> showFileInfo(currentVideoPath));
+
+        videoView.setOnCompletionListener(mp -> {
+            btnPlayPause.setImageResource(android.R.drawable.ic_media_play);
+            btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_play);
+            isPlaying = false;
+            showControls();
+        });
+    }
+
+    private void closeVideo() {
+        if (getRequestedOrientation() == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
+            isLandscape = true;
+            setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            videoHandler.postDelayed(() -> {
+                closeVideoInternal();
+            }, 500);
+        } else {
+            closeVideoInternal();
         }
     }
 
+    private void closeVideoInternal() {
+        videoView.stopPlayback();
+        videoPlayerContainer.setVisibility(View.GONE);
+        isPlaying = false;
+        isVideoPlaying = false;
+        isLandscape = false;
+        videoHandler.removeCallbacks(updateVideoProgress);
+        videoHandler.removeCallbacks(hideControlsRunnable);
+        controlsVisible = true;
 
-    private void updateFavoriteButton(String path) {
-        for (MediaItem item : mediaItems) {
-            if (item.path.equals(path)) {
-                btnFavorite.setImageResource(item.isFavorite ? R.drawable.ic_star_filled : R.drawable.ic_star_empty);
-                break;
-            }
+        findViewById(R.id.bottomBar).setVisibility(View.VISIBLE);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         }
+
+        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+    }
+
+    private void toggleControlsVisibility() {
+        if (controlsVisible) {
+            hideControls();
+        } else {
+            showControls();
+        }
+    }
+
+    private void showControls() {
+        controlsVisible = true;
+        videoCenterControls.setVisibility(View.VISIBLE);
+        videoBottomControls.setVisibility(View.VISIBLE);
+        videoTime.setVisibility(View.VISIBLE);
+        btnCenterPlayPause.setVisibility(isPlaying ? View.GONE : View.VISIBLE);
+
+        videoHandler.removeCallbacks(hideControlsRunnable);
+        hideControlsRunnable = () -> {
+            if (isPlaying) {
+                hideControls();
+            }
+        };
+        videoHandler.postDelayed(hideControlsRunnable, CONTROLS_TIMEOUT);
+    }
+
+    private void hideControls() {
+        controlsVisible = false;
+        videoCenterControls.setVisibility(View.GONE);
+        videoBottomControls.setVisibility(View.GONE);
+        videoTime.setVisibility(View.GONE);
+        btnCenterPlayPause.setVisibility(View.GONE);
+        videoHandler.removeCallbacks(hideControlsRunnable);
     }
 
     private void togglePlayPause() {
@@ -816,33 +1100,31 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
-    private void showFileInfo(String path) {
-        if (path == null) return;
-        File file = new File(path);
-        StringBuilder info = new StringBuilder();
-        info.append("📁 Directory: ").append(file.getParent()).append("\n");
-        info.append("📄 File: ").append(file.getName()).append("\n");
-        info.append("📏 Size: ").append(formatFileSize(file.length())).append("\n");
-        info.append("📅 Modified: ").append(new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
-                .format(new Date(file.lastModified()))).append("\n");
-        info.append("🔤 Type: ").append(getFileType(path));
-
-        Toast.makeText(this, info.toString(), Toast.LENGTH_LONG).show();
+    private void updateVideoProgress() {
+        if (updateVideoProgress != null) {
+            videoHandler.removeCallbacks(updateVideoProgress);
+        }
+        updateVideoProgress = new Runnable() {
+            @Override
+            public void run() {
+                if (videoView != null && isPlaying) {
+                    int current = videoView.getCurrentPosition();
+                    int duration = videoView.getDuration();
+                    if (duration > 0) {
+                        videoTime.setText(formatTime(current) + " / " + formatTime(duration));
+                    }
+                    videoHandler.postDelayed(this, 1000);
+                }
+            }
+        };
+        videoHandler.post(updateVideoProgress);
     }
 
-    private String formatFileSize(long size) {
-        if (size < 1024) return size + " B";
-        if (size < 1024 * 1024) return String.format("%.1f KB", size / 1024.0);
-        if (size < 1024 * 1024 * 1024) return String.format("%.1f MB", size / (1024.0 * 1024));
-        return String.format("%.1f GB", size / (1024.0 * 1024 * 1024));
-    }
-
-    private String getFileType(String path) {
-        if (path == null) return "Unknown";
-        String ext = path.substring(path.lastIndexOf(".") + 1).toLowerCase();
-        if (ext.matches("jpg|jpeg|png|gif|bmp|webp")) return "Image";
-        if (ext.matches("mp4|avi|mkv|mov|wmv|flv|3gp")) return "Video";
-        return "Unknown";
+    private String formatTime(int ms) {
+        int seconds = ms / 1000;
+        int minutes = seconds / 60;
+        seconds = seconds % 60;
+        return String.format("%02d:%02d", minutes, seconds);
     }
 
     private void loadAlbums() {
@@ -894,31 +1176,42 @@ public class GalleryActivity extends AppCompatActivity {
         albumRecycler.setVisibility(View.VISIBLE);
     }
 
-    private void updateVideoProgress() {
-        if (updateVideoProgress != null) {
-            videoHandler.removeCallbacks(updateVideoProgress);
-        }
-        updateVideoProgress = new Runnable() {
-            @Override
-            public void run() {
-                if (videoView != null && isPlaying) {
-                    int current = videoView.getCurrentPosition();
-                    int duration = videoView.getDuration();
-                    if (duration > 0) {
-                        videoTime.setText(formatTime(current) + " / " + formatTime(duration));
-                    }
-                    videoHandler.postDelayed(this, 1000);
-                }
+    private void updateFavoriteButton(String path) {
+        for (MediaItem item : mediaItems) {
+            if (item.path.equals(path)) {
+                btnFavorite.setImageResource(item.isFavorite ? R.drawable.ic_star_filled : R.drawable.ic_star_empty);
+                break;
             }
-        };
-        videoHandler.post(updateVideoProgress);
+        }
     }
 
-    private String formatTime(int ms) {
-        int seconds = ms / 1000;
-        int minutes = seconds / 60;
-        seconds = seconds % 60;
-        return String.format("%02d:%02d", minutes, seconds);
+    private void showFileInfo(String path) {
+        if (path == null) return;
+        File file = new File(path);
+        StringBuilder info = new StringBuilder();
+        info.append("📁 Directory: ").append(file.getParent()).append("\n");
+        info.append("📄 File: ").append(file.getName()).append("\n");
+        info.append("📏 Size: ").append(formatFileSize(file.length())).append("\n");
+        info.append("📅 Modified: ").append(new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
+                .format(new Date(file.lastModified()))).append("\n");
+        info.append("🔤 Type: ").append(getFileType(path));
+
+        Toast.makeText(this, info.toString(), Toast.LENGTH_LONG).show();
+    }
+
+    private String formatFileSize(long size) {
+        if (size < 1024) return size + " B";
+        if (size < 1024 * 1024) return String.format("%.1f KB", size / 1024.0);
+        if (size < 1024 * 1024 * 1024) return String.format("%.1f MB", size / (1024.0 * 1024));
+        return String.format("%.1f GB", size / (1024.0 * 1024 * 1024));
+    }
+
+    private String getFileType(String path) {
+        if (path == null) return "Unknown";
+        String ext = path.substring(path.lastIndexOf(".") + 1).toLowerCase();
+        if (ext.matches("jpg|jpeg|png|gif|bmp|webp")) return "Image";
+        if (ext.matches("mp4|avi|mkv|mov|wmv|flv|3gp")) return "Video";
+        return "Unknown";
     }
 
     private void applyGlassmorphism(View view) {
@@ -932,143 +1225,22 @@ public class GalleryActivity extends AppCompatActivity {
         view.setElevation(12);
     }
 
-    // ===================== VIDEO CONTROLS =====================
-
-    // ===================== VIDEO CONTROLS =====================
-
-    // ===================== VIDEO CONTROLS =====================
-
-    // ===================== VIDEO CONTROLS =====================
-
-    private void setupVideoControls() {
-        // Toggle controls on video tap
-        videoPlayerContainer.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_UP) {
-                toggleControlsVisibility();
-                return true;
-            }
-            return false;
-        });
-
-        videoView.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_UP) {
-                toggleControlsVisibility();
-                return true;
-            }
-            return false;
-        });
-
-        // Center controls
-        btnCenterPlayPause.setOnClickListener(v -> togglePlayPause());
-
-        // Bottom controls
-        btnPlayPause.setOnClickListener(v -> togglePlayPause());
-
-        btnSkipForward.setOnClickListener(v -> {
-            int current = videoView.getCurrentPosition();
-            int duration = videoView.getDuration();
-            videoView.seekTo(Math.min(current + 15000, duration));
-        });
-
-        btnSkipBackward.setOnClickListener(v -> {
-            int current = videoView.getCurrentPosition();
-            videoView.seekTo(Math.max(current - 5000, 0));
-        });
-
-        btnCloseVideo.setOnClickListener(v -> closeVideo());
-
-
-        btnRotate.setOnClickListener(v -> {
-            // Toggle between portrait and landscape
-            if (getRequestedOrientation() == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
-                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-            } else {
-                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
-            }
-        });
-
-        btnFavorite.setOnClickListener(v -> {
-            if (currentVideoPath == null) return;
-            for (MediaItem item : mediaItems) {
-                if (item.path.equals(currentVideoPath)) {
-                    item.isFavorite = !item.isFavorite;
-                    updateFavoriteButton(currentVideoPath);
-                    Toast.makeText(this, item.isFavorite ? "⭐ Added to Favorites" : "Removed from Favorites", Toast.LENGTH_SHORT).show();
-                    break;
+    private void refreshMediaStore(String path) {
+        try {
+            MediaScannerConnection.scanFile(this, new String[]{path}, null, new MediaScannerConnection.OnScanCompletedListener() {
+                @Override
+                public void onScanCompleted(String path, Uri uri) {
+                    runOnUiThread(() -> {
+                        loadMedia();
+                    });
                 }
-            }
-        });
-
-        btnDelete.setOnClickListener(v -> {
-            if (currentVideoPath == null) return;
-            for (MediaItem item : mediaItems) {
-                if (item.path.equals(currentVideoPath)) {
-                    moveToTrash(item);
-                    closeVideoInternal();
-                    break;
-                }
-            }
-        });
-
-        btnInfo.setOnClickListener(v -> showFileInfo(currentVideoPath));
-
-        videoView.setOnCompletionListener(mp -> {
-            btnPlayPause.setImageResource(android.R.drawable.ic_media_play);
-            btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_play);
-            isPlaying = false;
-            showControls();
-        });
+            });
+        } catch (Exception ignored) {}
     }
-    private void closeVideo() {
-        // If in landscape, rotate to portrait first
-        if (getRequestedOrientation() == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
-            isLandscape = true;
-            setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-            // Wait for rotation to complete, then close
-            videoHandler.postDelayed(() -> {
-                closeVideoInternal();
-            }, 500);
-        } else {
-            closeVideoInternal();
-        }
-    }
-
-
-    private void closeVideoInternal() {
-        videoView.stopPlayback();
-        videoPlayerContainer.setVisibility(View.GONE);
-        isPlaying = false;
-        isVideoPlaying = false;
-        isLandscape = false;
-        videoHandler.removeCallbacks(updateVideoProgress);
-        videoHandler.removeCallbacks(hideControlsRunnable);
-        controlsVisible = true;
-
-        // Restore bottom bar
-        findViewById(R.id.bottomBar).setVisibility(View.VISIBLE);
-
-        // Restore status bar
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        }
-
-        // Reset orientation to portrait
-        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-    }
-    private String cleanFileName(String name) {
-        // Remove all .trashed. prefixes
-        while (name.startsWith(".trashed.")) {
-            name = name.substring(9); // ".trashed." length is 9
-        }
-        return name;
-    }
-
 
     @Override
     public void onBackPressed() {
-        // If video is playing
         if (videoPlayerContainer.getVisibility() == View.VISIBLE) {
-            // If in landscape, rotate to portrait first
             if (getRequestedOrientation() == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
                 setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
                 videoHandler.postDelayed(() -> {
@@ -1081,7 +1253,6 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        // If in albums view
         if (showAlbums) {
             showAlbums = false;
             albumRecycler.setVisibility(View.GONE);
@@ -1093,70 +1264,10 @@ public class GalleryActivity extends AppCompatActivity {
         super.onBackPressed();
         finish();
     }
-    private void toggleControlsVisibility() {
-        if (controlsVisible) {
-            hideControls();
-        } else {
-            showControls();
-        }
-    }
-
-    private void showControls() {
-        controlsVisible = true;
-        videoCenterControls.setVisibility(View.VISIBLE);
-        videoBottomControls.setVisibility(View.VISIBLE);
-        videoTime.setVisibility(View.VISIBLE);
-        btnCenterPlayPause.setVisibility(isPlaying ? View.GONE : View.VISIBLE);
-
-        videoHandler.removeCallbacks(hideControlsRunnable);
-        hideControlsRunnable = () -> {
-            if (isPlaying) {
-                hideControls();
-            }
-        };
-        videoHandler.postDelayed(hideControlsRunnable, CONTROLS_TIMEOUT);
-    }
-
-    private void hideControls() {
-        controlsVisible = false;
-        videoCenterControls.setVisibility(View.GONE);
-        videoBottomControls.setVisibility(View.GONE);
-        videoTime.setVisibility(View.GONE);
-        btnCenterPlayPause.setVisibility(View.GONE);
-        videoHandler.removeCallbacks(hideControlsRunnable);
-    }
-
-    private void playVideo(String path) {
-        currentVideoPath = path;
-        isVideoPlaying = true;
-
-        findViewById(R.id.bottomBar).setVisibility(View.GONE);
-        findViewById(R.id.sortOptions).setVisibility(View.GONE);
-
-        videoPlayerContainer.setVisibility(View.VISIBLE);
-        videoView.setVideoPath(path);
-        videoView.start();
-        isPlaying = true;
-        controlsVisible = true;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
-        }
-
-        btnPlayPause.setImageResource(android.R.drawable.ic_media_pause);
-        btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
-
-        updateVideoProgress();
-        updateFavoriteButton(path);
-
-        showControls();
-    }
 
     @Override
     public void onConfigurationChanged(android.content.res.Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        // Video continues playing, no restart needed
     }
 
     @Override
@@ -1167,6 +1278,25 @@ public class GalleryActivity extends AppCompatActivity {
         videoHandler.removeCallbacks(updateVideoProgress);
         videoHandler.removeCallbacks(hideControlsRunnable);
         executor.shutdown();
+    }
+
+    private String normalizePath(String path) {
+        try {
+            File file = new File(path);
+            return file.getCanonicalPath();
+        } catch (Exception e) {
+            return path;
+        }
+    }
+
+    private boolean isSameStorageLocation(File file1, File file2) {
+        try {
+            String path1 = file1.getCanonicalPath();
+            String path2 = file2.getCanonicalPath();
+            return path1.equals(path2);
+        } catch (Exception e) {
+            return file1.getAbsolutePath().equals(file2.getAbsolutePath());
+        }
     }
 
     public static class MediaItem {
