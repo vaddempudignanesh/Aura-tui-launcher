@@ -77,4 +77,24 @@
         <item name="android:textColor">#FFFFFF</item>
     </style>
 
+
+
+
+        <style name="BottomBarButton">
+            <item name="android:background">@drawable/bg_button_translucent</item>
+            <item name="android:paddingStart">8dp</item>
+            <item name="android:paddingEnd">8dp</item>
+            <item name="android:paddingTop">4dp</item>
+            <item name="android:paddingBottom">4dp</item>
+            <item name="android:textSize">14sp</item>
+            <item name="android:textColor">#FFFFFF</item>
+        </style>
+
+        <style name="SortOptionButton">
+            <item name="android:background">@drawable/bg_button_translucent</item>
+            <item name="android:textSize">16sp</item>
+            <item name="android:textColor">#FFFFFF</item>
+        </style>
+
+
 </resources>

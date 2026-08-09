@@ -8,6 +8,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
+import android.widget.RelativeLayout;
 import androidx.recyclerview.widget.RecyclerView;
 import java.io.File;
 import java.util.List;
@@ -23,7 +24,6 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
     private ExecutorService executor = Executors.newFixedThreadPool(4);
     private Handler mainHandler = new Handler(Looper.getMainLooper());
     private ThumbnailCache thumbnailCache;
-    private boolean isLoading = false;
 
     public interface OnItemClickListener {
         void onImageClick(String path);
@@ -32,7 +32,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         void onDelete(GalleryActivity.MediaItem item);
         void onItemClick(String path);
         boolean isSelectionMode();
-        void onRestore(GalleryActivity.MediaItem item); // Add this
+        void onRestore(GalleryActivity.MediaItem item);
     }
 
     public GalleryAdapter(Context context, List<GalleryActivity.MediaItem> mediaItems,
@@ -64,39 +64,36 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
     @Override
     public void onBindViewHolder(ViewHolder holder, int position) {
         GalleryActivity.MediaItem item = mediaItems.get(position);
-        File file = new File(item.path);
 
-        // Reset view state
         holder.imageView.setImageBitmap(null);
         holder.imageView.setTag(null);
         holder.videoIcon.setVisibility(View.GONE);
         holder.favIcon.setVisibility(item.isFavorite ? View.VISIBLE : View.INVISIBLE);
         holder.checkIcon.setVisibility(View.GONE);
+        holder.videoOverlay.setVisibility(View.GONE);
 
-        if (item.type == GalleryActivity.MediaItem.TYPE_VIDEO) {
+        // Show video overlay for videos in Bin
+        if (item.isTrashed && item.type == GalleryActivity.MediaItem.TYPE_VIDEO) {
+            holder.videoOverlay.setVisibility(View.VISIBLE);
+        }
+
+        if (item.type == GalleryActivity.MediaItem.TYPE_VIDEO && !item.isTrashed) {
             holder.videoIcon.setVisibility(View.VISIBLE);
         }
 
-        // Load thumbnail from cache
         loadThumbnail(holder, item);
 
-        // ===== REPLACE THIS ENTIRE SECTION =====
-        // Click listeners - REPLACE with the code below
         if (item.isTrashed) {
             holder.itemView.setOnClickListener(v -> {
-                // If in selection mode, toggle selection
                 if (listener.isSelectionMode()) {
                     listener.onItemClick(item.path);
                 } else {
-                    // In bin mode, click to restore
                     listener.onRestore(item);
                 }
             });
-
             holder.favIcon.setVisibility(View.GONE);
             holder.videoIcon.setVisibility(View.GONE);
         } else {
-            // Normal click behavior
             holder.itemView.setOnClickListener(v -> {
                 if (listener.isSelectionMode()) {
                     listener.onItemClick(item.path);
@@ -109,14 +106,12 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
                 }
             });
         }
-        // ===== END REPLACEMENT =====
 
         holder.itemView.setOnLongClickListener(v -> {
             listener.onItemClick(item.path);
             return true;
         });
 
-        // Show/hide checkbox based on selection mode
         if (listener.isSelectionMode()) {
             holder.checkIcon.setVisibility(View.VISIBLE);
             if (selectedItems != null && selectedItems.contains(item.path)) {
@@ -137,16 +132,13 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         final int position = holder.getAdapterPosition();
         if (position == RecyclerView.NO_POSITION) return;
 
-        // Check if view is already bound to this item
         String path = item.path;
         holder.imageView.setTag(path);
 
         executor.execute(() -> {
-            // Check cache
             Bitmap bitmap = thumbnailCache.getThumbnail(path, item.type);
 
             mainHandler.post(() -> {
-                // Verify view is still bound to same item
                 if (holder.getAdapterPosition() != RecyclerView.NO_POSITION &&
                         holder.imageView.getTag() != null &&
                         holder.imageView.getTag().equals(path)) {
@@ -181,6 +173,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         ImageView videoIcon;
         ImageView favIcon;
         ImageView checkIcon;
+        RelativeLayout videoOverlay;
 
         public ViewHolder(View itemView) {
             super(itemView);
@@ -188,6 +181,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
             videoIcon = itemView.findViewById(R.id.video_icon);
             favIcon = itemView.findViewById(R.id.fav_icon);
             checkIcon = itemView.findViewById(R.id.check_icon);
+            videoOverlay = itemView.findViewById(R.id.video_overlay);
         }
     }
 }

@@ -2,6 +2,7 @@ package ohi.andre.consolelauncher;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -16,9 +17,11 @@ import android.os.Looper;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.provider.MediaStore;
+import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
@@ -30,6 +33,7 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import android.graphics.Color;
@@ -47,6 +51,7 @@ import java.util.concurrent.Executors;
 
 public class GalleryActivity extends AppCompatActivity {
 
+    // ===================== VIEW DECLARATIONS =====================
     private RecyclerView recyclerView;
     private RecyclerView albumRecycler;
     private GalleryAdapter adapter;
@@ -60,11 +65,14 @@ public class GalleryActivity extends AppCompatActivity {
     private String currentAlbum = null;
     private boolean selectionMode = false;
     private List<String> selectedItems = new ArrayList<>();
-    private LinearLayout bottomBar, selectionBar;
+    private LinearLayout bottomBar, selectionBar, binBottomBar;
+    private View selectionTopBar;
+    private TextView selectionCount;
 
     private enum FilterMode { ALL, IMAGES, VIDEOS, FAVORITES, BIN }
     private FilterMode currentFilter = FilterMode.ALL;
 
+    // Video player
     private RelativeLayout videoPlayerContainer;
     private VideoView videoView;
     private ImageButton btnPlayPause, btnSkipForward, btnSkipBackward;
@@ -117,6 +125,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
         getWindow().setBackgroundDrawableResource(android.R.color.transparent);
 
+        // ===== INIT VIEWS =====
         recyclerView = findViewById(R.id.galleryRecycler);
         albumRecycler = findViewById(R.id.albumRecycler);
         titleView = findViewById(R.id.titleGallery);
@@ -137,23 +146,53 @@ public class GalleryActivity extends AppCompatActivity {
         videoBottomControls = findViewById(R.id.videoBottomControls);
         bottomBar = findViewById(R.id.bottomBar);
         selectionBar = findViewById(R.id.selectionBar);
+        selectionTopBar = findViewById(R.id.selectionTopBar);
+        selectionCount = findViewById(R.id.selectionCount);
+
+        // ===== BIN SPECIFIC BOTTOM BAR =====
+        binBottomBar = findViewById(R.id.binBottomBar);
+        if (binBottomBar != null) {
+            TextView btnRestore = findViewById(R.id.btnRestore);
+            TextView btnDeletePermanent = findViewById(R.id.btnDeletePermanent);
+            if (btnRestore != null) {
+                btnRestore.setOnClickListener(v -> restoreSelectedItems());
+            }
+            if (btnDeletePermanent != null) {
+                btnDeletePermanent.setOnClickListener(v -> deletePermanentlySelectedItems());
+            }
+        }
+
+        // ===== SELECTION TOP BAR =====
+        ImageButton btnCloseSelection = findViewById(R.id.btnCloseSelection);
+        if (btnCloseSelection != null) {
+            btnCloseSelection.setOnClickListener(v -> clearSelection());
+        }
 
         ImageButton btnBack = findViewById(R.id.btnBackGallery);
-        btnBack.setOnClickListener(v -> finish());
+        btnBack.setOnClickListener(v -> {
+            if (showAlbums || currentAlbum != null) {
+                navigateBackFromAlbum();
+            } else {
+                finish();
+            }
+        });
 
+        // ===== BOTTOM BAR =====
         TextView btnHome = findViewById(R.id.btnHome);
         TextView btnAlbums = findViewById(R.id.btnAlbums);
         TextView btnSort = findViewById(R.id.btnSort);
         TextView btnBinSelected = findViewById(R.id.btnBinSelected);
         TextView btnShareSelected = findViewById(R.id.btnShareSelected);
-        TextView btnCopySelected = findViewById(R.id.btnCopySelected);
-        TextView btnMoveSelected = findViewById(R.id.btnMoveSelected);
+        TextView btnInfoSelected = findViewById(R.id.btnInfoSelected);
+        TextView btnFavoriteSelected = findViewById(R.id.btnFavoriteSelected);
 
+        // ===== SORT OPTIONS =====
         TextView sortImages = findViewById(R.id.sortImages);
         TextView sortVideos = findViewById(R.id.sortVideos);
         TextView sortFavorites = findViewById(R.id.sortFavorites);
         TextView sortBin = findViewById(R.id.sortBin);
 
+        // ===== CLICK LISTENERS =====
         btnHome.setOnClickListener(v -> {
             currentFilter = FilterMode.ALL;
             currentAlbum = null;
@@ -163,6 +202,7 @@ public class GalleryActivity extends AppCompatActivity {
             recyclerView.setVisibility(View.VISIBLE);
             applyFilter();
             sortOptions.setVisibility(View.GONE);
+            updateBarsVisibility();
         });
 
         btnAlbums.setOnClickListener(v -> {
@@ -178,6 +218,7 @@ public class GalleryActivity extends AppCompatActivity {
                 albumRecycler.setVisibility(View.VISIBLE);
                 sortOptions.setVisibility(View.GONE);
             }
+            updateBarsVisibility();
         });
 
         btnSort.setOnClickListener(v -> {
@@ -187,10 +228,14 @@ public class GalleryActivity extends AppCompatActivity {
                 sortOptions.setVisibility(View.VISIBLE);
             }
         });
-        btnBinSelected.setOnClickListener(v -> deleteSelectedItems());
+
+        btnBinSelected.setOnClickListener(v -> moveSelectedToTrash());
+
         btnShareSelected.setOnClickListener(v -> shareSelectedItems());
-        btnCopySelected.setOnClickListener(v -> Toast.makeText(this, "Copy (TODO)", Toast.LENGTH_SHORT).show());
-        btnMoveSelected.setOnClickListener(v -> Toast.makeText(this, "Move (TODO)", Toast.LENGTH_SHORT).show());
+
+        btnInfoSelected.setOnClickListener(v -> showSelectedItemInfo());
+
+        btnFavoriteSelected.setOnClickListener(v -> addSelectedToFavorites());
 
         sortImages.setOnClickListener(v -> {
             currentFilter = FilterMode.IMAGES;
@@ -198,6 +243,7 @@ public class GalleryActivity extends AppCompatActivity {
             titleView.setText("📷 Images");
             applyFilter();
             sortOptions.setVisibility(View.GONE);
+            updateBarsVisibility();
         });
 
         sortVideos.setOnClickListener(v -> {
@@ -206,6 +252,7 @@ public class GalleryActivity extends AppCompatActivity {
             titleView.setText("🎬 Videos");
             applyFilter();
             sortOptions.setVisibility(View.GONE);
+            updateBarsVisibility();
         });
 
         sortFavorites.setOnClickListener(v -> {
@@ -214,6 +261,7 @@ public class GalleryActivity extends AppCompatActivity {
             titleView.setText("⭐ Favorites");
             applyFilter();
             sortOptions.setVisibility(View.GONE);
+            updateBarsVisibility();
         });
 
         sortBin.setOnClickListener(v -> {
@@ -222,13 +270,135 @@ public class GalleryActivity extends AppCompatActivity {
             titleView.setText("🗑️ Bin");
             applyFilter();
             sortOptions.setVisibility(View.GONE);
+            updateBarsVisibility();
         });
 
         setupVideoControls();
         applyGlassmorphism(findViewById(R.id.bottomBar));
         applyGlassmorphism(sortOptions);
+        applyButtonBorders();
         checkAndRequestMediaPermissions();
+        // ===== TOP NAV BAR =====
+        View topNavBar = findViewById(R.id.topNavBar);
+        if (topNavBar != null) {
+            // Ensure back button is visible in all states except main gallery
+            updateTopNavBar();
+        }
     }
+
+    private void updateTopNavBar() {
+        ImageButton btnBack = findViewById(R.id.btnBackGallery);
+        TextView title = findViewById(R.id.titleGallery);
+
+        if (btnBack == null || title == null) return;
+
+        boolean showBack = currentFilter == FilterMode.BIN ||
+                currentAlbum != null ||
+                showAlbums;
+
+        btnBack.setVisibility(showBack ? View.VISIBLE : View.GONE);
+
+        if (currentFilter == FilterMode.BIN) {
+            title.setText("🗑️ Bin");
+        } else if (currentAlbum != null) {
+            title.setText("📁 " + currentAlbum);
+        } else if (showAlbums) {
+            title.setText("📁 Albums");
+        } else {
+            title.setText("Gallery");
+        }
+
+        btnBack.setOnClickListener(v -> {
+            if (currentFilter == FilterMode.BIN) {
+                currentFilter = FilterMode.ALL;
+                applyFilter();
+                updateTopNavBar();
+                updateBarsVisibility();
+            } else if (currentAlbum != null) {
+                navigateBackFromAlbum();
+            } else if (showAlbums) {
+                navigateBackFromAlbum();
+            } else {
+                finish();
+            }
+        });
+    }
+
+    // ===================== BARS VISIBILITY MANAGEMENT =====================
+
+    private void updateBarsVisibility() {
+        boolean isBin = currentFilter == FilterMode.BIN;
+        boolean isSelection = selectionMode && !isBin;
+
+        if (isBin) {
+            bottomBar.setVisibility(View.GONE);
+            selectionBar.setVisibility(View.GONE);
+            binBottomBar.setVisibility(selectedItems.isEmpty() ? View.GONE : View.VISIBLE);
+            if (selectionTopBar != null) selectionTopBar.setVisibility(View.GONE);
+        } else if (isSelection) {
+            bottomBar.setVisibility(View.GONE);
+            selectionBar.setVisibility(View.VISIBLE);
+            binBottomBar.setVisibility(View.GONE);
+            if (selectionTopBar != null) selectionTopBar.setVisibility(View.VISIBLE);
+            if (selectionCount != null) selectionCount.setText(selectedItems.size() + " selected");
+        } else {
+            bottomBar.setVisibility(View.VISIBLE);
+            selectionBar.setVisibility(View.GONE);
+            binBottomBar.setVisibility(View.GONE);
+            if (selectionTopBar != null) selectionTopBar.setVisibility(View.GONE);
+        }
+    }
+
+    // ===================== EMPTY STATE =====================
+
+    private void showEmptyState() {
+        if (displayedItems.isEmpty()) {
+            View emptyView = findViewById(R.id.emptyStateContainer);
+            if (emptyView != null) {
+                emptyView.setVisibility(View.VISIBLE);
+                TextView emptyText = findViewById(R.id.emptyStateText);
+                if (emptyText != null) {
+                    if (currentFilter == FilterMode.BIN) {
+                        emptyText.setText("No files in Bin");
+                    } else {
+                        emptyText.setText("No media found");
+                    }
+                }
+                recyclerView.setVisibility(View.GONE);
+            }
+        } else {
+            View emptyView = findViewById(R.id.emptyStateContainer);
+            if (emptyView != null) {
+                emptyView.setVisibility(View.GONE);
+                recyclerView.setVisibility(View.VISIBLE);
+            }
+        }
+    }
+
+    // ===================== NAVIGATION =====================
+
+    private void navigateBackFromAlbum() {
+        if (currentAlbum != null) {
+            currentAlbum = null;
+            showAlbums = true;
+            loadAlbums();
+            recyclerView.setVisibility(View.GONE);
+            albumRecycler.setVisibility(View.VISIBLE);
+            titleView.setText("Albums");
+            applyFilter();
+            updateBarsVisibility();
+        } else if (showAlbums) {
+            showAlbums = false;
+            currentFilter = FilterMode.ALL;
+            albumRecycler.setVisibility(View.GONE);
+            recyclerView.setVisibility(View.VISIBLE);
+            titleView.setText("Gallery");
+            applyFilter();
+            updateBarsVisibility();
+        }
+    }
+
+    // ===================== MEDIA LOADING =====================
 
     private void loadMedia() {
         executor.execute(() -> {
@@ -332,9 +502,12 @@ public class GalleryActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 applyFilter();
                 setupRecyclerView();
+                showEmptyState();
             });
         });
     }
+
+    // ===================== BIN SCAN METHODS =====================
 
     private List<MediaItem> scanForTrashedFiles() {
         List<MediaItem> trashedItems = new ArrayList<>();
@@ -557,6 +730,8 @@ public class GalleryActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
     }
 
+    // ===================== FILTER METHODS =====================
+
     private void applyFilter() {
         if (!isActivityAlive()) return;
 
@@ -631,8 +806,12 @@ public class GalleryActivity extends AppCompatActivity {
             adapter.updateItems(displayedItems);
             adapter.updateSelectedItems(selectedItems);
             updateSelectionUI();
+            showEmptyState();
+            updateTopNavBar();
         }
     }
+
+    // ===================== PERMISSIONS =====================
 
     private void checkAndRequestMediaPermissions() {
         String[] permissionsToRequest;
@@ -663,23 +842,29 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
+    // ===================== RECYCLER VIEW =====================
+
     private void setupRecyclerView() {
         if (!isActivityAlive()) return;
 
         if (displayedItems.isEmpty()) {
-            Toast.makeText(this, "No media found", Toast.LENGTH_SHORT).show();
+            showEmptyState();
             return;
         }
 
         adapter = new GalleryAdapter(this, displayedItems, selectedItems, new GalleryAdapter.OnItemClickListener() {
             @Override
             public void onImageClick(String path) {
-                if (!selectionMode && isActivityAlive()) openImageViewer(path);
+                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN) {
+                    openImageViewer(path);
+                }
             }
 
             @Override
             public void onVideoClick(String path) {
-                if (!selectionMode && isActivityAlive()) playVideo(path);
+                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN) {
+                    playVideo(path);
+                }
             }
 
             @Override
@@ -719,6 +904,8 @@ public class GalleryActivity extends AppCompatActivity {
         recyclerView.setDrawingCacheEnabled(true);
         recyclerView.setDrawingCacheQuality(View.DRAWING_CACHE_QUALITY_HIGH);
     }
+
+    // ===================== TRASH OPERATIONS =====================
 
     private void moveToTrash(MediaItem item) {
         if (item.isTrashed) {
@@ -834,12 +1021,80 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
+    private void moveSelectedToTrash() {
+        if (selectedItems.isEmpty()) return;
+
+        for (String path : selectedItems) {
+            for (MediaItem item : mediaItems) {
+                if (item.path.equals(path)) {
+                    moveToTrash(item);
+                    break;
+                }
+            }
+        }
+
+        clearSelection();
+        applyFilter();
+        Toast.makeText(this, "Moved " + selectedItems.size() + " items to Bin", Toast.LENGTH_SHORT).show();
+    }
+
+    private void restoreSelectedItems() {
+        if (selectedItems.isEmpty()) return;
+
+        List<MediaItem> itemsToRestore = new ArrayList<>();
+        for (String path : selectedItems) {
+            for (MediaItem item : mediaItems) {
+                if (item.path.equals(path) && item.isTrashed) {
+                    itemsToRestore.add(item);
+                    break;
+                }
+            }
+        }
+
+        for (MediaItem item : itemsToRestore) {
+            restoreFromTrash(item);
+        }
+
+        clearSelection();
+        applyFilter();
+        Toast.makeText(this, "Restored " + itemsToRestore.size() + " items", Toast.LENGTH_SHORT).show();
+    }
+
+    private void deletePermanentlySelectedItems() {
+        if (selectedItems.isEmpty()) return;
+
+        new AlertDialog.Builder(this)
+                .setTitle("Delete Permanently")
+                .setMessage("Are you sure you want to permanently delete " + selectedItems.size() + " items? This cannot be undone.")
+                .setPositiveButton("Delete", (dialog, which) -> {
+                    for (String path : selectedItems) {
+                        File file = new File(path);
+                        if (file.exists()) {
+                            file.delete();
+                        }
+                        for (int i = mediaItems.size() - 1; i >= 0; i--) {
+                            if (mediaItems.get(i).path.equals(path)) {
+                                mediaItems.remove(i);
+                                break;
+                            }
+                        }
+                    }
+                    clearSelection();
+                    applyFilter();
+                    Toast.makeText(this, "Deleted permanently", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private String cleanFileName(String name) {
         while (name.startsWith(".trashed.")) {
             name = name.substring(9);
         }
         return name;
     }
+
+    // ===================== SELECTION OPERATIONS =====================
 
     private void toggleSelection(String path) {
         if (selectedItems.contains(path)) {
@@ -857,17 +1112,27 @@ public class GalleryActivity extends AppCompatActivity {
     private void updateSelectionUI() {
         if (!isActivityAlive()) return;
 
+        boolean isBin = currentFilter == FilterMode.BIN;
+
         if (selectedItems.isEmpty()) {
             selectionMode = false;
-            if (bottomBar != null) bottomBar.setVisibility(View.VISIBLE);
+            if (bottomBar != null) bottomBar.setVisibility(isBin ? View.GONE : View.VISIBLE);
             if (selectionBar != null) selectionBar.setVisibility(View.GONE);
+            if (binBottomBar != null) binBottomBar.setVisibility(View.GONE);
+            if (selectionTopBar != null) selectionTopBar.setVisibility(View.GONE);
         } else {
             selectionMode = true;
             if (bottomBar != null) bottomBar.setVisibility(View.GONE);
-            if (selectionBar != null) selectionBar.setVisibility(View.VISIBLE);
-            TextView btnBin = findViewById(R.id.btnBinSelected);
-            if (btnBin != null) {
-                btnBin.setText("🗑️ Bin (" + selectedItems.size() + ")");
+            if (selectionBar != null) selectionBar.setVisibility(isBin ? View.GONE : View.VISIBLE);
+            if (binBottomBar != null) binBottomBar.setVisibility(isBin ? View.VISIBLE : View.GONE);
+            if (selectionTopBar != null) selectionTopBar.setVisibility(View.VISIBLE);
+            if (selectionCount != null) selectionCount.setText(selectedItems.size() + " selected");
+
+            if (!isBin) {
+                TextView btnBin = findViewById(R.id.btnBinSelected);
+                if (btnBin != null) {
+                    btnBin.setText("🗑️ Bin (" + selectedItems.size() + ")");
+                }
             }
         }
     }
@@ -875,17 +1140,162 @@ public class GalleryActivity extends AppCompatActivity {
     private void clearSelection() {
         selectedItems.clear();
         selectionMode = false;
-        bottomBar.setVisibility(View.VISIBLE);
-        selectionBar.setVisibility(View.GONE);
+        if (bottomBar != null) bottomBar.setVisibility(View.VISIBLE);
+        if (selectionBar != null) selectionBar.setVisibility(View.GONE);
+        if (binBottomBar != null) binBottomBar.setVisibility(View.GONE);
+        if (selectionTopBar != null) selectionTopBar.setVisibility(View.GONE);
+        if (adapter != null) {
+            adapter.updateSelectedItems(selectedItems);
+        }
     }
 
-    private void deleteSelectedItems() {
+    // ===================== SHARE / INFO / FAVORITES =====================
+
+    private void shareSelectedItems() {
         if (selectedItems.isEmpty()) return;
 
+        try {
+            if (selectedItems.size() == 1) {
+                File file = new File(selectedItems.get(0));
+                if (!file.exists()) {
+                    Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Uri uri = FileProvider.getUriForFile(this, BuildConfig.APPLICATION_ID + ".fileprovider", file);
+                Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                shareIntent.setType(getMimeType(file.getAbsolutePath()));
+                shareIntent.putExtra(Intent.EXTRA_STREAM, uri);
+                shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(shareIntent, "Share via"));
+            } else {
+                ArrayList<Uri> uris = new ArrayList<>();
+                for (String path : selectedItems) {
+                    File file = new File(path);
+                    if (file.exists()) {
+                        Uri uri = FileProvider.getUriForFile(this, BuildConfig.APPLICATION_ID + ".fileprovider", file);
+                        uris.add(uri);
+                    }
+                }
+
+                if (uris.isEmpty()) {
+                    Toast.makeText(this, "No valid files to share", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+
+                Intent shareIntent = new Intent(Intent.ACTION_SEND_MULTIPLE);
+                shareIntent.setType("*/*");
+                shareIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+                shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(shareIntent, "Share " + uris.size() + " files"));
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Error sharing: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            e.printStackTrace();
+        }
+    }
+
+    private String getMimeType(String path) {
+        String extension = path.substring(path.lastIndexOf(".") + 1).toLowerCase();
+        switch (extension) {
+            case "jpg":
+            case "jpeg":
+                return "image/jpeg";
+            case "png":
+                return "image/png";
+            case "gif":
+                return "image/gif";
+            case "mp4":
+                return "video/mp4";
+            case "avi":
+                return "video/avi";
+            case "mkv":
+                return "video/x-matroska";
+            case "mp3":
+                return "audio/mpeg";
+            default:
+                return "*/*";
+        }
+    }
+
+    private void showSelectedItemInfo() {
+        if (selectedItems.isEmpty()) return;
+
+        if (selectedItems.size() == 1) {
+            String path = selectedItems.get(0);
+            File file = new File(path);
+            if (!file.exists()) {
+                Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            StringBuilder info = new StringBuilder();
+            info.append("📁 Type: ").append(getFileType(path)).append("\n");
+            info.append("📏 Size: ").append(formatFileSize(file.length())).append("\n");
+            info.append("📅 Modified: ").append(new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
+                    .format(new Date(file.lastModified()))).append("\n");
+            info.append("📍 Path: ").append(file.getAbsolutePath());
+            showInfoDialog(info.toString(), "📄 File Info");
+        } else {
+            // Multi-select aggregate info
+            long totalSize = 0;
+            int imageCount = 0;
+            int videoCount = 0;
+
+            for (String path : selectedItems) {
+                File file = new File(path);
+                if (file.exists()) {
+                    totalSize += file.length();
+                    String type = getFileType(path);
+                    if (type.equals("Image")) imageCount++;
+                    else if (type.equals("Video")) videoCount++;
+                }
+            }
+
+            StringBuilder info = new StringBuilder();
+            info.append("📊 Selected: ").append(selectedItems.size()).append(" items\n");
+            info.append("📏 Total Size: ").append(formatFileSize(totalSize)).append("\n");
+            info.append("🖼️ Images: ").append(imageCount).append("\n");
+            info.append("🎬 Videos: ").append(videoCount).append("\n");
+            info.append("📍 Paths: ").append(selectedItems.size()).append(" files selected");
+
+            showInfoDialog(info.toString(), "📊 Multi-Select Info");
+        }
+    }
+
+    private void showInfoDialog(String info, String title) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        View view = LayoutInflater.from(this).inflate(R.layout.dialog_file_info, null);
+
+        TextView infoTitle = view.findViewById(R.id.infoTitle);
+        TextView infoContent = view.findViewById(R.id.infoContent);
+        Button infoClose = view.findViewById(R.id.infoClose);
+
+        if (infoTitle != null) infoTitle.setText(title);
+        if (infoContent != null) infoContent.setText(info);
+
+        builder.setView(view);
+        AlertDialog dialog = builder.create();
+
+        if (infoClose != null) {
+            infoClose.setOnClickListener(v -> dialog.dismiss());
+        }
+
+        dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+        dialog.getWindow().setLayout(
+                (int) (getResources().getDisplayMetrics().widthPixels * 0.85),
+                WindowManager.LayoutParams.WRAP_CONTENT
+        );
+        dialog.show();
+    }
+
+    private void addSelectedToFavorites() {
+        if (selectedItems.isEmpty()) return;
+
+        int count = 0;
         for (String path : selectedItems) {
             for (MediaItem item : mediaItems) {
-                if (item.path.equals(path)) {
-                    moveToTrash(item);
+                if (item.path.equals(path) && !item.isTrashed) {
+                    item.isFavorite = !item.isFavorite;
+                    count++;
                     break;
                 }
             }
@@ -893,59 +1303,41 @@ public class GalleryActivity extends AppCompatActivity {
 
         clearSelection();
         applyFilter();
-        Toast.makeText(this, "Moved " + selectedItems.size() + " items to Bin", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, count + " items added to favorites", Toast.LENGTH_SHORT).show();
     }
 
-    private void shareSelectedItems() {
-        if (selectedItems.isEmpty()) return;
-
-        String firstPath = selectedItems.get(0);
-        File file = new File(firstPath);
-
-        try {
-            Uri uri = FileProvider.getUriForFile(this, BuildConfig.APPLICATION_ID + ".fileprovider", file);
-            Intent shareIntent = new Intent(Intent.ACTION_SEND);
-            shareIntent.setType("*/*");
-            shareIntent.putExtra(Intent.EXTRA_STREAM, uri);
-            shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(shareIntent, "Share via"));
-        } catch (Exception e) {
-            Toast.makeText(this, "Error sharing file: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-            e.printStackTrace();
-        }
-    }
+    // ===================== IMAGE/VIDEO VIEWER =====================
 
     private void openImageViewer(String path) {
-        Intent intent = new Intent(this, ImageViewerActivity.class);
-        intent.putExtra("image_path", path);
+        List<String> mediaPaths = new ArrayList<>();
+        int currentIndex = 0;
+
+        for (int i = 0; i < displayedItems.size(); i++) {
+            MediaItem item = displayedItems.get(i);
+            if (!item.isTrashed) {
+                mediaPaths.add(item.path);
+                if (item.path.equals(path)) {
+                    currentIndex = mediaPaths.size() - 1;
+                }
+            }
+        }
+
+        if (mediaPaths.isEmpty()) {
+            Toast.makeText(this, "No media to view", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Intent intent = new Intent(this, FullscreenViewerActivity.class);
+        intent.putStringArrayListExtra("media_paths", (ArrayList<String>) mediaPaths);
+        intent.putExtra("current_position", currentIndex);
         startActivity(intent);
     }
 
     private void playVideo(String path) {
-        currentVideoPath = path;
-        isVideoPlaying = true;
-
-        findViewById(R.id.bottomBar).setVisibility(View.GONE);
-        findViewById(R.id.sortOptions).setVisibility(View.GONE);
-
-        videoPlayerContainer.setVisibility(View.VISIBLE);
-        videoView.setVideoPath(path);
-        videoView.start();
-        isPlaying = true;
-        controlsVisible = true;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
-        }
-
-        btnPlayPause.setImageResource(android.R.drawable.ic_media_pause);
-        btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
-
-        updateVideoProgress();
-        updateFavoriteButton(path);
-        showControls();
+        openImageViewer(path);
     }
+
+    // ===================== VIDEO CONTROLS =====================
 
     private void setupVideoControls() {
         videoPlayerContainer.setOnTouchListener((v, event) -> {
@@ -1127,6 +1519,8 @@ public class GalleryActivity extends AppCompatActivity {
         return String.format("%02d:%02d", minutes, seconds);
     }
 
+    // ===================== ALBUMS =====================
+
     private void loadAlbums() {
         executor.execute(() -> {
             List<String> albums = new ArrayList<>();
@@ -1169,12 +1563,16 @@ public class GalleryActivity extends AppCompatActivity {
             albumRecycler.setVisibility(View.GONE);
             recyclerView.setVisibility(View.VISIBLE);
             showAlbums = false;
+            updateBarsVisibility();
         });
 
         albumRecycler.setLayoutManager(new GridLayoutManager(this, 2));
         albumRecycler.setAdapter(albumAdapter);
         albumRecycler.setVisibility(View.VISIBLE);
+        titleView.setText("Albums");
     }
+
+    // ===================== UTILITY METHODS =====================
 
     private void updateFavoriteButton(String path) {
         for (MediaItem item : mediaItems) {
@@ -1196,7 +1594,7 @@ public class GalleryActivity extends AppCompatActivity {
                 .format(new Date(file.lastModified()))).append("\n");
         info.append("🔤 Type: ").append(getFileType(path));
 
-        Toast.makeText(this, info.toString(), Toast.LENGTH_LONG).show();
+        showInfoDialog(info.toString(), "📄 File Info");
     }
 
     private String formatFileSize(long size) {
@@ -1209,8 +1607,8 @@ public class GalleryActivity extends AppCompatActivity {
     private String getFileType(String path) {
         if (path == null) return "Unknown";
         String ext = path.substring(path.lastIndexOf(".") + 1).toLowerCase();
-        if (ext.matches("jpg|jpeg|png|gif|bmp|webp")) return "Image";
-        if (ext.matches("mp4|avi|mkv|mov|wmv|flv|3gp")) return "Video";
+        if (ext.matches("jpg|jpeg|png|gif|bmp|webp|heic|heif")) return "Image";
+        if (ext.matches("mp4|avi|mkv|mov|wmv|flv|3gp|webm|m4v")) return "Video";
         return "Unknown";
     }
 
@@ -1225,18 +1623,39 @@ public class GalleryActivity extends AppCompatActivity {
         view.setElevation(12);
     }
 
-    private void refreshMediaStore(String path) {
-        try {
-            MediaScannerConnection.scanFile(this, new String[]{path}, null, new MediaScannerConnection.OnScanCompletedListener() {
-                @Override
-                public void onScanCompleted(String path, Uri uri) {
-                    runOnUiThread(() -> {
-                        loadMedia();
-                    });
-                }
-            });
-        } catch (Exception ignored) {}
+    private void applyButtonBorders() {
+        int[] buttonIds = {
+                R.id.btnHome, R.id.btnAlbums, R.id.btnSort,
+                R.id.btnBinSelected, R.id.btnShareSelected, R.id.btnInfoSelected, R.id.btnFavoriteSelected,
+                R.id.btnRestore, R.id.btnDeletePermanent,
+                R.id.sortImages, R.id.sortVideos, R.id.sortFavorites, R.id.sortBin
+        };
+
+        for (int id : buttonIds) {
+            View view = findViewById(id);
+            if (view instanceof TextView) {
+                TextView tv = (TextView) view;
+                GradientDrawable border = new GradientDrawable();
+                border.setShape(GradientDrawable.RECTANGLE);
+                border.setCornerRadius(8);
+                border.setStroke(1, Color.WHITE);
+                border.setColor(Color.TRANSPARENT);
+                tv.setBackground(border);
+                tv.setPadding(16, 8, 16, 8);
+            }
+        }
     }
+
+    private String normalizePath(String path) {
+        try {
+            File file = new File(path);
+            return file.getCanonicalPath();
+        } catch (Exception e) {
+            return path;
+        }
+    }
+
+    // ===================== LIFECYCLE METHODS =====================
 
     @Override
     public void onBackPressed() {
@@ -1253,11 +1672,18 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
+        if (currentAlbum != null) {
+            navigateBackFromAlbum();
+            return;
+        }
+
         if (showAlbums) {
-            showAlbums = false;
-            albumRecycler.setVisibility(View.GONE);
-            recyclerView.setVisibility(View.VISIBLE);
-            applyFilter();
+            navigateBackFromAlbum();
+            return;
+        }
+
+        if (selectionMode) {
+            clearSelection();
             return;
         }
 
@@ -1280,24 +1706,7 @@ public class GalleryActivity extends AppCompatActivity {
         executor.shutdown();
     }
 
-    private String normalizePath(String path) {
-        try {
-            File file = new File(path);
-            return file.getCanonicalPath();
-        } catch (Exception e) {
-            return path;
-        }
-    }
-
-    private boolean isSameStorageLocation(File file1, File file2) {
-        try {
-            String path1 = file1.getCanonicalPath();
-            String path2 = file2.getCanonicalPath();
-            return path1.equals(path2);
-        } catch (Exception e) {
-            return file1.getAbsolutePath().equals(file2.getAbsolutePath());
-        }
-    }
+    // ===================== INNER CLASS =====================
 
     public static class MediaItem {
         public static final int TYPE_IMAGE = 0;
