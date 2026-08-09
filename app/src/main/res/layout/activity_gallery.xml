@@ -1,0 +1,420 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent"
+    android:clickable="true"
+    android:focusable="true">
+
+    <!-- Back Button -->
+    <ImageButton
+        android:id="@+id/btnBackGallery"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:src="@drawable/ic_back"
+        android:background="#00000000"
+        android:layout_alignParentTop="true"
+        android:layout_alignParentStart="true"
+        android:padding="16dp"
+        android:visibility="gone"
+        app:tint="#FFFFFF" />
+
+    <!-- Title -->
+    <TextView
+        android:id="@+id/titleGallery"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerHorizontal="true"
+        android:layout_alignParentTop="true"
+        android:layout_marginTop="16dp"
+        android:text="Gallery"
+        android:textSize="22sp"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <!-- Gallery Grid -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/galleryRecycler"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_below="@+id/btnBackGallery"
+        android:layout_above="@+id/bottomBar"
+        android:padding="4dp"
+        android:clipToPadding="false" />
+
+    <!-- Album Grid -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/albumRecycler"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_below="@+id/btnBackGallery"
+        android:layout_above="@+id/bottomBar"
+        android:visibility="gone"
+        android:padding="8dp" />
+
+    <!-- Bottom Bar -->
+    <LinearLayout
+        android:id="@+id/bottomBar"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:layout_alignParentBottom="true"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:background="#33FFFFFF"
+        android:elevation="16dp"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/btnHome"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="🏠 Home"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:background="#00000000" />
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/btnAlbums"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="📁 Albums"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:background="#00000000" />
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/btnSort"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="🔽 Sort"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:background="#00000000" />
+
+    </LinearLayout>
+
+    <!-- Selection Bottom Bar -->
+    <LinearLayout
+        android:id="@+id/selectionBar"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:layout_alignParentBottom="true"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:background="#33FFFFFF"
+        android:elevation="16dp"
+        android:padding="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/btnBinSelected"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="🗑️ Bin"
+            android:textColor="#FF4444"
+            android:textSize="14sp"
+            android:background="#00000000" />
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/btnShareSelected"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="📤 Share"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:background="#00000000" />
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/btnCopySelected"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="📋 Copy (TODO)"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:background="#00000000" />
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/btnMoveSelected"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="📁 Move (TODO)"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:background="#00000000" />
+
+    </LinearLayout>
+
+    <!-- Sort Options -->
+    <LinearLayout
+        android:id="@+id/sortOptions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_above="@+id/bottomBar"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:background="#33FFFFFF"
+        android:padding="8dp"
+        android:elevation="12dp">
+
+        <TextView
+            android:id="@+id/sortImages"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:text="🖼️ Images"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:padding="8dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/sortVideos"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:text="🎬 Videos"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:padding="8dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/sortFavorites"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:text="⭐ Favorites"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:padding="8dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:id="@+id/sortBin"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:text="🗑️ Bin"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:padding="8dp" />
+
+    </LinearLayout>
+
+    <!-- Video Player Overlay - FULLSCREEN -->
+    <RelativeLayout
+        android:id="@+id/videoPlayerContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:background="#CC000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:fitsSystemWindows="false">
+
+        <!-- VideoView - Fullscreen no margins, fills entire screen -->
+        <VideoView
+            android:id="@+id/videoView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_centerInParent="true"
+            android:layout_alignParentTop="true"
+            android:layout_alignParentBottom="true" />
+
+        <!-- ===== CENTER CONTROLS (At center of screen) ===== -->
+        <LinearLayout
+            android:id="@+id/videoCenterControls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerInParent="true"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="#00000000"
+            android:padding="24dp"
+            android:elevation="24dp"
+            android:visibility="gone">
+
+            <ImageButton
+                android:id="@+id/btnSkipBackward"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:src="@drawable/ic_skip_back"
+                android:background="#00000000"
+                app:tint="#FFFFFF"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btnCenterPlayPause"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:src="@android:drawable/ic_media_play"
+                android:background="#00000000"
+                app:tint="#FFFFFF"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btnSkipForward"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:src="@drawable/ic_skip_forward"
+                android:background="#00000000"
+                app:tint="#FFFFFF"
+                android:scaleType="centerInside" />
+
+        </LinearLayout>
+
+        <!-- ===== BOTTOM CONTROLS (At bottom of screen) ===== -->
+        <LinearLayout
+            android:id="@+id/videoBottomControls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentBottom="true"
+            android:layout_marginBottom="16dp"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:padding="12dp"
+            android:background="#00000000"
+            android:visibility="gone">
+
+            <ImageButton
+                android:id="@+id/btnFavorite"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:src="@drawable/ic_star_empty"
+                android:background="#00000000"
+                app:tint="#FFD700"
+                android:layout_marginEnd="4dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btnDelete"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:src="@drawable/ic_delete"
+                android:background="#00000000"
+                app:tint="#FF4444"
+                android:layout_marginEnd="4dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btnPlayPause"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1.5"
+                android:src="@android:drawable/ic_media_play"
+                android:background="#00000000"
+                app:tint="#FFFFFF"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="8dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btnRotate"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:src="@drawable/ic_rotate"
+                android:background="#00000000"
+                app:tint="#FFFFFF"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btnInfo"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:src="@drawable/ic_info"
+                android:background="#00000000"
+                app:tint="#FFFFFF"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:scaleType="centerInside" />
+
+            <ImageButton
+                android:id="@+id/btnCloseVideo"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:src="@drawable/ic_close"
+                android:background="#00000000"
+                app:tint="#FFFFFF"
+                android:layout_marginStart="4dp"
+                android:scaleType="centerInside" />
+
+        </LinearLayout>
+
+        <!-- Video Time -->
+        <TextView
+            android:id="@+id/videoTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_above="@+id/videoBottomControls"
+            android:layout_centerHorizontal="true"
+            android:layout_marginBottom="8dp"
+            android:text="00:00 / 00:00"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+    </RelativeLayout>
+
+</RelativeLayout>

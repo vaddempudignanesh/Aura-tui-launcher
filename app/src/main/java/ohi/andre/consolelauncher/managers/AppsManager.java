@@ -39,6 +39,7 @@ import java.util.regex.Pattern;
 
 import it.andreuzzi.comparestring2.StringableObject;
 import ohi.andre.consolelauncher.CalculatorActivity;
+import ohi.andre.consolelauncher.GalleryActivity;
 import ohi.andre.consolelauncher.MainManager;
 import ohi.andre.consolelauncher.R;
 import ohi.andre.consolelauncher.UIManager;
@@ -563,6 +564,17 @@ public class AppsManager implements XMLPrefsElement {
             } catch (Exception e) {
                 android.util.Log.e("AppsManager", "Error launching calculator", e);
                 // Fallback to normal app launch
+            }
+        }
+
+        if (label.equals("gallery") || label.equals("gal") ||
+                label.contains("gallery") || packageName.contains("gallery")) {
+            try {
+                Intent galleryIntent = new Intent(context, GalleryActivity.class);
+                galleryIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                return galleryIntent;
+            } catch (Exception e) {
+                android.util.Log.e("AppsManager", "Error launching gallery", e);
             }
         }
 
