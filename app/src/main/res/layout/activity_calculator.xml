@@ -4,28 +4,21 @@
     android:id="@+id/calc_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent">
+    android:background="@android:color/transparent"
+    android:padding="16dp">
 
-    <!--
-        BLUR TARGET LAYER
-        This is the view that RenderEffect blurs. It must render whatever is
-        behind the calculator (launcher UI / wallpaper) so the frosted effect
-        has something to blur. If your launcher root already draws that content
-        behind calc_root, you can instead call GlassBlurHelper on calc_root's
-        parent decor view directly from the Activity — see notes below.
-    -->
+    <!-- BLUR TARGET - make it match parent and behind glass -->
     <View
         android:id="@+id/blur_target"
-        android:layout_width="300dp"
-        android:layout_height="200dp"
-        android:layout_centerInParent="true"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:background="@android:color/transparent" />
 
-    <!-- GLASS PANEL (matches your CSS: border-radius 60px, translucent tint) -->
+    <!-- GLASS PANEL - full width, wrap content height -->
     <RelativeLayout
         android:id="@+id/glass_panel"
-        android:layout_width="300dp"
-        android:layout_height="200dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
         android:layout_centerInParent="true"
         android:background="@drawable/bg_glass_panel"
         android:padding="20dp"
@@ -36,12 +29,12 @@
             android:id="@+id/btn_back"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:src="@android:drawable/ic_menu_revert"
+            android:src="@drawable/ic_back"
             android:background="#33FFFFFF"
             android:layout_alignParentTop="true"
             android:layout_alignParentStart="true"
             android:padding="8dp"
-            app:tint="#FFFFFF" />
+            android:tint="#FFFFFF" />
 
         <!-- Display -->
         <TextView
@@ -50,7 +43,7 @@
             android:layout_height="80dp"
             android:layout_below="@id/btn_back"
             android:layout_marginTop="4dp"
-            android:background="@android:color/transparent"
+            android:background="#0DFFFFFF"
             android:gravity="end|center_vertical"
             android:padding="16dp"
             android:text="0"
