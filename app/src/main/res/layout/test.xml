@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent"
+    android:padding="16dp">
+
+    <!-- Background Horizontal Lines -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/transparent" />
+
+    <!-- Glass Container with Border -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="#0FFFFFFF"
+        android:padding="2dp"
+        android:elevation="24dp">
+
+        <!-- Inner Content -->
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#0FFFFFFF"
+            android:padding="18dp">
+
+            <!-- Your buttons here... -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="80dp"
+                android:background="#0FFFFFFF"
+                android:gravity="end|center_vertical"
+                android:padding="16dp"
+                android:text="0"
+                android:textSize="40sp"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold" />
+
+            <!-- GridLayout with buttons... -->
+            <GridLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:columnCount="4"
+                android:rowCount="5">
+
+                <!-- All buttons with transparent background -->
+                <Button
+                    android:layout_width="0dp"
+                    android:layout_height="75dp"
+                    android:layout_columnWeight="1"
+                    android:layout_margin="6dp"
+                    android:background="#0FFFFFFF"
+                    android:elevation="12dp"
+                    android:gravity="center"
+                    android:text="7"
+                    android:textColor="#FFFFFF"
+                    android:textSize="28sp"
+                    android:textStyle="bold" />
+
+                <!-- Add all other buttons similarly -->
+
+            </GridLayout>
+        </RelativeLayout>
+    </RelativeLayout>
+
+</FrameLayout>

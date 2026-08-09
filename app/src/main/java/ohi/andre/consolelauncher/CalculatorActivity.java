@@ -4,6 +4,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageButton;
@@ -18,6 +19,7 @@ import java.util.List;
 public class CalculatorActivity extends AppCompatActivity {
 
     private TextView display;
+    private View blurTarget;
     private String currentInput = "";
     private String operator = "";
     private double firstNumber = 0;
@@ -44,11 +46,46 @@ public class CalculatorActivity extends AppCompatActivity {
         View root = findViewById(R.id.calc_root);
         root.setBackgroundColor(Color.TRANSPARENT);
 
+        // The view whose rendered content gets frosted-glass blurred.
+        // It sits directly behind the glass_panel, so it shows/blurs
+        // whatever is drawn beneath it (launcher UI / wallpaper).
+        blurTarget = findViewById(R.id.blur_target);
+        applyFrostedGlassBlur();
+
         display = findViewById(R.id.calc_display);
         display.setSelected(true);
 
         setupButtons();
         updateDisplay();
+    }
+
+    /**
+     * Applies the true real-time blur (RenderEffect, API 31+).
+     * minSdk is 32 in this project, so this always runs on real devices,
+     * but we still keep the version guard for safety/lint.
+     */
+    private void applyFrostedGlassBlur() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && blurTarget != null) {
+            blurTarget.getViewTreeObserver().addOnGlobalLayoutListener(
+                    new ViewTreeObserver.OnGlobalLayoutListener() {
+                        @Override
+                        public void onGlobalLayout() {
+                            GlassBlurHelper.applyBlur(blurTarget);
+                            blurTarget.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                        }
+                    }
+            );
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // Some launcher window configs drop the RenderEffect on redraw;
+        // reapplying on focus regain keeps the frost consistent.
+        if (hasFocus && blurTarget != null) {
+            GlassBlurHelper.applyBlur(blurTarget);
+        }
     }
 
     // Static method to get history
