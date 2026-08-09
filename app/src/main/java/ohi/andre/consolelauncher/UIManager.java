@@ -900,7 +900,7 @@ public class UIManager implements OnTouchListener {
         if (!XMLPrefsManager.getBoolean(Ui.system_wallpaper) || !canApplyTheme) {
             rootView.setBackgroundColor(XMLPrefsManager.getColor(Theme.bg_color));
         } else {
-            rootView.setBackgroundColor(XMLPrefsManager.getColor(Theme.overlay_color));
+            rootView.setBackgroundColor(Color.TRANSPARENT);
         }
 
 //        scrolllllll
