@@ -88,6 +88,7 @@ public class CalculatorActivity extends AppCompatActivity {
         }
     }
 
+
     // Static method to get history
     public static String getHistory() {
         if (historyList.isEmpty()) {
