@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 import it.andreuzzi.comparestring2.StringableObject;
+import ohi.andre.consolelauncher.CalculatorActivity;
 import ohi.andre.consolelauncher.MainManager;
 import ohi.andre.consolelauncher.R;
 import ohi.andre.consolelauncher.UIManager;
@@ -533,6 +534,40 @@ public class AppsManager implements XMLPrefsElement {
     }
 
     public Intent getIntent(final LaunchInfo info) {
+        // Add logging
+        android.util.Log.d("AppsManager", "getIntent called for: " + info.publicLabel);
+        android.util.Log.d("AppsManager", "Package: " + info.componentName.getPackageName());
+        android.util.Log.d("AppsManager", "Class: " + info.componentName.getClassName());
+
+        // Check if it's calculator - check label and package
+        String label = info.publicLabel.toLowerCase();
+        String packageName = info.componentName.getPackageName().toLowerCase();
+
+        android.util.Log.d("AppsManager", "Label: " + label);
+        android.util.Log.d("AppsManager", "Package: " + packageName);
+
+        if (label.equals("calculator") ||
+                label.equals("calc") ||
+                label.contains("calculator") ||
+                packageName.contains("calculator") ||
+                packageName.contains("calc")) {
+
+            android.util.Log.d("AppsManager", "MATCH FOUND! Launching CalculatorActivity");
+
+            // Launch built-in calculator instead
+            try {
+                Intent calcIntent = new Intent(context, CalculatorActivity.class);
+                calcIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                android.util.Log.d("AppsManager", "CalculatorIntent created successfully");
+                return calcIntent;
+            } catch (Exception e) {
+                android.util.Log.e("AppsManager", "Error launching calculator", e);
+                // Fallback to normal app launch
+            }
+        }
+
+        android.util.Log.d("AppsManager", "No match, launching normal app");
+
         info.launchedTimes++;
         new StoppableThread() {
             @Override
@@ -544,7 +579,7 @@ public class AppsManager implements XMLPrefsElement {
             }
         }.start();
 
-       return new Intent(Intent.ACTION_MAIN)
+        return new Intent(Intent.ACTION_MAIN)
                 .addCategory(Intent.CATEGORY_LAUNCHER)
                 .setComponent(info.componentName)
                 .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);

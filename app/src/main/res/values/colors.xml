@@ -7,4 +7,10 @@
 
     <color name="hint_color">#AAA</color>
 
+
+    <color name="glass_bg">#0FFFFFFF</color> <!-- 6% white - EXACT match -->
+    <color name="glass_input">#33FFFFFF</color>
+    <color name="glass_button">#66FFFFFF</color>
+    <color name="glass_button_op">#33E0E0E0</color>
+
 </resources>

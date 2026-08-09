@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Outer Shadow -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#2E000000" />
+            <corners android:radius="60dp" />
+        </shape>
+    </item>
+
+    <!-- Refraction Edge -->
+    <item
+        android:bottom="2dp"
+        android:left="2dp"
+        android:right="2dp"
+        android:top="2dp">
+        <shape android:shape="rectangle">
+            <stroke
+                android:width="2dp"
+                android:color="#73FFFFFF" />
+            <corners android:radius="58dp" />
+        </shape>
+    </item>
+
+    <!-- 100% Transparent Inner Glass -->
+    <item
+        android:bottom="4dp"
+        android:left="4dp"
+        android:right="4dp"
+        android:top="4dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#00000000" />
+            <corners android:radius="56dp" />
+        </shape>
+    </item>
+
+</layer-list>
