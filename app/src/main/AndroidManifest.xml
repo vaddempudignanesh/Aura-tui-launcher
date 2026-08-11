@@ -309,7 +309,7 @@
         <activity
             android:name=".FullscreenViewerActivity"
             android:theme="@style/Theme.AppCompat.NoActionBar"
-            android:configChanges="orientation|screenSize"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="portrait"
             android:exported="false" />
     </application>

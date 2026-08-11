@@ -909,13 +909,11 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void moveToTrash(MediaItem item) {
         if (item.isTrashed) {
-            Toast.makeText(this, "File is already in Bin", Toast.LENGTH_SHORT).show();
             return;
         }
 
         File file = new File(item.path);
         if (!file.exists()) {
-            Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -963,9 +961,7 @@ public class GalleryActivity extends AppCompatActivity {
             }
 
             applyFilter();
-            Toast.makeText(this, "Moved to Bin: " + cleanName, Toast.LENGTH_SHORT).show();
-        } else {
-            Toast.makeText(this, "Failed to move to Bin", Toast.LENGTH_SHORT).show();
+            // No Toast - just update UI
         }
     }
 
@@ -1287,24 +1283,7 @@ public class GalleryActivity extends AppCompatActivity {
         dialog.show();
     }
 
-    private void addSelectedToFavorites() {
-        if (selectedItems.isEmpty()) return;
 
-        int count = 0;
-        for (String path : selectedItems) {
-            for (MediaItem item : mediaItems) {
-                if (item.path.equals(path) && !item.isTrashed) {
-                    item.isFavorite = !item.isFavorite;
-                    count++;
-                    break;
-                }
-            }
-        }
-
-        clearSelection();
-        applyFilter();
-        Toast.makeText(this, count + " items added to favorites", Toast.LENGTH_SHORT).show();
-    }
 
     // ===================== IMAGE/VIDEO VIEWER =====================
 
@@ -1728,5 +1707,33 @@ public class GalleryActivity extends AppCompatActivity {
             this.isTrashed = isTrashed;
             this.album = album;
         }
+    }
+
+
+
+    private void toggleFavorite(MediaItem item) {
+        if (item == null) return;
+        item.isFavorite = !item.isFavorite;
+        applyFilter();
+        // No Toast - just update UI
+    }
+
+    private void addSelectedToFavorites() {
+        if (selectedItems.isEmpty()) return;
+
+        int count = 0;
+        for (String path : selectedItems) {
+            for (MediaItem item : mediaItems) {
+                if (item.path.equals(path) && !item.isTrashed) {
+                    item.isFavorite = true;
+                    count++;
+                    break;
+                }
+            }
+        }
+
+        clearSelection();
+        applyFilter();
+        // No Toast - just update UI
     }
 }

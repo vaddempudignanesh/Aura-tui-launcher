@@ -9,6 +9,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
 import android.widget.RelativeLayout;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
 import java.io.File;
 import java.util.List;
@@ -68,11 +69,18 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         holder.imageView.setImageBitmap(null);
         holder.imageView.setTag(null);
         holder.videoIcon.setVisibility(View.GONE);
-        holder.favIcon.setVisibility(item.isFavorite ? View.VISIBLE : View.INVISIBLE);
         holder.checkIcon.setVisibility(View.GONE);
         holder.videoOverlay.setVisibility(View.GONE);
 
-        // Show video overlay for videos in Bin
+        // Update favorite icon color based on state
+        if (item.isFavorite) {
+            holder.favIcon.setColorFilter(ContextCompat.getColor(context, android.R.color.holo_orange_dark));
+            holder.favIcon.setVisibility(View.VISIBLE);
+        } else {
+            holder.favIcon.clearColorFilter();
+            holder.favIcon.setVisibility(View.INVISIBLE);
+        }
+
         if (item.isTrashed && item.type == GalleryActivity.MediaItem.TYPE_VIDEO) {
             holder.videoOverlay.setVisibility(View.VISIBLE);
         }
@@ -91,7 +99,6 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
                     listener.onRestore(item);
                 }
             });
-            holder.favIcon.setVisibility(View.GONE);
             holder.videoIcon.setVisibility(View.GONE);
         } else {
             holder.itemView.setOnClickListener(v -> {
