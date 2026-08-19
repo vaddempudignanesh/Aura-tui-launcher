@@ -274,8 +274,6 @@ public class GalleryActivity extends AppCompatActivity {
         });
 
         setupVideoControls();
-        applyGlassmorphism(findViewById(R.id.bottomBar));
-        applyGlassmorphism(sortOptions);
         applyButtonBorders();
         checkAndRequestMediaPermissions();
         // ===== TOP NAV BAR =====

@@ -3,7 +3,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent"
+    android:background="#FF000000"
     android:clickable="true"
     android:focusable="true">
 
@@ -12,7 +12,7 @@
         android:id="@+id/topNavBar"
         android:layout_width="match_parent"
         android:layout_height="56dp"
-        android:background="@drawable/bg_glassmorphism"
+        android:background="#FF000000"
         android:elevation="12dp"
         android:visibility="visible">
 
@@ -43,7 +43,7 @@
         android:id="@+id/selectionTopBar"
         android:layout_width="match_parent"
         android:layout_height="56dp"
-        android:background="@drawable/bg_glassmorphism"
+        android:background="#FF000000"
         android:visibility="gone"
         android:elevation="12dp">
 
@@ -108,63 +108,41 @@
         android:layout_above="@+id/bottomBar"
         android:visibility="gone"
         android:padding="8dp" />
-
     <!-- ===== BOTTOM BAR (HOME) ===== -->
     <LinearLayout
         android:id="@+id/bottomBar"
         android:layout_width="match_parent"
-        android:layout_height="60dp"
+        android:layout_height="70dp"
         android:layout_alignParentBottom="true"
         android:orientation="horizontal"
         android:gravity="center"
-        android:background="@drawable/bg_bottom_bar"
+        android:background="#FF000000"
         android:elevation="16dp"
-        android:padding="8dp">
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
 
         <TextView
             android:id="@+id/btnHome"
             style="@style/BottomBarButton"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="🏠 Home"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp" />
-
-        <View
-            android:layout_width="1dp"
-            android:layout_height="match_parent"
-            android:background="#33FFFFFF" />
+            android:layout_marginEnd="6dp"
+            android:text="🏠 Home" />
 
         <TextView
             android:id="@+id/btnAlbums"
             style="@style/BottomBarButton"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="📁 Albums"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp" />
-
-        <View
-            android:layout_width="1dp"
-            android:layout_height="match_parent"
-            android:background="#33FFFFFF" />
+            android:layout_marginStart="6dp"
+            android:layout_marginEnd="6dp"
+            android:text="📁 Albums" />
 
         <TextView
             android:id="@+id/btnSort"
             style="@style/BottomBarButton"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="🔽 Sort"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp" />
-    </LinearLayout>
+            android:layout_marginStart="6dp"
+            android:text="🔽 Sort" />
 
+    </LinearLayout>
     <!-- ===== SELECTION BOTTOM BAR ===== -->
     <LinearLayout
         android:id="@+id/selectionBar"
@@ -173,7 +151,7 @@
         android:layout_alignParentBottom="true"
         android:orientation="horizontal"
         android:gravity="center"
-        android:background="@drawable/bg_bottom_bar"
+        android:background="#FF000000"
         android:elevation="16dp"
         android:padding="8dp"
         android:visibility="gone">
@@ -246,7 +224,7 @@
         android:layout_alignParentBottom="true"
         android:orientation="horizontal"
         android:gravity="center"
-        android:background="@drawable/bg_bottom_bar"
+        android:background="#FF000000"
         android:elevation="16dp"
         android:padding="8dp"
         android:visibility="gone">
@@ -287,7 +265,7 @@
         android:layout_above="@+id/bottomBar"
         android:orientation="vertical"
         android:visibility="gone"
-        android:background="@drawable/bg_glassmorphism"
+        android:background="#FF000000"
         android:padding="8dp"
         android:elevation="12dp">
 
@@ -419,7 +397,7 @@
             android:orientation="horizontal"
             android:gravity="center"
             android:padding="12dp"
-            android:background="#00000000"
+            android:background="#FF000000"
             android:visibility="gone">
 
             <ImageButton
@@ -468,7 +446,7 @@
                 android:layout_height="40dp"
                 android:layout_weight="1"
                 android:src="@drawable/ic_info"
-                android:background="#00000000"
+                android:background="#FF000000"
                 app:tint="#FFFFFF"
                 android:scaleType="centerInside" />
 

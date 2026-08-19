@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Selected state with white glow -->
+    <item android:state_selected="true">
+        <layer-list>
+            <!-- Outer glow -->
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="#1AFFFFFF" />
+                    <corners android:radius="10dp" />
+                </shape>
+            </item>
+            <!-- Main background -->
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="#FF000000" />
+                    <stroke
+                        android:width="2dp"
+                        android:color="#FFFFFF" />
+                    <corners android:radius="10dp" />
+                </shape>
+            </item>
+            <!-- Inner glow -->
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="#33FFFFFF" />
+                    <corners android:radius="10dp" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <!-- Pressed state -->
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#FF000000" />
+            <stroke
+                android:width="1.5dp"
+                android:color="#88FFFFFF" />
+            <corners android:radius="10dp" />
+        </shape>
+    </item>
+
+    <!-- Default state -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#FF000000" />
+            <stroke
+                android:width="1.5dp"
+                android:color="#FFFFFF" />
+            <corners android:radius="10dp" />
+        </shape>
+    </item>
+</selector>
