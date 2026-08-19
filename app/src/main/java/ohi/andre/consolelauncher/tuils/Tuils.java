@@ -1473,13 +1473,32 @@ public class Tuils {
     }
 
     private static final int FILEUPDATE_DELAY = 100;
+
     private static File folder = null;
 
     public static void init(Context context) {
         if (folder != null) return;
-        folder = context.getExternalFilesDir(null);
-        if (folder == null) {
-            folder = context.getFilesDir();
+
+        // Always use /storage/emulated/0/T-ui/ for all builds
+        try {
+            File externalDir = Environment.getExternalStorageDirectory();
+            folder = new File(externalDir, "T-ui");
+
+            if (!folder.exists()) {
+                if (!folder.mkdirs()) {
+                    // If can't create, fallback to app-specific directory
+                    folder = context.getExternalFilesDir(null);
+                    if (folder == null) {
+                        folder = context.getFilesDir();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Fallback if external storage is not accessible
+            folder = context.getExternalFilesDir(null);
+            if (folder == null) {
+                folder = context.getFilesDir();
+            }
         }
     }
 
@@ -1487,6 +1506,8 @@ public class Tuils {
         if(folder != null) return folder;
         return null;
     }
+
+
 
     public static int alphabeticCompare(String s1, String s2) {
         String cmd1 = removeSpaces(s1).toLowerCase();
