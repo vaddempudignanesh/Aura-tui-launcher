@@ -194,6 +194,7 @@ public class GalleryActivity extends AppCompatActivity {
 
         // ===== CLICK LISTENERS =====
         btnHome.setOnClickListener(v -> {
+            animateButtonBounce(v); // Add this line
             currentFilter = FilterMode.ALL;
             currentAlbum = null;
             titleView.setText("Gallery");
@@ -206,6 +207,7 @@ public class GalleryActivity extends AppCompatActivity {
         });
 
         btnAlbums.setOnClickListener(v -> {
+            animateButtonBounce(v); // Add this line
             if (showAlbums) {
                 showAlbums = false;
                 albumRecycler.setVisibility(View.GONE);
@@ -222,6 +224,7 @@ public class GalleryActivity extends AppCompatActivity {
         });
 
         btnSort.setOnClickListener(v -> {
+            animateButtonBounce(v); // Add this line
             if (sortOptions.getVisibility() == View.VISIBLE) {
                 sortOptions.setVisibility(View.GONE);
             } else {
@@ -274,7 +277,6 @@ public class GalleryActivity extends AppCompatActivity {
         });
 
         setupVideoControls();
-        applyButtonBorders();
         checkAndRequestMediaPermissions();
         // ===== TOP NAV BAR =====
         View topNavBar = findViewById(R.id.topNavBar);
@@ -284,6 +286,12 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
+
+    private void animateButtonBounce(View button) {
+        if (button == null) return;
+        android.view.animation.Animation bounce = android.view.animation.AnimationUtils.loadAnimation(this, R.anim.bounce_animation);
+        button.startAnimation(bounce);
+    }
     private void updateTopNavBar() {
         ImageButton btnBack = findViewById(R.id.btnBackGallery);
         TextView title = findViewById(R.id.titleGallery);

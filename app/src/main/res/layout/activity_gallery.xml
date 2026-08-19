@@ -109,10 +109,11 @@
         android:visibility="gone"
         android:padding="8dp" />
     <!-- ===== BOTTOM BAR (HOME) ===== -->
+    <!-- ===== BOTTOM BAR (HOME) ===== -->
     <LinearLayout
         android:id="@+id/bottomBar"
         android:layout_width="match_parent"
-        android:layout_height="70dp"
+        android:layout_height="76dp"
         android:layout_alignParentBottom="true"
         android:orientation="horizontal"
         android:gravity="center"
@@ -120,8 +121,8 @@
         android:elevation="16dp"
         android:paddingStart="12dp"
         android:paddingEnd="12dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp">
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp">
 
         <TextView
             android:id="@+id/btnHome"
