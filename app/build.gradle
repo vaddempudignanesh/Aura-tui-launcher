@@ -69,7 +69,7 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
-    
+
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     implementation 'net.sourceforge.htmlcleaner:htmlcleaner:2.29'
     implementation 'com.jayway.jsonpath:json-path:2.9.0'

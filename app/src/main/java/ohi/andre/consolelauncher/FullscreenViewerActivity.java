@@ -9,14 +9,14 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.widget.FrameLayout;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.RelativeLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.VideoView;
+import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.recyclerview.widget.RecyclerView;
 import androidx.viewpager2.widget.ViewPager2;
 import android.graphics.Color;
 import java.io.File;
@@ -49,6 +49,10 @@ public class FullscreenViewerActivity extends AppCompatActivity {
     private View decorView;
     private int currentSystemUiVisibility;
     private RelativeLayout rootLayout;
+
+    // Zoom state
+    private boolean isZoomed = false;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -120,6 +124,7 @@ public class FullscreenViewerActivity extends AppCompatActivity {
         viewPager.setLayoutParams(vpParams);
 
         setupVideoControls();
+        setupZoomControls();
 
         viewPager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
             @Override
@@ -130,7 +135,9 @@ public class FullscreenViewerActivity extends AppCompatActivity {
                 currentPosition = position;
                 currentVideoView = null;
                 isVideoPrepared = false;
+                isZoomed = false;
                 isVideoPlaying = false;
+                isZoomed = false;
                 updateTitle();
                 showControls();
                 // Reset play button
@@ -147,6 +154,58 @@ public class FullscreenViewerActivity extends AppCompatActivity {
         updateTitle();
         showControls();
         updateScaleButtonIcon();
+    }
+
+    private void setupZoomControls() {
+        // Add double-tap to zoom on the root layout
+        rootLayout.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                // Check if it's a double tap
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastTapTime < 300) {
+                    // Double tap detected - toggle zoom
+                    toggleZoom();
+                    lastTapTime = 0;
+                    return true;
+                }
+                lastTapTime = currentTime;
+
+                // Toggle controls on single tap
+                toggleControlsVisibility();
+                return true;
+            }
+            return false;
+        });
+    }
+
+    private long lastTapTime = 0;
+
+    private void toggleZoom() {
+        if (adapter == null) return;
+
+        try {
+            // Get current view holder from ViewPager
+            View currentView = viewPager.getChildAt(0);
+            if (currentView instanceof androidx.recyclerview.widget.RecyclerView) {
+                androidx.recyclerview.widget.RecyclerView recyclerView = (androidx.recyclerview.widget.RecyclerView) currentView;
+                for (int i = 0; i < recyclerView.getChildCount(); i++) {
+                    View child = recyclerView.getChildAt(i);
+                    if (child != null) {
+                        FullscreenAdapter.ViewHolder holder = (FullscreenAdapter.ViewHolder)
+                                recyclerView.getChildViewHolder(child);
+                        if (holder != null && holder.imageView != null &&
+                                holder.imageView.getVisibility() == View.VISIBLE) {
+                            holder.imageView.toggleZoom();
+                            isZoomed = holder.imageView.isZoomed();
+                            Toast.makeText(this, isZoomed ? "Zoomed In" : "Zoomed Out", Toast.LENGTH_SHORT).show();
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private void setImmersiveFullscreen() {
@@ -219,7 +278,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
                 int duration = currentVideoView.getDuration();
                 currentVideoView.seekTo(Math.min(current + SKIP_FORWARD_MS, duration));
                 updateSeekBar();
-                // Show controls briefly when seeking
                 showControls();
             }
         });
@@ -229,7 +287,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
                 int current = currentVideoView.getCurrentPosition();
                 currentVideoView.seekTo(Math.max(current - SKIP_BACKWARD_MS, 0));
                 updateSeekBar();
-                // Show controls briefly when seeking
                 showControls();
             }
         });
@@ -260,20 +317,17 @@ public class FullscreenViewerActivity extends AppCompatActivity {
                     int duration = currentVideoView.getDuration();
                     int newPosition = (int) ((progress / 100.0) * duration);
                     currentVideoView.seekTo(newPosition);
-                    // Show controls during seeking
                     showControls();
                 }
             }
 
             @Override
             public void onStartTrackingTouch(SeekBar seekBar) {
-                // Show controls when user starts interacting
                 showControls();
             }
 
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
-                // Keep controls visible briefly after seeking
                 videoHandler.removeCallbacks(hideControlsRunnable);
                 hideControlsRunnable = () -> {
                     if (isVideoPlaying) {
@@ -282,15 +336,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
                 };
                 videoHandler.postDelayed(hideControlsRunnable, 2000);
             }
-        });
-
-        // Touch overlay to toggle controls
-        findViewById(R.id.videoControlsOverlay).setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_UP) {
-                toggleControlsVisibility();
-                return true;
-            }
-            return false;
         });
     }
 
@@ -303,9 +348,11 @@ public class FullscreenViewerActivity extends AppCompatActivity {
         adapter.setScaleMode(newMode);
         updateScaleButtonIcon();
 
-        // Update current video if it exists
+        // Reset zoom state when changing scale mode
+        isZoomed = false;
+
+        // Update current view
         if (currentVideoView != null) {
-            // Force re-layout of current video view
             currentVideoView.requestLayout();
         }
     }
@@ -318,7 +365,7 @@ public class FullscreenViewerActivity extends AppCompatActivity {
         switch (mode) {
             case FullscreenAdapter.SCALE_FILL:
                 btnScale.setImageResource(R.drawable.ic_scale_fill);
-                btnScale.setColorFilter(Color.parseColor("#FFD700")); // Gold - default fill mode
+                btnScale.setColorFilter(Color.parseColor("#FFD700"));
                 break;
             case FullscreenAdapter.SCALE_FIT:
                 btnScale.setImageResource(R.drawable.ic_fit_screen);
@@ -363,7 +410,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
                 isVideoPlaying = true;
                 btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
                 startProgressUpdate();
-                // Hide controls after video starts
                 videoHandler.postDelayed(() -> {
                     if (isVideoPlaying) {
                         hideControls();
@@ -384,14 +430,12 @@ public class FullscreenViewerActivity extends AppCompatActivity {
             btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_play);
             isVideoPlaying = false;
             videoHandler.removeCallbacks(updateProgressRunnable);
-            // Keep controls visible when paused
             showControls();
         } else {
             currentVideoView.start();
             btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
             isVideoPlaying = true;
             startProgressUpdate();
-            // Hide controls after video resumes
             videoHandler.removeCallbacks(hideControlsRunnable);
             hideControlsRunnable = () -> {
                 if (isVideoPlaying) {
@@ -436,7 +480,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
     private void toggleFavorite(String path) {
         File file = new File(path);
         btnFavorite.setColorFilter(Color.parseColor("#FFD700"));
-        // Toggle favorite state
         if (btnFavorite.getColorFilter() == null) {
             btnFavorite.setColorFilter(Color.parseColor("#FFD700"));
         } else {
@@ -516,7 +559,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
             isLandscape = true;
         }
-        // Re-apply immersive mode after orientation change
         videoHandler.postDelayed(this::setImmersiveFullscreen, 300);
     }
 
@@ -556,7 +598,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
         if (videoControlContainer != null) {
             videoControlContainer.setVisibility(View.VISIBLE);
         }
-        // Ensure system bars are hidden when showing controls
         setImmersiveFullscreen();
 
         videoHandler.removeCallbacks(hideControlsRunnable);
@@ -574,7 +615,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
             videoControlContainer.setVisibility(View.GONE);
         }
         videoHandler.removeCallbacks(hideControlsRunnable);
-        // Ensure full immersive mode when controls are hidden
         setImmersiveFullscreen();
     }
 
@@ -594,7 +634,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
             isLandscape = false;
             videoHandler.postDelayed(() -> {
                 stopCurrentVideo();
-                // Restore normal system UI before finishing
                 if (decorView != null) {
                     decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
                 }
@@ -603,7 +642,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
             }, 300);
         } else {
             stopCurrentVideo();
-            // Restore normal system UI before finishing
             if (decorView != null) {
                 decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
             }
@@ -625,7 +663,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // Re-apply immersive mode when resuming
         setImmersiveFullscreen();
 
         if (currentVideoView != null && !currentVideoView.isPlaying() && isVideoPlaying) {

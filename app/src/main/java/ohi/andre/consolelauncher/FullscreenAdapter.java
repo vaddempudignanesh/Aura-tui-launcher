@@ -9,6 +9,7 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.ProgressBar;
+import android.widget.VideoView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 import java.io.File;
@@ -26,11 +27,16 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
     public static final int SCALE_FIT_HEIGHT = 4;
 
     private List<String> paths;
-    private FullscreenViewerActivity activity;
+    private Object activity;
     private ExecutorService executor = Executors.newFixedThreadPool(2);
-    private int currentScaleMode = SCALE_FILL; // Default to FILL for no gaps
+    private int currentScaleMode = SCALE_FIT;
 
     public FullscreenAdapter(List<String> paths, FullscreenViewerActivity activity) {
+        this.paths = paths;
+        this.activity = activity;
+    }
+
+    public FullscreenAdapter(List<String> paths, GalleryActivity activity) {
         this.paths = paths;
         this.activity = activity;
     }
@@ -71,95 +77,140 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         holder.imageView.setVisibility(View.GONE);
         holder.videoView.setVisibility(View.GONE);
         holder.progressBar.setVisibility(View.VISIBLE);
+        holder.imageView.resetZoom();
 
         if (isVideo) {
-            holder.imageView.setVisibility(View.GONE);
-            holder.videoView.setVisibility(View.VISIBLE);
-            holder.videoView.setVideoPath(path);
-
-            // Remove previous listeners
-            holder.videoView.setOnPreparedListener(null);
-            holder.videoView.setOnCompletionListener(null);
-            holder.videoView.setOnErrorListener(null);
-
-            holder.videoView.setOnPreparedListener(mp -> {
-                holder.progressBar.setVisibility(View.GONE);
-
-                int videoWidth = mp.getVideoWidth();
-                int videoHeight = mp.getVideoHeight();
-
-                if (videoWidth == 0 || videoHeight == 0) {
-                    return;
-                }
-
-                // Use the item's own current width/height (already correct for orientation)
-                int screenWidth = holder.itemView.getWidth();
-                int screenHeight = holder.itemView.getHeight();
-
-                if (screenWidth == 0 || screenHeight == 0) {
-                    // View not laid out yet — wait for next layout pass then apply
-                    holder.itemView.post(() -> {
-                        int w = holder.itemView.getWidth();
-                        int h = holder.itemView.getHeight();
-                        if (w == 0 || h == 0) return;
-                        FrameLayout.LayoutParams p = calculateVideoLayoutParams(
-                                videoWidth, videoHeight, w, h, currentScaleMode);
-                        // Gravity and margins are fully handled inside calculateVideoLayoutParams
-                        holder.videoView.setLayoutParams(p);
-                    });
-                    return;
-                }
-
-                // Calculate dimensions based on current scale mode
-                FrameLayout.LayoutParams params = calculateVideoLayoutParams(
-                        videoWidth, videoHeight, screenWidth, screenHeight, currentScaleMode);
-                // Gravity and margins are fully handled inside calculateVideoLayoutParams
-                holder.videoView.setLayoutParams(params);
-
-                // Set looping
-                mp.setLooping(true);
-
-                // Register video view with activity and auto-play
-                if (activity != null) {
-                    activity.setCurrentVideoView(holder.videoView);
-                }
-            });
-
-            holder.videoView.setOnCompletionListener(mp -> {
-                mp.seekTo(0);
-                mp.start();
-            });
-
-            holder.videoView.setOnErrorListener((mp, what, extra) -> {
-                holder.progressBar.setVisibility(View.GONE);
-                return false;
-            });
-
-            // For the current item, ensure it's set
-            if (activity != null && position == activity.getCurrentPosition()) {
-                holder.videoView.post(() -> {
-                    if (activity != null && activity.isActivityAlive()) {
-                        activity.setCurrentVideoView(holder.videoView);
-                    }
-                });
-            }
+            setupVideo(holder, path, position);
         } else {
-            holder.videoView.setVisibility(View.GONE);
-            holder.imageView.setVisibility(View.VISIBLE);
-            holder.imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            setupImage(holder, path);
+        }
+    }
 
-            executor.execute(() -> {
+    private void setupVideo(ViewHolder holder, String path, int position) {
+        holder.imageView.setVisibility(View.GONE);
+        holder.videoView.setVisibility(View.VISIBLE);
+        holder.videoView.setVideoPath(path);
+
+        holder.videoView.setOnPreparedListener(mp -> {
+            holder.progressBar.setVisibility(View.GONE);
+
+            int videoWidth = mp.getVideoWidth();
+            int videoHeight = mp.getVideoHeight();
+
+            if (videoWidth == 0 || videoHeight == 0) {
+                return;
+            }
+
+            int screenWidth = holder.itemView.getWidth();
+            int screenHeight = holder.itemView.getHeight();
+
+            if (screenWidth == 0 || screenHeight == 0) {
+                holder.itemView.post(() -> {
+                    int w = holder.itemView.getWidth();
+                    int h = holder.itemView.getHeight();
+                    if (w == 0 || h == 0) return;
+                    FrameLayout.LayoutParams p = calculateVideoLayoutParams(
+                            videoWidth, videoHeight, w, h, currentScaleMode);
+                    holder.videoView.setLayoutParams(p);
+                });
+                return;
+            }
+
+            FrameLayout.LayoutParams params = calculateVideoLayoutParams(
+                    videoWidth, videoHeight, screenWidth, screenHeight, currentScaleMode);
+            holder.videoView.setLayoutParams(params);
+
+            mp.setLooping(true);
+
+            if (activity instanceof FullscreenViewerActivity) {
+                ((FullscreenViewerActivity) activity).setCurrentVideoView(holder.videoView);
+            } else if (activity instanceof GalleryActivity) {
+                ((GalleryActivity) activity).setCurrentVideoView(holder.videoView);
+            }
+        });
+
+        holder.videoView.setOnCompletionListener(mp -> {
+            mp.seekTo(0);
+            mp.start();
+        });
+
+        holder.videoView.setOnErrorListener((mp, what, extra) -> {
+            holder.progressBar.setVisibility(View.GONE);
+            return false;
+        });
+
+        int currentPos = 0;
+        if (activity instanceof FullscreenViewerActivity) {
+            currentPos = ((FullscreenViewerActivity) activity).getCurrentPosition();
+        } else if (activity instanceof GalleryActivity) {
+            currentPos = ((GalleryActivity) activity).getFullscreenCurrentPosition();
+        }
+
+        if (position == currentPos) {
+            holder.videoView.post(() -> {
+                if (activity instanceof FullscreenViewerActivity) {
+                    ((FullscreenViewerActivity) activity).setCurrentVideoView(holder.videoView);
+                } else if (activity instanceof GalleryActivity) {
+                    ((GalleryActivity) activity).setCurrentVideoView(holder.videoView);
+                }
+            });
+        }
+    }
+
+    private void setupImage(ViewHolder holder, String path) {
+        holder.videoView.setVisibility(View.GONE);
+        holder.imageView.setVisibility(View.VISIBLE);
+        updateImageScaleType(holder.imageView);
+
+        executor.execute(() -> {
+            try {
                 BitmapFactory.Options options = new BitmapFactory.Options();
-                options.inSampleSize = 2;
+                options.inJustDecodeBounds = true;
+                BitmapFactory.decodeFile(path, options);
+
+                int sampleSize = 1;
+                while (options.outWidth / sampleSize > 2000 || options.outHeight / sampleSize > 2000) {
+                    sampleSize *= 2;
+                }
+
+                options.inJustDecodeBounds = false;
+                options.inSampleSize = sampleSize;
+
                 Bitmap bitmap = BitmapFactory.decodeFile(path, options);
+                final Bitmap finalBitmap = bitmap;
 
                 holder.imageView.post(() -> {
-                    if (bitmap != null) {
-                        holder.imageView.setImageBitmap(bitmap);
+                    if (finalBitmap != null) {
+                        holder.imageView.setImageBitmap(finalBitmap);
+                        holder.imageView.resetZoom();
                     }
                     holder.progressBar.setVisibility(View.GONE);
                 });
-            });
+            } catch (Exception e) {
+                e.printStackTrace();
+                holder.imageView.post(() -> {
+                    holder.imageView.setImageResource(android.R.drawable.ic_menu_gallery);
+                    holder.progressBar.setVisibility(View.GONE);
+                });
+            }
+        });
+    }
+
+    private void updateImageScaleType(ZoomableImageView imageView) {
+        imageView.resetZoom();
+        switch (currentScaleMode) {
+            case SCALE_FIT:
+                imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                break;
+            case SCALE_FILL:
+                imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                break;
+            case SCALE_CENTER:
+                imageView.setScaleType(ImageView.ScaleType.CENTER);
+                break;
+            default:
+                imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                break;
         }
     }
 
@@ -180,7 +231,6 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                     newWidth = screenWidth;
                     newHeight = (int) (screenWidth / videoAspect);
                 }
-
                 if (newWidth < screenWidth) {
                     newWidth = screenWidth;
                     newHeight = (int) (screenWidth / videoAspect);
@@ -238,15 +288,13 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 break;
         }
 
-        // Ensure minimum dimensions
-        newWidth = Math.max(newWidth, screenWidth);
-        newHeight = Math.max(newHeight, screenHeight);
+        newWidth = Math.min(newWidth, screenWidth * 2);
+        newHeight = Math.min(newHeight, screenHeight * 2);
+        newWidth = Math.max(newWidth, screenWidth / 2);
+        newHeight = Math.max(newHeight, screenHeight / 2);
 
-        // Expand width by 100px and push left to cover punch-hole gap
-        newWidth += 100;
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(newWidth, newHeight);
-        params.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
-        params.leftMargin = -100;
+        params.gravity = Gravity.CENTER;
         return params;
     }
 
@@ -265,6 +313,10 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 e.printStackTrace();
             }
         }
+        if (holder.imageView != null) {
+            holder.imageView.setImageBitmap(null);
+            holder.imageView.resetZoom();
+        }
     }
 
     @Override
@@ -274,8 +326,8 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
     }
 
     public static class ViewHolder extends RecyclerView.ViewHolder {
-        ImageView imageView;
-        CustomVideoView videoView; // Updated to CustomVideoView
+        ZoomableImageView imageView;
+        VideoView videoView;
         ProgressBar progressBar;
 
         public ViewHolder(@NonNull View itemView) {

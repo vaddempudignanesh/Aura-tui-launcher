@@ -108,7 +108,41 @@
         android:layout_above="@+id/bottomBar"
         android:visibility="gone"
         android:padding="8dp" />
-    <!-- ===== BOTTOM BAR (HOME) ===== -->
+
+
+    <!-- ===== FULLSCREEN VIEWER OVERLAY ===== -->
+    <RelativeLayout
+        android:id="@+id/fullscreenOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FF000000"
+        android:visibility="gone"
+        android:elevation="100dp"
+        android:clickable="true"
+        android:focusable="true">
+
+        <!-- ViewPager for swiping -->
+        <androidx.viewpager2.widget.ViewPager2
+            android:id="@+id/fullscreenViewPager"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#FF000000" />
+
+        <!-- Close Button -->
+        <ImageButton
+            android:id="@+id/btnCloseFullscreen"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_close"
+            android:background="#33FFFFFF"
+            android:layout_alignParentTop="true"
+            android:layout_alignParentEnd="true"
+            android:layout_margin="16dp"
+            android:padding="12dp"
+            android:elevation="24dp"
+            app:tint="#FFFFFF" />
+
+    </RelativeLayout>
     <!-- ===== BOTTOM BAR (HOME) ===== -->
     <LinearLayout
         android:id="@+id/bottomBar"

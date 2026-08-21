@@ -48,6 +48,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import androidx.viewpager2.widget.ViewPager2;
 
 public class GalleryActivity extends AppCompatActivity {
 
@@ -60,6 +61,18 @@ public class GalleryActivity extends AppCompatActivity {
     private List<MediaItem> displayedItems = new ArrayList<>();
     private List<String> albumList = new ArrayList<>();
     private boolean showAlbums = false;
+
+
+    // Fullscreen viewer
+    private RelativeLayout fullscreenOverlay;
+    private ViewPager2 fullscreenViewPager;
+    private FullscreenAdapter fullscreenAdapter;
+    private ImageButton btnCloseFullscreen;
+    private List<String> fullscreenMediaPaths = new ArrayList<>();
+    private int fullscreenCurrentPosition = 0;
+
+
+
     private TextView titleView;
     private LinearLayout sortOptions;
     private String currentAlbum = null;
@@ -232,6 +245,20 @@ public class GalleryActivity extends AppCompatActivity {
             }
         });
 
+
+        // ===== FULLSCREEN VIEWER =====
+        fullscreenOverlay = findViewById(R.id.fullscreenOverlay);
+        fullscreenViewPager = findViewById(R.id.fullscreenViewPager);
+        btnCloseFullscreen = findViewById(R.id.btnCloseFullscreen);
+
+        btnCloseFullscreen.setOnClickListener(v -> closeFullscreenViewer());
+
+// Setup ViewPager
+        fullscreenAdapter = new FullscreenAdapter(fullscreenMediaPaths, this);
+        fullscreenViewPager.setAdapter(fullscreenAdapter);
+        fullscreenViewPager.setOffscreenPageLimit(1);
+
+
         btnBinSelected.setOnClickListener(v -> moveSelectedToTrash());
 
         btnShareSelected.setOnClickListener(v -> shareSelectedItems());
@@ -286,6 +313,62 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
+
+    // Open fullscreen viewer within same activity
+    private void openFullscreenViewer(String path) {
+        fullscreenMediaPaths.clear();
+        int currentIndex = 0;
+
+        for (int i = 0; i < displayedItems.size(); i++) {
+            MediaItem item = displayedItems.get(i);
+            if (!item.isTrashed) {
+                fullscreenMediaPaths.add(item.path);
+                if (item.path.equals(path)) {
+                    currentIndex = fullscreenMediaPaths.size() - 1;
+                }
+            }
+        }
+
+        if (fullscreenMediaPaths.isEmpty()) {
+            Toast.makeText(this, "No media to view", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        fullscreenCurrentPosition = currentIndex;
+        fullscreenAdapter.notifyDataSetChanged();
+        fullscreenViewPager.setCurrentItem(currentIndex, false);
+        fullscreenOverlay.setVisibility(View.VISIBLE);
+        fullscreenOverlay.bringToFront();
+
+        // Hide bottom bar
+        bottomBar.setVisibility(View.GONE);
+    }
+
+    // Close fullscreen viewer
+    private void closeFullscreenViewer() {
+        fullscreenOverlay.setVisibility(View.GONE);
+        bottomBar.setVisibility(View.VISIBLE);
+
+        // Stop any playing video
+        if (fullscreenViewPager != null) {
+            try {
+                RecyclerView recyclerView = (RecyclerView) fullscreenViewPager.getChildAt(0);
+                if (recyclerView != null) {
+                    for (int i = 0; i < recyclerView.getChildCount(); i++) {
+                        View child = recyclerView.getChildAt(i);
+                        if (child != null) {
+                            VideoView vv = child.findViewById(R.id.fullscreen_video);
+                            if (vv != null) {
+                                vv.stopPlayback();
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
 
     private void animateButtonBounce(View button) {
         if (button == null) return;
@@ -859,19 +942,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
 
         adapter = new GalleryAdapter(this, displayedItems, selectedItems, new GalleryAdapter.OnItemClickListener() {
-            @Override
-            public void onImageClick(String path) {
-                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN) {
-                    openImageViewer(path);
-                }
-            }
 
-            @Override
-            public void onVideoClick(String path) {
-                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN) {
-                    playVideo(path);
-                }
-            }
 
             @Override
             public void onFavoriteToggle(MediaItem item) {
@@ -896,11 +967,28 @@ public class GalleryActivity extends AppCompatActivity {
                 return selectionMode && isActivityAlive();
             }
 
+
+            @Override
+            public void onImageClick(String path) {
+                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN) {
+                    openFullscreenViewer(path); // Changed from openImageViewer
+                }
+            }
+
+            @Override
+            public void onVideoClick(String path) {
+                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN) {
+                    openFullscreenViewer(path); // Changed from playVideo
+                }
+            }
+
             @Override
             public void onRestore(MediaItem item) {
                 if (isActivityAlive()) restoreFromTrash(item);
             }
         });
+
+
 
         GridLayoutManager layoutManager = new GridLayoutManager(this, 3);
         recyclerView.setLayoutManager(layoutManager);
@@ -1163,7 +1251,7 @@ public class GalleryActivity extends AppCompatActivity {
                     Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                Uri uri = FileProvider.getUriForFile(this, BuildConfig.APPLICATION_ID + ".fileprovider", file);
+                Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
                 Intent shareIntent = new Intent(Intent.ACTION_SEND);
                 shareIntent.setType(getMimeType(file.getAbsolutePath()));
                 shareIntent.putExtra(Intent.EXTRA_STREAM, uri);
@@ -1174,7 +1262,7 @@ public class GalleryActivity extends AppCompatActivity {
                 for (String path : selectedItems) {
                     File file = new File(path);
                     if (file.exists()) {
-                        Uri uri = FileProvider.getUriForFile(this, BuildConfig.APPLICATION_ID + ".fileprovider", file);
+                        Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
                         uris.add(uri);
                     }
                 }
@@ -1716,6 +1804,21 @@ public class GalleryActivity extends AppCompatActivity {
     }
 
 
+
+
+    // Add this method for the adapter
+    public void setCurrentVideoView(VideoView videoView) {
+        // Handle video view from fullscreen adapter
+        if (fullscreenViewPager != null) {
+            // Find and set the current video view
+            // The adapter will handle it
+        }
+    }
+
+    // Add this getter for the adapter
+    public int getFullscreenCurrentPosition() {
+        return fullscreenCurrentPosition;
+    }
 
     private void toggleFavorite(MediaItem item) {
         if (item == null) return;
