@@ -50,7 +50,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -94,8 +96,14 @@ public class GalleryActivity extends AppCompatActivity {
     private List<MediaItem> mediaItems = new ArrayList<>();
     private List<MediaItem> displayedItems = new ArrayList<>();
     private List<String> albumList = new ArrayList<>();
-    private final java.util.LinkedHashMap<String, String> albumDisplayNames = new java.util.LinkedHashMap<>();
+    private final LinkedHashMap<String, String> albumDisplayNames = new LinkedHashMap<>();
     private boolean showAlbums = false;
+
+    // ★ Cache: album display name / full path → canonical path.
+    // Avoids calling File.getCanonicalPath() on every item during filter.
+    private final HashMap<String, String> canonicalAlbumCache = new HashMap<>();
+    // ★ Cache the entire album map so re-opening the album list is instant
+    private boolean albumsCacheValid = false;
 
     // ── Fullscreen ──
     private RelativeLayout fullscreenOverlay;
@@ -119,6 +127,7 @@ public class GalleryActivity extends AppCompatActivity {
     private View fsBtnFavorite;
     private ImageView fsBtnFavoriteIcon;
     private View videoControlsOverlay;
+    // ★ These are kept for null-safety (may or may not exist in XML).
     private ImageButton btnFavoriteOverlay;
     private ImageButton btnInfoOverlay;
     private ImageButton btnDeleteOverlay;
@@ -287,10 +296,6 @@ public class GalleryActivity extends AppCompatActivity {
         btnCenterPlayPause = findViewById(R.id.btnCenterPlayPause);
         btnSkipForwardOverlay = findViewById(R.id.btnSkipForward);
         btnSkipBackwardOverlay = findViewById(R.id.btnSkipBackward);
-        btnFavoriteOverlay = findViewById(R.id.btnFavorite);
-        btnInfoOverlay = findViewById(R.id.btnInfo);
-        btnDeleteOverlay = findViewById(R.id.btnDelete);
-        btnRotateOverlay = findViewById(R.id.btnRotate);
         videoTimeCurrent = findViewById(R.id.videoTimeCurrent);
         videoTimeTotal = findViewById(R.id.videoTimeTotal);
         videoTitleOverlay = findViewById(R.id.videoTitle);
@@ -302,6 +307,12 @@ public class GalleryActivity extends AppCompatActivity {
         fsBtnInfo = findViewById(R.id.fsBtnInfo);
         fsBtnFavorite = findViewById(R.id.fsBtnFavorite);
         fsBtnFavoriteIcon = findViewById(R.id.fsBtnFavoriteIcon);
+
+        // These may be null if the XML no longer contains them.
+        btnFavoriteOverlay = findViewById(R.id.btnFavorite);
+        btnInfoOverlay = findViewById(R.id.btnInfo);
+        btnDeleteOverlay = findViewById(R.id.btnDelete);
+        btnRotateOverlay = findViewById(R.id.btnRotate);
 
         // ── Wire bottom action bar buttons ──
         if (fsBtnBin != null) fsBtnBin.setOnClickListener(v -> {
@@ -345,9 +356,10 @@ public class GalleryActivity extends AppCompatActivity {
                 String path = fullscreenMediaPaths.get(pos);
                 boolean nowFav = toggleFavoriteForPath(path);
                 updateFullscreenFavoriteIcon(path);
-                // ★ Refresh the grid so the tile's star updates immediately
                 applyFilter();
-
+                Toast.makeText(this,
+                        nowFav ? "⭐ Added to Favorites" : "Removed from Favorites",
+                        Toast.LENGTH_SHORT).show();
             }
         });
 
@@ -355,9 +367,7 @@ public class GalleryActivity extends AppCompatActivity {
         overlayTapDetector = new GestureDetector(this,
                 new GestureDetector.SimpleOnGestureListener() {
                     @Override
-                    public boolean onDown(MotionEvent e) {
-                        return true;
-                    }
+                    public boolean onDown(MotionEvent e) { return true; }
 
                     @Override
                     public boolean onSingleTapUp(MotionEvent e) {
@@ -392,7 +402,6 @@ public class GalleryActivity extends AppCompatActivity {
                     currentFullscreenVideo = null;
                     currentFullscreenVideoPosition = -1;
                 }
-                // ★ Do NOT auto-hide the chrome on images. Chrome stays as the user left it.
                 videoHandler.removeCallbacks(overlayProgressRunnable);
             }
 
@@ -419,7 +428,6 @@ public class GalleryActivity extends AppCompatActivity {
                     updateOverlaySeekBar();
                     startOverlayProgressUpdate();
 
-                    // ★ Only start the auto-hide timer if we're NOT in the middle of a swipe
                     if (!userIsSwiping) {
                         showAllControlsWithTimeout();
                     }
@@ -436,7 +444,6 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenViewPager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
             @Override
             public void onPageScrollStateChanged(int state) {
-                // Track swipe gesture so we don't auto-hide mid-swipe
                 userIsSwiping = (state != ViewPager2.SCROLL_STATE_IDLE);
                 log("onPageScrollStateChanged: state=" + state + " userIsSwiping=" + userIsSwiping);
             }
@@ -448,9 +455,6 @@ public class GalleryActivity extends AppCompatActivity {
 
                 if (currentFullscreenVideo != null
                         && currentFullscreenVideoPosition != position) {
-                    log("  pausing video from page "
-                            + currentFullscreenVideoPosition
-                            + " (now on " + position + ")");
                     try { currentFullscreenVideo.pause(); } catch (Exception ignored) {}
                     currentFullscreenVideo = null;
                     currentFullscreenVideoPosition = -1;
@@ -462,7 +466,6 @@ public class GalleryActivity extends AppCompatActivity {
                 fullscreenCurrentPosition = position;
                 fullscreenCurrentIndex = position;
 
-                // ★ Update the header (name / details / path / video title / fav icon)
                 updateFullscreenInfo(position);
 
                 if (position >= 0 && position < fullscreenMediaPaths.size()) {
@@ -471,8 +474,6 @@ public class GalleryActivity extends AppCompatActivity {
                         log("  new page is video — starting");
                         findAndStartVideoForPosition(position);
                     }
-                    // ★ Do NOT auto-hide controls on swipe. The user will tap to toggle,
-                    // or the video's own onVideoVisible will manage the auto-hide.
                 }
             }
         });
@@ -510,15 +511,22 @@ public class GalleryActivity extends AppCompatActivity {
         if (topNavBar != null) updateTopNavBar();
     }
 
-    /**
-     * Set a favorite star icon + tint based on state.
-     * Gold when favorited, white when not.
-     */
+    // ===================== CANONICAL PATH CACHE =====================
+
+    private String getCachedCanonical(String path) {
+        if (path == null) return null;
+        String cached = canonicalAlbumCache.get(path);
+        if (cached != null) return cached;
+        String canonical;
+        try { canonical = new File(path).getCanonicalPath(); }
+        catch (Exception e) { canonical = path; }
+        canonicalAlbumCache.put(path, canonical);
+        return canonical;
+    }
+
     private void applyStarIcon(ImageView v, boolean fav) {
         if (v == null) return;
         v.setImageResource(fav ? R.drawable.ic_star_filled : R.drawable.ic_star_empty);
-        // setImageTintList is more reliable than setColorFilter across
-        // visibility changes on modern Android.
         int color = fav
                 ? android.graphics.Color.parseColor("#FFD700")
                 : android.graphics.Color.WHITE;
@@ -550,73 +558,38 @@ public class GalleryActivity extends AppCompatActivity {
         prefs.edit().putString(PREF_FAVORITES, sb.toString()).apply();
     }
 
-    /**
-     * Toggle favorite state for a path. Returns the new state.
-     * Persists immediately so favorites survive app restarts.
-     */
     private boolean toggleFavoriteForPath(String path) {
         if (path == null) return false;
-
         Set<String> favs = loadFavoritePaths();
         boolean nowFav;
-        if (favs.contains(path)) {
-            favs.remove(path);
-            nowFav = false;
-        } else {
-            favs.add(path);
-            nowFav = true;
-        }
+        if (favs.contains(path)) { favs.remove(path); nowFav = false; }
+        else { favs.add(path); nowFav = true; }
         saveFavoritePaths(favs);
 
-        // ★ Update the in-memory list so applyFilter() picks up the change
-        boolean found = false;
         for (MediaItem item : mediaItems) {
-            if (item.path.equals(path)) {
-                item.isFavorite = nowFav;
-                found = true;
-                break;
-            }
+            if (item.path.equals(path)) { item.isFavorite = nowFav; break; }
         }
-
-        if (!found) {
-            Log.w(LOG_TAG, "toggleFavoriteForPath: path not found in mediaItems: " + path);
-        }
-
         return nowFav;
     }
 
     private void updateFullscreenFavoriteIcon(String path) {
         if (path == null) return;
         boolean fav = false;
-
-        // First try the in-memory list
         for (MediaItem item : mediaItems) {
             if (item.path.equals(path)) { fav = item.isFavorite; break; }
         }
-
-        // ★ Fall back to the persisted set — the in-memory list may be stale
-        // if loadMedia() hasn't re-run since the last star toggle.
-        if (!fav && loadFavoritePaths().contains(path)) {
-            fav = true;
-        }
+        if (!fav && loadFavoritePaths().contains(path)) fav = true;
 
         applyStarIcon(fsBtnFavoriteIcon, fav);
         applyStarIcon(btnFavoriteOverlay, fav);
     }
 
-    // ===================== TAP TOGGLING (UNIFIED) =====================
+    // ===================== TAP TOGGLING =====================
 
     private void onFullscreenTap() {
-        log("onFullscreenTap — chromeVisible=" + fullscreenChromeVisible
-                + " controlsVisible=" + overlayControlsVisible);
-
         boolean newVisible = !fullscreenChromeVisible;
-
-        if (newVisible) {
-            showAllControlsWithTimeout();
-        } else {
-            hideAllControls();
-        }
+        if (newVisible) showAllControlsWithTimeout();
+        else hideAllControls();
     }
 
     private void showAllControlsWithTimeout() {
@@ -627,12 +600,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
         overlayHideControlsRunnable = () -> {
-            // ★ Only auto-hide when:
-            //   - a video is playing, AND
-            //   - the user is not actively swiping
-            if (isOverlayVideoPlaying && !userIsSwiping) {
-                hideAllControls();
-            }
+            if (isOverlayVideoPlaying && !userIsSwiping) hideAllControls();
         };
         videoHandler.postDelayed(overlayHideControlsRunnable, OVERLAY_CONTROLS_TIMEOUT);
     }
@@ -652,8 +620,6 @@ public class GalleryActivity extends AppCompatActivity {
         if (fullscreenBottomBar != null)
             fullscreenBottomBar.setVisibility(visible ? View.VISIBLE : View.GONE);
 
-        // ★ Always re-apply the star tint when chrome becomes visible,
-        // regardless of previous state — prevents "stuck white star" bug.
         if (visible) {
             int pos = fullscreenCurrentPosition;
             if (pos >= 0 && pos < fullscreenMediaPaths.size()) {
@@ -661,6 +627,7 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
     }
+
     // ===================== RENAME + SCAN + REFRESH =====================
 
     private boolean renameFileRobust(File src, File dst) {
@@ -669,7 +636,6 @@ public class GalleryActivity extends AppCompatActivity {
             Log.e(LOG_TAG, "renameFileRobust: src does not exist: " + src);
             return false;
         }
-
         try {
             if (src.renameTo(dst)) {
                 Log.d(LOG_TAG, "renameFileRobust: renameTo OK " + src + " → " + dst);
@@ -678,7 +644,6 @@ public class GalleryActivity extends AppCompatActivity {
         } catch (Exception e) {
             Log.w(LOG_TAG, "renameFileRobust: renameTo threw", e);
         }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
                 java.nio.file.Files.move(
@@ -691,7 +656,6 @@ public class GalleryActivity extends AppCompatActivity {
                 Log.e(LOG_TAG, "renameFileRobust: Files.move failed " + src + " → " + dst, e);
             }
         }
-
         Log.e(LOG_TAG, "renameFileRobust: all attempts failed " + src + " → " + dst);
         return false;
     }
@@ -701,7 +665,6 @@ public class GalleryActivity extends AppCompatActivity {
             if (callback != null) mediaRefreshHandler.post(callback);
             return;
         }
-
         final AtomicInteger remaining = new AtomicInteger(paths.size());
         final List<String> toScan = new ArrayList<>(paths);
         final MediaScannerConnection[] connHolder = new MediaScannerConnection[1];
@@ -722,7 +685,6 @@ public class GalleryActivity extends AppCompatActivity {
 
                     @Override
                     public void onScanCompleted(String path, Uri uri) {
-                        Log.d(LOG_TAG, "scan completed: " + path + " → " + uri);
                         if (remaining.decrementAndGet() == 0) finish();
                     }
 
@@ -736,17 +698,15 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void scheduleMediaRefresh(long delayMs) {
         if (!isActivityAlive()) return;
-
         if (pendingMediaRefresh != null) {
             mediaRefreshHandler.removeCallbacks(pendingMediaRefresh);
         }
-
         pendingMediaRefresh = () -> {
             log("scheduleMediaRefresh: running loadMedia()");
+            albumsCacheValid = false;   // ★ folder contents may have changed
             loadMedia();
             pendingMediaRefresh = null;
         };
-
         mediaRefreshHandler.postDelayed(pendingMediaRefresh, delayMs);
     }
 
@@ -787,7 +747,6 @@ public class GalleryActivity extends AppCompatActivity {
                     String path = fullscreenMediaPaths.get(fullscreenCurrentPosition);
                     boolean nowFav = toggleFavoriteForPath(path);
                     updateFullscreenFavoriteIcon(path);
-                    // ★ Refresh the grid so the tile's star updates immediately
                     applyFilter();
                     Toast.makeText(this,
                             nowFav ? "⭐ Added" : "Removed",
@@ -980,8 +939,6 @@ public class GalleryActivity extends AppCompatActivity {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        log("onConfigurationChanged: " + newConfig.orientation);
-
         if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE) {
             enterImmersiveLandscape();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -1041,8 +998,6 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        log("  size=" + fullscreenMediaPaths.size() + " index=" + currentIndex);
-
         if (fullscreenMediaPaths.isEmpty()) {
             Toast.makeText(this, "No media to view", Toast.LENGTH_SHORT).show();
             return;
@@ -1062,24 +1017,24 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenOverlay.setVisibility(View.VISIBLE);
         fullscreenOverlay.bringToFront();
 
-// ★ Update info BEFORE showing chrome so the star tint is correct
-        updateFullscreenInfo(currentIndex);
+        // ★ Hide the top nav bar so no back arrow shows in fullscreen
+        View topNav = findViewById(R.id.topNavBar);
+        if (topNav != null) topNav.setVisibility(View.GONE);
+        View selTop = findViewById(R.id.selectionTopBar);
+        if (selTop != null) selTop.setVisibility(View.GONE);
 
-// ★ Start with chrome visible; user taps to hide
+        updateFullscreenInfo(currentIndex);
         showAllControls();
 
         bottomBar.setVisibility(View.GONE);
-        log("  overlay visible");
 
         String initialPath = fullscreenMediaPaths.get(currentIndex);
         if (isVideoPath(initialPath)) {
-            log("  initial page is video, scheduling start");
             int finalIndex = currentIndex;
             fullscreenViewPager.post(() -> findAndStartVideoForPosition(finalIndex));
         }
     }
 
-    /** Show chrome without starting the auto-hide timer. */
     private void showAllControls() {
         setFullscreenChromeVisible(true);
         if (currentFullscreenPageIsVideo && videoControlContainer != null) {
@@ -1121,6 +1076,11 @@ public class GalleryActivity extends AppCompatActivity {
         if (videoControlContainer != null) videoControlContainer.setVisibility(View.GONE);
         fullscreenOverlay.setVisibility(View.GONE);
         bottomBar.setVisibility(View.VISIBLE);
+
+        // ★ Restore top nav bar
+        View topNav = findViewById(R.id.topNavBar);
+        if (topNav != null) topNav.setVisibility(View.VISIBLE);
+        updateTopNavBar();
     }
 
     private void updateFullscreenInfo(int position) {
@@ -1172,7 +1132,10 @@ public class GalleryActivity extends AppCompatActivity {
         btnBack.setVisibility(showBack ? View.VISIBLE : View.GONE);
 
         if (currentFilter == FilterMode.BIN) title.setText("🗑️ Bin");
-        else if (currentAlbum != null) title.setText("📁 " + currentAlbum);
+        else if (currentAlbum != null) {
+            String shown = albumDisplayNames.get(currentAlbum);
+            title.setText("📁 " + (shown != null ? shown : new File(currentAlbum).getName()));
+        }
         else if (showAlbums) title.setText("📁 Albums");
         else title.setText("Gallery");
 
@@ -1231,11 +1194,9 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void navigateBackFromAlbum() {
         if (currentAlbum != null) {
-            // Inside an album → go back to the album list
             currentAlbum = null;
             showAlbums = true;
 
-            // Hide the grid BEFORE showing the album list to prevent any bleed
             recyclerView.setVisibility(View.GONE);
             loadAlbums();
             albumRecycler.setVisibility(View.VISIBLE);
@@ -1246,7 +1207,6 @@ public class GalleryActivity extends AppCompatActivity {
             updateBarsVisibility();
             updateTopNavBar();
         } else if (showAlbums) {
-            // In album list → go back to main gallery
             showAlbums = false;
             currentFilter = FilterMode.ALL;
             currentAlbum = null;
@@ -1294,12 +1254,12 @@ public class GalleryActivity extends AppCompatActivity {
                             String parentPath = new File(path).getParent();
                             String albumKey;
                             if (parentPath != null) {
-                                try { albumKey = new File(parentPath).getCanonicalPath(); }
-                                catch (Exception e) { albumKey = parentPath; }
+                                albumKey = getCachedCanonical(parentPath);
                             } else {
                                 albumKey = album;
                             }
-                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_IMAGE, date, isTrashed, albumKey));                        }
+                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_IMAGE, date, isTrashed, albumKey));
+                        }
                     }
                 }
             } catch (SecurityException e) {
@@ -1334,8 +1294,7 @@ public class GalleryActivity extends AppCompatActivity {
                             String parentPath = new File(path).getParent();
                             String albumKey;
                             if (parentPath != null) {
-                                try { albumKey = new File(parentPath).getCanonicalPath(); }
-                                catch (Exception e) { albumKey = parentPath; }
+                                albumKey = getCachedCanonical(parentPath);
                             } else {
                                 albumKey = album;
                             }
@@ -1356,7 +1315,6 @@ public class GalleryActivity extends AppCompatActivity {
             mediaItems.clear();
             mediaItems.addAll(newItems);
 
-            // ★ Apply persisted favorites
             Set<String> favs = loadFavoritePaths();
             for (MediaItem item : mediaItems) {
                 item.isFavorite = favs.contains(item.path);
@@ -1547,9 +1505,15 @@ public class GalleryActivity extends AppCompatActivity {
             }
             displayedItems.addAll(trashed);
         } else {
+            final String targetCanon = currentAlbum == null ? null : getCachedCanonical(currentAlbum);
             for (MediaItem item : mediaItems) {
-                boolean matchesAlbum = currentAlbum == null
-                        || (item.album != null && albumPathsEqual(item.album, currentAlbum));
+                boolean matchesAlbum;
+                if (targetCanon == null) {
+                    matchesAlbum = true;
+                } else {
+                    String itemCanon = getCachedCanonical(item.album);
+                    matchesAlbum = itemCanon != null && itemCanon.equals(targetCanon);
+                }
                 if (!matchesAlbum) continue;
 
                 boolean isCurrentlyTrashed = item.path.contains(".trashed.");
@@ -1574,33 +1538,6 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
-
-    /**
-     * Compare two folder paths for equality after normalizing them.
-     * Handles trailing slashes, /mnt/sdcard vs /storage/emulated/0, and symlinks.
-     */
-    private boolean albumPathsEqual(String a, String b) {
-        if (a == null || b == null) return false;
-        if (a.equals(b)) return true;
-
-        String na = normalizePath(a);
-        String nb = normalizePath(b);
-        if (na.equals(nb)) return true;
-
-        // Canonical path fallback (resolves symlinks)
-        try {
-            String ca = new File(a).getCanonicalPath();
-            String cb = new File(b).getCanonicalPath();
-            if (ca.equals(cb)) return true;
-
-            // Last-ditch: strip trailing slashes and compare
-            if (ca.endsWith("/")) ca = ca.substring(0, ca.length() - 1);
-            if (cb.endsWith("/")) cb = cb.substring(0, cb.length() - 1);
-            return ca.equals(cb);
-        } catch (Exception e) {
-            return false;
-        }
-    }
     // ===================== PERMISSIONS =====================
 
     private void checkAndRequestMediaPermissions() {
@@ -1717,6 +1654,7 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
+        albumsCacheValid = false;
         applyFilter();
     }
 
@@ -1902,6 +1840,7 @@ public class GalleryActivity extends AppCompatActivity {
                         }
                     }
 
+                    albumsCacheValid = false;
                     clearSelection();
                     applyFilter();
 
@@ -2084,18 +2023,15 @@ public class GalleryActivity extends AppCompatActivity {
 
     // ===================== ALBUMS =====================
 
-    /**
-     * Load all folders that contain media, combining:
-     *   - MediaStore (Images + Videos, all storage volumes)
-     *   - Filesystem scan of all storage roots
-     *
-     * Album identity is the FULL PARENT PATH (not just the folder name),
-     * so folders like "hi" and "hi/subfolder" are distinct albums.
-     */
     private void loadAlbums() {
+        // ★ Reuse cached album map if still valid
+        if (albumsCacheValid && !albumList.isEmpty()) {
+            runOnUiThread(this::showAlbumGrid);
+            return;
+        }
+
         executor.execute(() -> {
-            // Map: full folder path -> display name
-            java.util.LinkedHashMap<String, String> albums = new java.util.LinkedHashMap<>();
+            LinkedHashMap<String, String> albums = new LinkedHashMap<>();
 
             // ── 1. MediaStore Images ──
             String[] imgProjection = {
@@ -2116,9 +2052,8 @@ public class GalleryActivity extends AppCompatActivity {
                         if (path == null) continue;
                         File parent = new File(path).getParentFile();
                         if (parent == null) continue;
-                        String parentPath;
-                        try { parentPath = parent.getCanonicalPath(); }
-                        catch (Exception e) { parentPath = parent.getAbsolutePath(); }                        String display = (name != null && !name.isEmpty())
+                        String parentPath = getCachedCanonical(parent.getAbsolutePath());
+                        String display = (name != null && !name.isEmpty())
                                 ? name : parent.getName();
                         if (!albums.containsKey(parentPath)) {
                             albums.put(parentPath, display);
@@ -2148,9 +2083,7 @@ public class GalleryActivity extends AppCompatActivity {
                         if (path == null) continue;
                         File parent = new File(path).getParentFile();
                         if (parent == null) continue;
-                        String parentPath;
-                        try { parentPath = parent.getCanonicalPath(); }
-                        catch (Exception e) { parentPath = parent.getAbsolutePath(); }
+                        String parentPath = getCachedCanonical(parent.getAbsolutePath());
                         String display = (name != null && !name.isEmpty())
                                 ? name : parent.getName();
                         if (!albums.containsKey(parentPath)) {
@@ -2170,8 +2103,6 @@ public class GalleryActivity extends AppCompatActivity {
                 }
             }
 
-            // Build the display list: use the folder's display name but
-            // disambiguate duplicates by appending the parent folder name.
             List<String> paths = new ArrayList<>(albums.keySet());
             Collections.sort(paths, (a, b) -> {
                 String da = albums.get(a);
@@ -2181,16 +2112,14 @@ public class GalleryActivity extends AppCompatActivity {
                 return da.compareToIgnoreCase(db);
             });
 
-            // Build a display-name map. If two folders share the display name,
-            // append " (parent)" to disambiguate.
-            Map<String, Integer> nameCounts = new java.util.HashMap<>();
+            Map<String, Integer> nameCounts = new HashMap<>();
             for (String p : paths) {
                 String d = albums.get(p);
                 if (d == null) d = "";
                 nameCounts.put(d, nameCounts.getOrDefault(d, 0) + 1);
             }
 
-            Map<String, String> finalDisplayNames = new java.util.HashMap<>();
+            Map<String, String> finalDisplayNames = new HashMap<>();
             for (String p : paths) {
                 String d = albums.get(p);
                 if (d == null) d = "";
@@ -2204,25 +2133,21 @@ public class GalleryActivity extends AppCompatActivity {
             }
 
             final List<String> finalPaths = new ArrayList<>(paths);
-            final Map<String, String> finalNames = new java.util.HashMap<>(finalDisplayNames);
+            final Map<String, String> finalNames = new HashMap<>(finalDisplayNames);
 
             runOnUiThread(() -> {
                 albumList.clear();
                 albumDisplayNames.clear();
                 albumList.addAll(finalPaths);
                 albumDisplayNames.putAll(finalNames);
+                albumsCacheValid = true;
                 showAlbumGrid();
             });
         });
     }
 
-    /**
-     * Walk the given directory looking for folders that contain
-     * image or video files (directly, not in subfolders) and add them
-     * to the album map.
-     */
     private void scanFoldersForMedia(File directory,
-                                     java.util.LinkedHashMap<String, String> albums,
+                                     LinkedHashMap<String, String> albums,
                                      int depth, int maxDepth) {
         if (depth > maxDepth || directory == null
                 || !directory.exists() || !directory.isDirectory()) return;
@@ -2234,22 +2159,16 @@ public class GalleryActivity extends AppCompatActivity {
 
         boolean hasMedia = false;
         for (File f : files) {
-            if (f.isFile() && isMediaFile(f.getName())) {
-                hasMedia = true;
-                break;
-            }
+            if (f.isFile() && isMediaFile(f.getName())) { hasMedia = true; break; }
         }
 
         if (hasMedia) {
-            String path;
-            try { path = directory.getCanonicalPath(); }
-            catch (Exception e) { path = directory.getAbsolutePath(); }
+            String path = getCachedCanonical(directory.getAbsolutePath());
             if (!albums.containsKey(path)) {
                 albums.put(path, directory.getName());
             }
         }
 
-        // Recurse into subfolders (skip common non-media dirs)
         String name = directory.getName().toLowerCase(Locale.ROOT);
         if (name.equals("android") || name.equals("system")
                 || name.equals("cache") || name.equals("tmp")
@@ -2285,7 +2204,6 @@ public class GalleryActivity extends AppCompatActivity {
             return;
         }
 
-        // Build a display list that shows the human-readable name.
         List<String> displayList = new ArrayList<>(albumList.size());
         for (String path : albumList) {
             String d = albumDisplayNames.get(path);
@@ -2294,7 +2212,6 @@ public class GalleryActivity extends AppCompatActivity {
         }
 
         albumAdapter = new AlbumAdapter(this, displayList, displayName -> {
-            // Map the display name back to the full path
             String chosenPath = null;
             for (String p : albumList) {
                 String d = albumDisplayNames.get(p);
@@ -2312,12 +2229,14 @@ public class GalleryActivity extends AppCompatActivity {
             recyclerView.setVisibility(View.VISIBLE);
             showAlbums = false;
             updateBarsVisibility();
+            updateTopNavBar();
         });
         albumRecycler.setLayoutManager(new GridLayoutManager(this, 2));
         albumRecycler.setAdapter(albumAdapter);
         albumRecycler.setVisibility(View.VISIBLE);
         titleView.setText("Albums");
     }
+
     // ===================== UTIL =====================
 
     private String formatFileSize(long size) {
@@ -2358,7 +2277,6 @@ public class GalleryActivity extends AppCompatActivity {
         saveFavoritePaths(favs);
         clearSelection();
         applyFilter();
-
     }
 
     // ===================== LIFECYCLE =====================

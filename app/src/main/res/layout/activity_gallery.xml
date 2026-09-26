@@ -246,9 +246,8 @@
 
                         <TextView
                             android:id="@+id/videoTitle"
-                            android:layout_width="0dp"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_weight="1"
                             android:text="Video"
                             android:textColor="#FFFFFF"
                             android:textStyle="bold"
@@ -259,46 +258,6 @@
                             android:textSize="14sp"
                             android:singleLine="true"
                             android:ellipsize="end" />
-
-                        <ImageButton
-                            android:id="@+id/btnRotate"
-                            android:layout_width="36dp"
-                            android:layout_height="36dp"
-                            android:src="@drawable/ic_rotate"
-                            android:background="#00000000"
-                            app:tint="#FFFFFF"
-                            android:layout_marginStart="8dp"
-                            android:scaleType="centerInside" />
-
-                        <ImageButton
-                            android:id="@+id/btnInfo"
-                            android:layout_width="36dp"
-                            android:layout_height="36dp"
-                            android:src="@drawable/ic_info"
-                            android:background="#00000000"
-                            app:tint="#FFFFFF"
-                            android:layout_marginStart="8dp"
-                            android:scaleType="centerInside" />
-
-                        <ImageButton
-                            android:id="@+id/btnFavorite"
-                            android:layout_width="36dp"
-                            android:layout_height="36dp"
-                            android:src="@drawable/ic_star_empty"
-                            android:background="#00000000"
-                            app:tint="#FFFFFF"
-                            android:layout_marginStart="8dp"
-                            android:scaleType="centerInside" />
-
-                        <ImageButton
-                            android:id="@+id/btnDelete"
-                            android:layout_width="36dp"
-                            android:layout_height="36dp"
-                            android:src="@drawable/ic_delete"
-                            android:background="#00000000"
-                            app:tint="#FF4444"
-                            android:layout_marginStart="8dp"
-                            android:scaleType="centerInside" />
                     </LinearLayout>
                 </LinearLayout>
             </LinearLayout>
