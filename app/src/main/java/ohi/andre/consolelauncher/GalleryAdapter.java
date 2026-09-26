@@ -9,8 +9,11 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
 import android.widget.RelativeLayout;
+
+import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
+
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -19,8 +22,6 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
 
     private Context context;
     private List<GalleryActivity.MediaItem> mediaItems;
-
-
     private List<String> selectedItems;
     private OnItemClickListener listener;
     private ExecutorService executor = Executors.newFixedThreadPool(4);
@@ -33,6 +34,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         void onFavoriteToggle(GalleryActivity.MediaItem item);
         void onDelete(GalleryActivity.MediaItem item);
         void onItemClick(String path);
+        void onItemLongPress(String path);   // ★ NEW
         boolean isSelectionMode();
         void onRestore(GalleryActivity.MediaItem item);
     }
@@ -52,21 +54,11 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         notifyDataSetChanged();
     }
 
-    /**
-     * Only refresh the rows whose selection state actually changed.
-     * Previously this called notifyDataSetChanged() which caused the entire
-     * grid to rebind and flash on every tap.
-     */
     public void updateSelectedItems(List<String> newSelectedItems) {
         this.selectedItems = newSelectedItems;
-
-        // Refresh only the rows that show a checkbox (i.e., selected or previously selected).
-        // Since the parent activity toggles one item at a time, we can find the diff and
-        // invalidate just those positions.
         for (int i = 0; i < mediaItems.size(); i++) {
             GalleryActivity.MediaItem item = mediaItems.get(i);
             boolean isSelected = newSelectedItems != null && newSelectedItems.contains(item.path);
-            // Notify this position only if it's potentially stale
             notifyItemChanged(i, isSelected);
         }
     }
@@ -80,7 +72,6 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
     @Override
     public void onBindViewHolder(ViewHolder holder, int position, java.util.List<Object> payloads) {
         if (payloads != null && !payloads.isEmpty()) {
-            // Payload-only update: only adjust the checkbox visibility
             GalleryActivity.MediaItem item = mediaItems.get(position);
             boolean isSelected = selectedItems != null && selectedItems.contains(item.path);
             if (listener.isSelectionMode()) {
@@ -91,7 +82,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
             } else {
                 holder.checkIcon.setVisibility(View.GONE);
             }
-            return; // Do not touch the image, avoids flicker
+            return;
         }
         onBindViewHolder(holder, position);
     }
@@ -100,12 +91,10 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
     public void onBindViewHolder(ViewHolder holder, int position) {
         GalleryActivity.MediaItem item = mediaItems.get(position);
 
-        // Reset icon states without wiping the thumbnail (which causes flicker)
         holder.videoIcon.setVisibility(View.GONE);
         holder.checkIcon.setVisibility(View.GONE);
         holder.videoOverlay.setVisibility(View.GONE);
 
-        // Favorite icon
         if (item.isFavorite) {
             holder.favIcon.setColorFilter(ContextCompat.getColor(context, android.R.color.holo_orange_dark));
             holder.favIcon.setVisibility(View.VISIBLE);
@@ -114,20 +103,16 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
             holder.favIcon.setVisibility(View.INVISIBLE);
         }
 
-        // Trashed video overlay
         if (item.isTrashed && item.type == GalleryActivity.MediaItem.TYPE_VIDEO) {
             holder.videoOverlay.setVisibility(View.VISIBLE);
         }
 
-        // Regular video icon
         if (item.type == GalleryActivity.MediaItem.TYPE_VIDEO && !item.isTrashed) {
             holder.videoIcon.setVisibility(View.VISIBLE);
         }
 
-        // Load or reuse thumbnail
         loadThumbnail(holder, item);
 
-        // Click handling
         if (item.isTrashed) {
             holder.itemView.setOnClickListener(v -> {
                 if (listener.isSelectionMode()) {
@@ -151,12 +136,13 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
             });
         }
 
+        // ★ Long-press → dedicated callback so the activity can start
+        //   drag-select properly.
         holder.itemView.setOnLongClickListener(v -> {
-            listener.onItemClick(item.path);
+            listener.onItemLongPress(item.path);
             return true;
         });
 
-        // Selection checkbox
         if (listener.isSelectionMode()) {
             holder.checkIcon.setVisibility(View.VISIBLE);
             if (selectedItems != null && selectedItems.contains(item.path)) {
@@ -168,19 +154,15 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
             holder.checkIcon.setVisibility(View.GONE);
         }
 
-        // Favorite toggle
-        holder.favIcon.setOnClickListener(v -> {
-            listener.onFavoriteToggle(item);
-        });
+        holder.favIcon.setOnClickListener(v -> listener.onFavoriteToggle(item));
     }
 
     private void loadThumbnail(ViewHolder holder, GalleryActivity.MediaItem item) {
         String path = item.path;
 
-        // If this holder is already showing the right thumbnail, skip reloading.
         Object currentTag = holder.imageView.getTag();
         if (currentTag != null && currentTag.equals(path) && holder.imageView.getDrawable() != null) {
-            return; // already showing the right thumbnail for this item
+            return;
         }
 
         holder.imageView.setTag(path);

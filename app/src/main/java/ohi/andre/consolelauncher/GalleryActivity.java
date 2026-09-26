@@ -37,6 +37,7 @@ import android.widget.VideoView;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
@@ -88,8 +89,17 @@ public class GalleryActivity extends AppCompatActivity {
     private View fullscreenInfoHeader;
     private TextView fullscreenInfoName;
     private TextView fullscreenInfoDetails;
+    // ── Drag-to-select state ──
+    private boolean dragSelectActive = false;
+    private boolean dragSelectDeselectMode = false;   // true = drag removes from selection
+    private final java.util.Set<Integer> dragVisitedPositions = new java.util.HashSet<>();
     private TextView fullscreenInfoPath;
     private boolean fullscreenChromeVisible = false;
+
+
+
+    private float dragLastY = -1f;
+    private float dragLastX = -1f;
     private int fullscreenCurrentIndex = 0;
 
     private AlbumAdapter albumAdapter;
@@ -936,6 +946,8 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
+
+
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
@@ -1581,6 +1593,9 @@ public class GalleryActivity extends AppCompatActivity {
             @Override public void onItemClick(String path) {
                 if (isActivityAlive()) toggleSelection(path);
             }
+            @Override public void onItemLongPress(String path) {
+                if (isActivityAlive()) startLongPressDrag(path);
+            }
             @Override public boolean isSelectionMode() {
                 return selectionMode && isActivityAlive();
             }
@@ -1602,7 +1617,159 @@ public class GalleryActivity extends AppCompatActivity {
         recyclerView.setHasFixedSize(true);
         recyclerView.setItemViewCacheSize(40);
         recyclerView.setItemAnimator(null);
+        setupDragToSelect();
     }
+
+    /**
+     * Called when an item is long-pressed. Enters selection mode,
+     * selects the item, and enables drag-select so subsequent finger
+     * movement selects neighboring items.
+     */
+    private void startLongPressDrag(String path) {
+        if (!isActivityAlive()) return;
+
+        // Enter selection mode
+        if (!selectedItems.contains(path)) {
+            selectedItems.add(path);
+        }
+        updateSelectionUI();
+
+        // Determine the direction of the drag:
+        //   - If the item was already selected before long-press → deselect mode
+        //   - Otherwise → select mode
+        // NOTE: `toggleSelection` isn't called, so the item stays selected
+        //       regardless; we just decide what subsequent drags do.
+        dragSelectDeselectMode = false; // fresh press = add mode
+
+        // Set drag-active state
+        dragSelectActive = true;
+        dragVisitedPositions.clear();
+
+        int idx = indexOfPath(path);
+        if (idx >= 0) {
+            dragVisitedPositions.add(idx);
+            if (adapter != null) adapter.notifyItemChanged(idx, "selection");
+        }
+
+        dragLastX = -1f;
+        dragLastY = -1f;
+
+        if (recyclerView != null) {
+            recyclerView.requestDisallowInterceptTouchEvent(false);
+        }
+    }
+
+    private int indexOfPath(String path) {
+        for (int i = 0; i < displayedItems.size(); i++) {
+            if (displayedItems.get(i).path.equals(path)) return i;
+        }
+        return -1;
+    }
+
+    /**
+     * Enable drag-to-select on the main grid.
+     *   - Long-press on an item → selection mode (handled by adapter).
+     *   - While still holding, drag up/down/left/right → every item the
+     *     finger passes over is selected (or deselected if the drag started
+     *     on an already-selected item).
+     *   - Auto-scrolls when the finger nears the top or bottom edge.
+     */
+    private void setupDragToSelect() {
+        if (recyclerView == null) return;
+
+        recyclerView.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
+
+            @Override
+            public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
+                if (!dragSelectActive) return false;
+
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_MOVE: {
+                        handleDragMove(rv, e.getX(), e.getY());
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL: {
+                        dragSelectActive = false;
+                        dragVisitedPositions.clear();
+                        dragLastX = -1f;
+                        dragLastY = -1f;
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            @Override
+            public void onTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
+                if (!dragSelectActive) return;
+
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_MOVE:
+                        handleDragMove(rv, e.getX(), e.getY());
+                        break;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        dragSelectActive = false;
+                        dragVisitedPositions.clear();
+                        dragLastX = -1f;
+                        dragLastY = -1f;
+                        break;
+                }
+            }
+        });
+    }
+
+    private void handleDragMove(RecyclerView rv, float x, float y) {
+        if (Math.abs(x - dragLastX) < 4 && Math.abs(y - dragLastY) < 4) return;
+        dragLastX = x;
+        dragLastY = y;
+
+        View child = rv.findChildViewUnder(x, y);
+        if (child != null) {
+            int pos = rv.getChildAdapterPosition(child);
+            if (pos != RecyclerView.NO_POSITION) {
+                handleDragTouch(pos);
+            }
+        }
+
+        // Auto-scroll near edges
+        int threshold = dpToPx(60);
+        if (y < threshold) {
+            rv.scrollBy(0, -dpToPx(8));
+        } else if (y > rv.getHeight() - threshold) {
+            rv.scrollBy(0, dpToPx(8));
+        }
+    }
+
+    private void handleDragTouch(int position) {
+        if (dragVisitedPositions.contains(position)) return;
+        if (position < 0 || position >= displayedItems.size()) return;
+
+        dragVisitedPositions.add(position);
+
+        MediaItem item = displayedItems.get(position);
+
+        if (dragSelectDeselectMode) {
+            selectedItems.remove(item.path);
+        } else {
+            if (!selectedItems.contains(item.path)) {
+                selectedItems.add(item.path);
+            }
+        }
+
+        updateSelectionUI();
+        if (adapter != null) {
+            adapter.notifyItemChanged(position, "selection");
+        }
+    }
+
+    private int dpToPx(int dp) {
+        return Math.round(dp * getResources().getDisplayMetrics().density);
+    }
+
+
+
 
     // ===================== TRASH =====================
 
@@ -1906,6 +2073,10 @@ public class GalleryActivity extends AppCompatActivity {
         if (binBottomBar != null) binBottomBar.setVisibility(View.GONE);
         if (selectionTopBar != null) selectionTopBar.setVisibility(View.GONE);
         if (adapter != null) adapter.updateSelectedItems(selectedItems);
+        dragSelectActive = false;
+        dragVisitedPositions.clear();
+        dragLastX = -1f;
+        dragLastY = -1f;
     }
 
     // ===================== SHARE / INFO =====================
