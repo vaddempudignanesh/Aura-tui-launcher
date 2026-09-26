@@ -56,6 +56,14 @@ public class GalleryActivity extends AppCompatActivity {
     private RecyclerView recyclerView;
     private RecyclerView albumRecycler;
     private GalleryAdapter adapter;
+
+    private View fullscreenInfoHeader;
+    private TextView fullscreenInfoName;
+    private TextView fullscreenInfoDetails;
+    private TextView fullscreenInfoPath;
+    private boolean fullscreenChromeVisible = false;
+    private int fullscreenCurrentIndex = 0;
+
     private AlbumAdapter albumAdapter;
     private List<MediaItem> mediaItems = new ArrayList<>();
     private List<MediaItem> displayedItems = new ArrayList<>();
@@ -246,17 +254,31 @@ public class GalleryActivity extends AppCompatActivity {
         });
 
 
-        // ===== FULLSCREEN VIEWER =====
         fullscreenOverlay = findViewById(R.id.fullscreenOverlay);
         fullscreenViewPager = findViewById(R.id.fullscreenViewPager);
         btnCloseFullscreen = findViewById(R.id.btnCloseFullscreen);
+        fullscreenInfoHeader = findViewById(R.id.fullscreenInfoHeader);
+        fullscreenInfoName = findViewById(R.id.fullscreenInfoName);
+        fullscreenInfoDetails = findViewById(R.id.fullscreenInfoDetails);
+        fullscreenInfoPath = findViewById(R.id.fullscreenInfoPath);
 
         btnCloseFullscreen.setOnClickListener(v -> closeFullscreenViewer());
 
-// Setup ViewPager
+        // Setup ViewPager
         fullscreenAdapter = new FullscreenAdapter(fullscreenMediaPaths, this);
+        fullscreenAdapter.setTapCallback(this::toggleFullscreenChrome);
         fullscreenViewPager.setAdapter(fullscreenAdapter);
         fullscreenViewPager.setOffscreenPageLimit(1);
+
+        // Update info header when user swipes to a different item
+        fullscreenViewPager.registerOnPageChangeCallback(
+                new androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
+                    @Override
+                    public void onPageSelected(int position) {
+                        fullscreenCurrentIndex = position;
+                        updateFullscreenInfo(position);
+                    }
+                });
 
 
         btnBinSelected.setOnClickListener(v -> moveSelectedToTrash());
@@ -335,16 +357,21 @@ public class GalleryActivity extends AppCompatActivity {
         }
 
         fullscreenCurrentPosition = currentIndex;
+        fullscreenCurrentIndex = currentIndex;
         fullscreenAdapter.notifyDataSetChanged();
         fullscreenViewPager.setCurrentItem(currentIndex, false);
         fullscreenOverlay.setVisibility(View.VISIBLE);
         fullscreenOverlay.bringToFront();
 
-        // Hide bottom bar
+        // Start with chrome hidden (only the image visible)
+        setFullscreenChromeVisible(false);
+
+        // Update info header for the current page
+        updateFullscreenInfo(currentIndex);
+
         bottomBar.setVisibility(View.GONE);
     }
 
-    // Close fullscreen viewer
     private void closeFullscreenViewer() {
         fullscreenOverlay.setVisibility(View.GONE);
         bottomBar.setVisibility(View.VISIBLE);
@@ -369,6 +396,41 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
     }
+
+    private void toggleFullscreenChrome() {
+        setFullscreenChromeVisible(!fullscreenChromeVisible);
+    }
+
+    private void setFullscreenChromeVisible(boolean visible) {
+        fullscreenChromeVisible = visible;
+        if (fullscreenInfoHeader != null) {
+            fullscreenInfoHeader.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+        if (btnCloseFullscreen != null) {
+            btnCloseFullscreen.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private void updateFullscreenInfo(int position) {
+        if (position < 0 || position >= fullscreenMediaPaths.size()) return;
+        String path = fullscreenMediaPaths.get(position);
+        File file = new File(path);
+
+        if (fullscreenInfoName != null) {
+            fullscreenInfoName.setText(file.getName());
+        }
+        if (fullscreenInfoDetails != null) {
+            String size = file.exists() ? formatFileSize(file.length()) : "—";
+            String type = getFileType(path);
+            fullscreenInfoDetails.setText(type + " · " + size);
+        }
+        if (fullscreenInfoPath != null) {
+            String parent = file.getParent();
+            fullscreenInfoPath.setText(parent != null ? parent : "");
+        }
+    }
+
+
 
     private void animateButtonBounce(View button) {
         if (button == null) return;

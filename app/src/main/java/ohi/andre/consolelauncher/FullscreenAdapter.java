@@ -1,340 +1,196 @@
 package ohi.andre.consolelauncher;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.ProgressBar;
-import android.widget.VideoView;
+
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
-import java.io.File;
+
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * FullscreenAdapter — pages through a list of media paths inside a ViewPager2.
+ *
+ * Exposes:
+ *   - ViewHolder with public imageView + videoView
+ *   - global scale mode shared by all pages
+ *   - zoom toggle helpers used by FullscreenViewerActivity
+ *   - a tap callback so the parent activity can toggle its chrome
+ */
 public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.ViewHolder> {
 
-    // Video scale modes
-    public static final int SCALE_FILL = 0;
-    public static final int SCALE_FIT = 1;
-    public static final int SCALE_CENTER = 2;
-    public static final int SCALE_FIT_WIDTH = 3;
-    public static final int SCALE_FIT_HEIGHT = 4;
+    // ── Scale modes ────────────────────────────────────────────
+    public static final int SCALE_FILL        = 0;
+    public static final int SCALE_FIT         = 1;
+    public static final int SCALE_CENTER      = 2;
+    public static final int SCALE_FIT_WIDTH   = 3;
+    public static final int SCALE_FIT_HEIGHT  = 4;
 
-    private List<String> paths;
-    private Object activity;
-    private ExecutorService executor = Executors.newFixedThreadPool(2);
-    private int currentScaleMode = SCALE_FIT;
-
-    public FullscreenAdapter(List<String> paths, FullscreenViewerActivity activity) {
-        this.paths = paths;
-        this.activity = activity;
+    // ── Tap callback ───────────────────────────────────────────
+    public interface TapCallback {
+        void onTap();
     }
 
-    public FullscreenAdapter(List<String> paths, GalleryActivity activity) {
+    // ── Fields ─────────────────────────────────────────────────
+    private final List<String> paths;
+    private final Context context;
+    private int scaleMode = SCALE_FIT;
+    private TapCallback tapCallback;
+
+    private final ExecutorService executor = Executors.newFixedThreadPool(2);
+
+    public FullscreenAdapter(List<String> paths, Context context) {
         this.paths = paths;
-        this.activity = activity;
+        this.context = context;
+    }
+
+    /** Called by the activity to register a single-tap handler. */
+    public void setTapCallback(TapCallback cb) {
+        this.tapCallback = cb;
+    }
+
+    // ── Scale mode ─────────────────────────────────────────────
+    public int getScaleMode() {
+        return scaleMode;
     }
 
     public void setScaleMode(int mode) {
-        this.currentScaleMode = mode;
+        this.scaleMode = mode;
         notifyDataSetChanged();
     }
 
-    public int getScaleMode() {
-        return currentScaleMode;
+    // ── ViewHolder ─────────────────────────────────────────────
+    public static class ViewHolder extends RecyclerView.ViewHolder {
+        public final ProgressBar progressBar;
+        public final ZoomableImageView imageView;
+        public final CustomVideoView videoView;
+
+        public ViewHolder(@NonNull View itemView) {
+            super(itemView);
+            progressBar = itemView.findViewById(R.id.fullscreen_progress);
+            imageView   = itemView.findViewById(R.id.fullscreen_image);
+            videoView   = itemView.findViewById(R.id.fullscreen_video);
+        }
     }
 
     @NonNull
     @Override
     public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-        View view = LayoutInflater.from(parent.getContext())
+        View v = LayoutInflater.from(context)
                 .inflate(R.layout.item_fullscreen_media, parent, false);
-        return new ViewHolder(view);
+        return new ViewHolder(v);
     }
 
     @Override
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
         String path = paths.get(position);
-        File file = new File(path);
 
-        if (!file.exists()) {
+        // Stop any old playback
+        try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
+        holder.videoView.setVisibility(View.GONE);
+        holder.imageView.setVisibility(View.GONE);
+        holder.progressBar.setVisibility(View.VISIBLE);
+
+        boolean isVideo = isVideoPath(path);
+
+        if (isVideo) {
             holder.progressBar.setVisibility(View.GONE);
-            holder.imageView.setVisibility(View.VISIBLE);
-            holder.imageView.setImageResource(android.R.drawable.ic_menu_gallery);
+            holder.videoView.setVisibility(View.VISIBLE);
+            try {
+                holder.videoView.setVideoPath(path);
+                holder.videoView.seekTo(1);
+                holder.videoView.setOnPreparedListener(mp -> {
+                    if (context instanceof FullscreenViewerActivity) {
+                        ((FullscreenViewerActivity) context)
+                                .setCurrentVideoView(holder.videoView);
+                    }
+                });
+                // Tapping the video also toggles chrome (via the callback)
+                holder.videoView.setOnClickListener(v -> {
+                    if (tapCallback != null) tapCallback.onTap();
+                });
+            } catch (Exception e) {
+                holder.progressBar.setVisibility(View.VISIBLE);
+            }
             return;
         }
 
-        String extension = path.substring(path.lastIndexOf(".") + 1).toLowerCase();
-        boolean isVideo = extension.matches("mp4|avi|mkv|mov|wmv|flv|3gp|webm|m4v");
-
-        // Reset views
-        holder.imageView.setVisibility(View.GONE);
-        holder.videoView.setVisibility(View.GONE);
-        holder.progressBar.setVisibility(View.VISIBLE);
-        holder.imageView.resetZoom();
-
-        if (isVideo) {
-            setupVideo(holder, path, position);
-        } else {
-            setupImage(holder, path);
-        }
-    }
-
-    private void setupVideo(ViewHolder holder, String path, int position) {
-        holder.imageView.setVisibility(View.GONE);
-        holder.videoView.setVisibility(View.VISIBLE);
-        holder.videoView.setVideoPath(path);
-
-        holder.videoView.setOnPreparedListener(mp -> {
-            holder.progressBar.setVisibility(View.GONE);
-
-            int videoWidth = mp.getVideoWidth();
-            int videoHeight = mp.getVideoHeight();
-
-            if (videoWidth == 0 || videoHeight == 0) {
-                return;
-            }
-
-            int screenWidth = holder.itemView.getWidth();
-            int screenHeight = holder.itemView.getHeight();
-
-            if (screenWidth == 0 || screenHeight == 0) {
-                holder.itemView.post(() -> {
-                    int w = holder.itemView.getWidth();
-                    int h = holder.itemView.getHeight();
-                    if (w == 0 || h == 0) return;
-                    FrameLayout.LayoutParams p = calculateVideoLayoutParams(
-                            videoWidth, videoHeight, w, h, currentScaleMode);
-                    holder.videoView.setLayoutParams(p);
-                });
-                return;
-            }
-
-            FrameLayout.LayoutParams params = calculateVideoLayoutParams(
-                    videoWidth, videoHeight, screenWidth, screenHeight, currentScaleMode);
-            holder.videoView.setLayoutParams(params);
-
-            mp.setLooping(true);
-
-            if (activity instanceof FullscreenViewerActivity) {
-                ((FullscreenViewerActivity) activity).setCurrentVideoView(holder.videoView);
-            } else if (activity instanceof GalleryActivity) {
-                ((GalleryActivity) activity).setCurrentVideoView(holder.videoView);
-            }
-        });
-
-        holder.videoView.setOnCompletionListener(mp -> {
-            mp.seekTo(0);
-            mp.start();
-        });
-
-        holder.videoView.setOnErrorListener((mp, what, extra) -> {
-            holder.progressBar.setVisibility(View.GONE);
-            return false;
-        });
-
-        int currentPos = 0;
-        if (activity instanceof FullscreenViewerActivity) {
-            currentPos = ((FullscreenViewerActivity) activity).getCurrentPosition();
-        } else if (activity instanceof GalleryActivity) {
-            currentPos = ((GalleryActivity) activity).getFullscreenCurrentPosition();
-        }
-
-        if (position == currentPos) {
-            holder.videoView.post(() -> {
-                if (activity instanceof FullscreenViewerActivity) {
-                    ((FullscreenViewerActivity) activity).setCurrentVideoView(holder.videoView);
-                } else if (activity instanceof GalleryActivity) {
-                    ((GalleryActivity) activity).setCurrentVideoView(holder.videoView);
-                }
-            });
-        }
-    }
-
-    private void setupImage(ViewHolder holder, String path) {
-        holder.videoView.setVisibility(View.GONE);
-        holder.imageView.setVisibility(View.VISIBLE);
-        updateImageScaleType(holder.imageView);
-
+        // Image path — decode in background
+        final int pos = position;
         executor.execute(() -> {
-            try {
-                BitmapFactory.Options options = new BitmapFactory.Options();
-                options.inJustDecodeBounds = true;
-                BitmapFactory.decodeFile(path, options);
-
-                int sampleSize = 1;
-                while (options.outWidth / sampleSize > 2000 || options.outHeight / sampleSize > 2000) {
-                    sampleSize *= 2;
-                }
-
-                options.inJustDecodeBounds = false;
-                options.inSampleSize = sampleSize;
-
-                Bitmap bitmap = BitmapFactory.decodeFile(path, options);
-                final Bitmap finalBitmap = bitmap;
-
-                holder.imageView.post(() -> {
-                    if (finalBitmap != null) {
-                        holder.imageView.setImageBitmap(finalBitmap);
-                        holder.imageView.resetZoom(); // Reset zoom when new image loads
-                    }
-                    holder.progressBar.setVisibility(View.GONE);
-                });
-            } catch (Exception e) {
-                e.printStackTrace();
-                holder.imageView.post(() -> {
+            Bitmap bmp = decodeSampled(path);
+            holder.itemView.post(() -> {
+                if (holder.getAdapterPosition() != pos) return;
+                holder.progressBar.setVisibility(View.GONE);
+                holder.imageView.setVisibility(View.VISIBLE);
+                if (bmp != null) {
+                    holder.imageView.setImageBitmap(bmp);
+                } else {
                     holder.imageView.setImageResource(android.R.drawable.ic_menu_gallery);
-                    holder.progressBar.setVisibility(View.GONE);
+                }
+                applyScaleMode(holder.imageView);
+
+                // Wire the tap callback on the zoomable image
+                holder.imageView.setOnTapListener(() -> {
+                    if (tapCallback != null) tapCallback.onTap();
                 });
-            }
+            });
         });
     }
 
-    private void updateImageScaleType(ZoomableImageView imageView) {
-        imageView.resetZoom();
-        switch (currentScaleMode) {
-            case SCALE_FIT:
-                imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                break;
-            case SCALE_FILL:
-                imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                break;
-            case SCALE_CENTER:
-                imageView.setScaleType(ImageView.ScaleType.CENTER);
-                break;
-            default:
-                imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                break;
-        }
-    }
-
-    private FrameLayout.LayoutParams calculateVideoLayoutParams(
-            int videoWidth, int videoHeight, int screenWidth, int screenHeight, int scaleMode) {
-
-        float videoAspect = (float) videoWidth / videoHeight;
-        float screenAspect = (float) screenWidth / screenHeight;
-
-        int newWidth, newHeight;
-
+    private void applyScaleMode(ZoomableImageView iv) {
         switch (scaleMode) {
-            case SCALE_FILL:
-                if (videoAspect > screenAspect) {
-                    newHeight = screenHeight;
-                    newWidth = (int) (screenHeight * videoAspect);
-                } else {
-                    newWidth = screenWidth;
-                    newHeight = (int) (screenWidth / videoAspect);
-                }
-                if (newWidth < screenWidth) {
-                    newWidth = screenWidth;
-                    newHeight = (int) (screenWidth / videoAspect);
-                }
-                if (newHeight < screenHeight) {
-                    newHeight = screenHeight;
-                    newWidth = (int) (screenHeight * videoAspect);
-                }
-                break;
-
-            case SCALE_FIT:
-                if (videoAspect > screenAspect) {
-                    newWidth = screenWidth;
-                    newHeight = (int) (screenWidth / videoAspect);
-                } else {
-                    newHeight = screenHeight;
-                    newWidth = (int) (screenHeight * videoAspect);
-                }
-                break;
-
-            case SCALE_CENTER:
-                float scaleX = (float) screenWidth / videoWidth;
-                float scaleY = (float) screenHeight / videoHeight;
-                float scale = Math.min(scaleX, scaleY);
-                newWidth = (int) (videoWidth * scale);
-                newHeight = (int) (videoHeight * scale);
-                break;
-
-            case SCALE_FIT_WIDTH:
-                newWidth = screenWidth;
-                newHeight = (int) (screenWidth / videoAspect);
-                break;
-
-            case SCALE_FIT_HEIGHT:
-                newHeight = screenHeight;
-                newWidth = (int) (screenHeight * videoAspect);
-                break;
-
-            default:
-                if (videoAspect > screenAspect) {
-                    newHeight = screenHeight;
-                    newWidth = (int) (screenHeight * videoAspect);
-                } else {
-                    newWidth = screenWidth;
-                    newHeight = (int) (screenWidth / videoAspect);
-                }
-                if (newWidth < screenWidth) {
-                    newWidth = screenWidth;
-                    newHeight = (int) (screenWidth / videoAspect);
-                }
-                if (newHeight < screenHeight) {
-                    newHeight = screenHeight;
-                    newWidth = (int) (screenHeight * videoAspect);
-                }
-                break;
+            case SCALE_FILL:       iv.setScaleType(ImageView.ScaleType.CENTER_CROP); break;
+            case SCALE_FIT:        iv.setScaleType(ImageView.ScaleType.FIT_CENTER); break;
+            case SCALE_CENTER:     iv.setScaleType(ImageView.ScaleType.CENTER); break;
+            case SCALE_FIT_WIDTH:  iv.setScaleType(ImageView.ScaleType.FIT_CENTER); break;
+            case SCALE_FIT_HEIGHT: iv.setScaleType(ImageView.ScaleType.FIT_CENTER); break;
         }
-
-        newWidth = Math.min(newWidth, screenWidth * 2);
-        newHeight = Math.min(newHeight, screenHeight * 2);
-        newWidth = Math.max(newWidth, screenWidth / 2);
-        newHeight = Math.max(newHeight, screenHeight / 2);
-
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(newWidth, newHeight);
-        params.gravity = Gravity.CENTER;
-        return params;
     }
 
-    @Override
-    public int getItemCount() {
-        return paths != null ? paths.size() : 0;
+    private static boolean isVideoPath(String path) {
+        String lower = path.toLowerCase();
+        return lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
+                || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
+                || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv");
+    }
+
+    private Bitmap decodeSampled(String path) {
+        try {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(path, o);
+
+            int reqW = 1440, reqH = 2560, scale = 1;
+            while ((o.outWidth / scale) > reqW * 2 && (o.outHeight / scale) > reqH * 2) {
+                scale *= 2;
+            }
+
+            BitmapFactory.Options o2 = new BitmapFactory.Options();
+            o2.inSampleSize = scale;
+            return BitmapFactory.decodeFile(path, o2);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @Override
     public void onViewRecycled(@NonNull ViewHolder holder) {
         super.onViewRecycled(holder);
-        if (holder.videoView != null) {
-            try {
-                holder.videoView.stopPlayback();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-        if (holder.imageView != null) {
-            holder.imageView.setImageBitmap(null);
-            holder.imageView.resetZoom();
-        }
+        try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
+        holder.imageView.setImageDrawable(null);
     }
 
     @Override
-    public void onDetachedFromRecyclerView(@NonNull RecyclerView recyclerView) {
-        super.onDetachedFromRecyclerView(recyclerView);
-        executor.shutdown();
-    }
-
-    public static class ViewHolder extends RecyclerView.ViewHolder {
-        ZoomableImageView imageView;
-        VideoView videoView;
-        ProgressBar progressBar;
-
-        public ViewHolder(@NonNull View itemView) {
-            super(itemView);
-            imageView = itemView.findViewById(R.id.fullscreen_image);
-            videoView = itemView.findViewById(R.id.fullscreen_video);
-            progressBar = itemView.findViewById(R.id.fullscreen_progress);
-        }
+    public int getItemCount() {
+        return paths != null ? paths.size() : 0;
     }
 }

@@ -19,6 +19,8 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
 
     private Context context;
     private List<GalleryActivity.MediaItem> mediaItems;
+
+
     private List<String> selectedItems;
     private OnItemClickListener listener;
     private ExecutorService executor = Executors.newFixedThreadPool(4);
