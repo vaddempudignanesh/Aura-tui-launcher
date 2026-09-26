@@ -78,7 +78,6 @@ public class GalleryActivity extends AppCompatActivity {
     private RelativeLayout fullscreenOverlay;
     private ViewPager2 fullscreenViewPager;
     private FullscreenAdapter fullscreenAdapter;
-    private ImageButton btnCloseFullscreen;
     private final List<String> fullscreenMediaPaths = new ArrayList<>();
     private int fullscreenCurrentPosition = 0;
 
@@ -245,7 +244,6 @@ public class GalleryActivity extends AppCompatActivity {
 
         fullscreenOverlay = findViewById(R.id.fullscreenOverlay);
         fullscreenViewPager = findViewById(R.id.fullscreenViewPager);
-        btnCloseFullscreen = findViewById(R.id.btnCloseFullscreen);
         fullscreenInfoHeader = findViewById(R.id.fullscreenInfoHeader);
         fullscreenInfoName = findViewById(R.id.fullscreenInfoName);
         fullscreenInfoDetails = findViewById(R.id.fullscreenInfoDetails);
@@ -265,7 +263,6 @@ public class GalleryActivity extends AppCompatActivity {
         videoSeekBar = findViewById(R.id.videoSeekBar);
         videoControlsOverlay = findViewById(R.id.videoControlsOverlay);
 
-        btnCloseFullscreen.setOnClickListener(v -> closeFullscreenViewer());
 
 // ★ Tap-anywhere on the fullscreen overlay toggles controls, but does NOT
 // consume swipes. We use a GestureDetector so single taps fire onFullscreenTap
@@ -375,6 +372,9 @@ public class GalleryActivity extends AppCompatActivity {
                 fullscreenCurrentPosition = position;
                 fullscreenCurrentIndex = position;
 
+                // ★ Update the header (name / details / path / video title) for the new page
+                updateFullscreenInfo(position);
+
                 if (position >= 0 && position < fullscreenMediaPaths.size()) {
                     String path = fullscreenMediaPaths.get(position);
                     if (isVideoPath(path)) {
@@ -463,8 +463,6 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenChromeVisible = visible;
         if (fullscreenInfoHeader != null)
             fullscreenInfoHeader.setVisibility(visible ? View.VISIBLE : View.GONE);
-        if (btnCloseFullscreen != null)
-            btnCloseFullscreen.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
 
     // ===================== OVERLAY VIDEO CONTROLS =====================
