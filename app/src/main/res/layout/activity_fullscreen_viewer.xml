@@ -1,83 +1,85 @@
 <?xml version="1.0" encoding="utf-8"?>
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent">
+    >
 
-    <!-- ViewPager for swiping -->
+    <!-- Page container (images / videos) -->
     <androidx.viewpager2.widget.ViewPager2
         android:id="@+id/fullscreenViewPager"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Video Controls Overlay -->
-    <RelativeLayout
+    <!-- Controls overlay: children use wrap_content so surface is not covered -->
+    <FrameLayout
         android:id="@+id/videoControlsOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:clickable="true"
-        android:focusable="true">
+        android:clickable="false"
+        android:focusable="false">
 
-        <!-- Control Container -->
-        <RelativeLayout
+        <!-- Center controls (only icons, small area) -->
+        <LinearLayout
             android:id="@+id/videoControlContainer"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:background="#00000000"
-            android:visibility="visible">
+            android:orientation="vertical"
+            android:visibility="gone">
 
-            <!-- Center Controls -->
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_centerInParent="true"
-                android:orientation="horizontal"
-                android:gravity="center"
-                android:background="#00000000"
-                android:padding="24dp"
-                android:elevation="24dp">
+            <!-- Center strip -->
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1">
 
-                <ImageButton
-                    android:id="@+id/btnSkipBackward"
-                    android:layout_width="56dp"
-                    android:layout_height="56dp"
-                    android:src="@drawable/ic_skip_back"
-                    android:background="#00000000"
-                    app:tint="#FFFFFF"
-                    android:scaleType="centerInside" />
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:orientation="horizontal"
+                    android:gravity="center"
+                    android:padding="24dp">
 
-                <ImageButton
-                    android:id="@+id/btnCenterPlayPause"
-                    android:layout_width="72dp"
-                    android:layout_height="72dp"
-                    android:src="@android:drawable/ic_media_play"
-                    android:background="#00000000"
-                    app:tint="#FFFFFF"
-                    android:layout_marginStart="24dp"
-                    android:layout_marginEnd="24dp"
-                    android:scaleType="centerInside" />
+                    <ImageButton
+                        android:id="@+id/btnSkipBackward"
+                        android:layout_width="56dp"
+                        android:layout_height="56dp"
+                        android:src="@drawable/ic_skip_back"
+                        android:background="#00000000"
+                        app:tint="#FFFFFF"
+                        android:scaleType="centerInside" />
 
-                <ImageButton
-                    android:id="@+id/btnSkipForward"
-                    android:layout_width="56dp"
-                    android:layout_height="56dp"
-                    android:src="@drawable/ic_skip_forward"
-                    android:background="#00000000"
-                    app:tint="#FFFFFF"
-                    android:scaleType="centerInside" />
-            </LinearLayout>
+                    <ImageButton
+                        android:id="@+id/btnCenterPlayPause"
+                        android:layout_width="72dp"
+                        android:layout_height="72dp"
+                        android:src="@android:drawable/ic_media_play"
+                        android:background="#00000000"
+                        app:tint="#FFFFFF"
+                        android:layout_marginStart="24dp"
+                        android:layout_marginEnd="24dp"
+                        android:scaleType="centerInside" />
 
-            <!-- Bottom Controls -->
+                    <ImageButton
+                        android:id="@+id/btnSkipForward"
+                        android:layout_width="56dp"
+                        android:layout_height="56dp"
+                        android:src="@drawable/ic_skip_forward"
+                        android:background="#00000000"
+                        app:tint="#FFFFFF"
+                        android:scaleType="centerInside" />
+                </LinearLayout>
+            </FrameLayout>
+
+            <!-- Bottom strip -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_alignParentBottom="true"
                 android:orientation="vertical"
                 android:padding="12dp"
                 android:background="#33000000">
 
-                <!-- Seek Bar -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -102,9 +104,7 @@
                         android:layout_marginStart="12dp"
                         android:layout_marginEnd="12dp"
                         android:progress="0"
-                        android:max="100"
-                        android:progressTint="#FFFFFF"
-                        android:thumb="@android:color/white" />
+                        android:max="100" />
 
                     <TextView
                         android:id="@+id/videoTimeTotal"
@@ -115,7 +115,6 @@
                         android:textSize="12sp" />
                 </LinearLayout>
 
-                <!-- Bottom Action Buttons -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -134,17 +133,6 @@
                         android:textSize="14sp"
                         android:singleLine="true"
                         android:ellipsize="end" />
-
-                    <!-- NEW: Scale/Fit Button -->
-                    <ImageButton
-                        android:id="@+id/btnScale"
-                        android:layout_width="36dp"
-                        android:layout_height="36dp"
-                        android:src="@drawable/ic_fit_screen"
-                        android:background="#00000000"
-                        app:tint="#FFFFFF"
-                        android:layout_marginStart="8dp"
-                        android:scaleType="centerInside" />
 
                     <ImageButton
                         android:id="@+id/btnRotate"
@@ -187,7 +175,7 @@
                         android:scaleType="centerInside" />
                 </LinearLayout>
             </LinearLayout>
-        </RelativeLayout>
-    </RelativeLayout>
+        </LinearLayout>
+    </FrameLayout>
 
-</RelativeLayout>
+</FrameLayout>

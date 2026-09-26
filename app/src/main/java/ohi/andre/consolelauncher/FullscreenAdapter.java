@@ -3,10 +3,10 @@ package ohi.andre.consolelauncher;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ImageView;
 import android.widget.ProgressBar;
 
 import androidx.annotation.NonNull;
@@ -16,58 +16,43 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * FullscreenAdapter — pages through a list of media paths inside a ViewPager2.
- *
- * Exposes:
- *   - ViewHolder with public imageView + videoView
- *   - global scale mode shared by all pages
- *   - zoom toggle helpers used by FullscreenViewerActivity
- *   - a tap callback so the parent activity can toggle its chrome
- */
 public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.ViewHolder> {
 
-    // ── Scale modes ────────────────────────────────────────────
-    public static final int SCALE_FILL        = 0;
-    public static final int SCALE_FIT         = 1;
-    public static final int SCALE_CENTER      = 2;
-    public static final int SCALE_FIT_WIDTH   = 3;
-    public static final int SCALE_FIT_HEIGHT  = 4;
+    private static final String LOG_TAG = "gallery-tui";
+    private final String idHash = Integer.toHexString(System.identityHashCode(this));
+    private String src() { return "[FullscreenAdapter:" + idHash + "]"; }
 
-    // ── Tap callback ───────────────────────────────────────────
-    public interface TapCallback {
-        void onTap();
+    public interface TapCallback { void onTap(); }
+    public interface PageTypeCallback {
+        void onImageVisible(int position);
+        void onVideoVisible(CustomVideoView videoView, int position);
     }
 
-    // ── Fields ─────────────────────────────────────────────────
     private final List<String> paths;
     private final Context context;
-    private int scaleMode = SCALE_FIT;
     private TapCallback tapCallback;
-
+    private PageTypeCallback pageTypeCallback;
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
 
     public FullscreenAdapter(List<String> paths, Context context) {
         this.paths = paths;
         this.context = context;
+        Log.d(LOG_TAG, src() + " constructor called, context=" + context.getClass().getName());
     }
 
-    /** Called by the activity to register a single-tap handler. */
     public void setTapCallback(TapCallback cb) {
+        Log.d(LOG_TAG, src() + " setTapCallback: " + cb);
         this.tapCallback = cb;
     }
 
-    // ── Scale mode ─────────────────────────────────────────────
-    public int getScaleMode() {
-        return scaleMode;
+    public void setPageTypeCallback(PageTypeCallback cb) {
+        Log.d(LOG_TAG, src() + " setPageTypeCallback: "
+                + (cb != null ? Integer.toHexString(System.identityHashCode(cb)) : "null"));
+        this.pageTypeCallback = cb;
     }
 
-    public void setScaleMode(int mode) {
-        this.scaleMode = mode;
-        notifyDataSetChanged();
-    }
+    private void log(String msg) { Log.d(LOG_TAG, src() + " " + msg); }
 
-    // ── ViewHolder ─────────────────────────────────────────────
     public static class ViewHolder extends RecyclerView.ViewHolder {
         public final ProgressBar progressBar;
         public final ZoomableImageView imageView;
@@ -76,8 +61,8 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         public ViewHolder(@NonNull View itemView) {
             super(itemView);
             progressBar = itemView.findViewById(R.id.fullscreen_progress);
-            imageView   = itemView.findViewById(R.id.fullscreen_image);
-            videoView   = itemView.findViewById(R.id.fullscreen_video);
+            imageView = itemView.findViewById(R.id.fullscreen_image);
+            videoView = itemView.findViewById(R.id.fullscreen_video);
         }
     }
 
@@ -86,71 +71,111 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
     public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         View v = LayoutInflater.from(context)
                 .inflate(R.layout.item_fullscreen_media, parent, false);
+        log("onCreateViewHolder");
         return new ViewHolder(v);
     }
 
     @Override
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
-        String path = paths.get(position);
+        final int boundPosition = position;
+        final String path = paths.get(position);
 
-        // Stop any old playback
+        log("onBind pos=" + boundPosition + " path=" + path
+                + " pageTypeCallback=" + (pageTypeCallback != null
+                ? Integer.toHexString(System.identityHashCode(pageTypeCallback)) : "null"));
+
+        // Reset recycled page
         try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
         holder.videoView.setVisibility(View.GONE);
         holder.imageView.setVisibility(View.GONE);
         holder.progressBar.setVisibility(View.VISIBLE);
+        holder.imageView.setImageDrawable(null);
+        holder.imageView.setTag(path);
 
-        boolean isVideo = isVideoPath(path);
-
-        if (isVideo) {
-            holder.progressBar.setVisibility(View.GONE);
+        if (isVideoPath(path)) {
+            log("  → VIDEO page");
             holder.videoView.setVisibility(View.VISIBLE);
+
+            holder.videoView.setOnPreparedListener(mp -> {
+                int adapterPosition = holder.getBindingAdapterPosition();
+                log("  adapter.onPrepared pos=" + boundPosition
+                        + " currentAdapterPos=" + adapterPosition
+                        + " pageTypeCallback=" + (pageTypeCallback != null
+                        ? Integer.toHexString(System.identityHashCode(pageTypeCallback)) : "null"));
+                if (adapterPosition != boundPosition
+                        || boundPosition < 0 || boundPosition >= paths.size()
+                        || !path.equals(paths.get(boundPosition))) {
+                    log("  → rejected (stale)");
+                    return;
+                }
+
+                holder.progressBar.setVisibility(View.GONE);
+
+                if (pageTypeCallback != null) {
+                    log("  → dispatching onVideoVisible pos=" + boundPosition);
+                    pageTypeCallback.onVideoVisible(holder.videoView, boundPosition);
+                } else {
+                    log("  → WARNING: pageTypeCallback is null!");
+                }
+            });
+
+            holder.videoView.setOnErrorListener((mp, what, extra) -> {
+                log("  adapter.onError what=" + what + " extra=" + extra);
+                int adapterPosition = holder.getBindingAdapterPosition();
+                if (adapterPosition == boundPosition) holder.progressBar.setVisibility(View.GONE);
+                return true;
+            });
+
             try {
+                log("  calling videoView.setVideoPath");
                 holder.videoView.setVideoPath(path);
-                holder.videoView.seekTo(1);
-                holder.videoView.setOnPreparedListener(mp -> {
-                    if (context instanceof FullscreenViewerActivity) {
-                        ((FullscreenViewerActivity) context)
-                                .setCurrentVideoView(holder.videoView);
-                    }
-                });
-                // Tapping the video also toggles chrome (via the callback)
-                holder.videoView.setOnClickListener(v -> {
-                    if (tapCallback != null) tapCallback.onTap();
-                });
             } catch (Exception e) {
-                holder.progressBar.setVisibility(View.VISIBLE);
+                Log.e(LOG_TAG, src() + " setVideoPath threw", e);
+                holder.progressBar.setVisibility(View.GONE);
             }
             return;
         }
 
-        // Image path — decode in background
-        final int pos = position;
+        // IMAGE
+        log("  → IMAGE page");
         executor.execute(() -> {
             Bitmap bmp = decodeSampled(path);
             holder.itemView.post(() -> {
-                if (holder.getAdapterPosition() != pos) return;
+                int adapterPosition = holder.getBindingAdapterPosition();
+                if (adapterPosition != boundPosition
+                        || boundPosition < 0 || boundPosition >= paths.size()
+                        || !path.equals(paths.get(boundPosition))) {
+                    log("  image decode stale for pos=" + boundPosition);
+                    return;
+                }
+
                 holder.progressBar.setVisibility(View.GONE);
+                // ★ Set visible BEFORE bitmap so layout happens, then resetToFit runs
                 holder.imageView.setVisibility(View.VISIBLE);
+
                 if (bmp != null) {
                     holder.imageView.setImageBitmap(bmp);
                 } else {
                     holder.imageView.setImageResource(android.R.drawable.ic_menu_gallery);
                 }
 
-                // Wire the tap callback on the zoomable image
                 holder.imageView.setOnTapListener(() -> {
                     if (tapCallback != null) tapCallback.onTap();
                 });
+
+                if (pageTypeCallback != null) {
+                    log("  → dispatching onImageVisible pos=" + boundPosition);
+                    pageTypeCallback.onImageVisible(boundPosition);
+                } else {
+                    log("  → WARNING (image): pageTypeCallback is null!");
+                }
             });
         });
     }
 
-
-
-
-
     private static boolean isVideoPath(String path) {
-        String lower = path.toLowerCase();
+        if (path == null) return false;
+        String lower = path.toLowerCase(java.util.Locale.ROOT);
         return lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
                 || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
                 || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv");
@@ -161,30 +186,36 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
             BitmapFactory.Options o = new BitmapFactory.Options();
             o.inJustDecodeBounds = true;
             BitmapFactory.decodeFile(path, o);
+            if (o.outWidth <= 0 || o.outHeight <= 0) return null;
 
             int reqW = 1440, reqH = 2560, scale = 1;
-            while ((o.outWidth / scale) > reqW * 2 && (o.outHeight / scale) > reqH * 2) {
-                scale *= 2;
-            }
+            while ((o.outWidth / scale) > reqW * 2 && (o.outHeight / scale) > reqH * 2) scale *= 2;
 
             BitmapFactory.Options o2 = new BitmapFactory.Options();
             o2.inSampleSize = scale;
+            o2.inPreferredConfig = Bitmap.Config.ARGB_8888;
             return BitmapFactory.decodeFile(path, o2);
-        } catch (Exception e) {
-            return null;
-        }
+        } catch (Exception e) { return null; }
     }
-
 
     @Override
     public void onViewRecycled(@NonNull ViewHolder holder) {
-        super.onViewRecycled(holder);
+        log("onViewRecycled");
         try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
+        holder.videoView.setVisibility(View.GONE);
+        holder.imageView.setVisibility(View.GONE);
         holder.imageView.setImageDrawable(null);
+        holder.progressBar.setVisibility(View.GONE);
+        super.onViewRecycled(holder);
     }
 
     @Override
-    public int getItemCount() {
-        return paths != null ? paths.size() : 0;
+    public void onDetachedFromRecyclerView(@NonNull RecyclerView recyclerView) {
+        super.onDetachedFromRecyclerView(recyclerView);
+        log("onDetachedFromRecyclerView — shutting down executor");
+        executor.shutdownNow();
     }
+
+    @Override
+    public int getItemCount() { return paths != null ? paths.size() : 0; }
 }

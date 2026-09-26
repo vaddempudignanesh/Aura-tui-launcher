@@ -5,6 +5,7 @@ import android.graphics.Matrix;
 import android.graphics.PointF;
 import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
+import android.util.Log;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -12,19 +13,11 @@ import android.view.ScaleGestureDetector;
 import androidx.annotation.Nullable;
 import androidx.appcompat.widget.AppCompatImageView;
 
-/**
- * An ImageView supporting:
- *  - pinch-to-zoom
- *  - double-tap-to-zoom (toggle)
- *  - one-finger pan when zoomed
- *  - no pan when fully zoomed out (so parent ViewPager2 can swipe between pages)
- *
- * IMPORTANT: For correct behavior with a parent ViewPager2, this view must
- * call requestDisallowInterceptTouchEvent(true) ONLY when it is currently
- * zoomed in or actively zooming. When zoomed out, it must let events
- * propagate so ViewPager2 can handle horizontal swipes.
- */
 public class ZoomableImageView extends AppCompatImageView {
+
+    private static final String LOG_TAG = "gallery-tui";
+    private final String id = Integer.toHexString(System.identityHashCode(this));
+    private void log(String msg) { Log.d(LOG_TAG, "[ZoomableImageView:" + id + "] " + msg); }
 
     private static final float MIN_SCALE = 1.0f;
     private static final float MAX_SCALE = 5.0f;
@@ -39,29 +32,17 @@ public class ZoomableImageView extends AppCompatImageView {
     private GestureDetector gestureDetector;
 
     private float currentScale = 1.0f;
-    private float baseScale = 1.0f;      // scale to fit image into view
+    private float baseScale = 1.0f;
     private boolean isZoomed = false;
 
-    /** Callback when the user taps (single tap) — used to toggle chrome. */
-    public interface OnTapListener {
-        void onTap();
-    }
+    public interface OnTapListener { void onTap(); }
     private OnTapListener onTapListener;
     public void setOnTapListener(OnTapListener l) { this.onTapListener = l; }
 
-    public ZoomableImageView(Context context) {
-        super(context);
-        init(context);
-    }
-
-    public ZoomableImageView(Context context, @Nullable AttributeSet attrs) {
-        super(context, attrs);
-        init(context);
-    }
-
+    public ZoomableImageView(Context context) { super(context); init(context); }
+    public ZoomableImageView(Context context, @Nullable AttributeSet attrs) { super(context, attrs); init(context); }
     public ZoomableImageView(Context context, @Nullable AttributeSet attrs, int defStyleAttr) {
-        super(context, attrs, defStyleAttr);
-        init(context);
+        super(context, attrs, defStyleAttr); init(context);
     }
 
     private void init(Context context) {
@@ -71,8 +52,7 @@ public class ZoomableImageView extends AppCompatImageView {
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     @Override
                     public boolean onScaleBegin(ScaleGestureDetector d) {
-                        // We're starting a pinch → block ViewPager from intercepting
-                        getParent().requestDisallowInterceptTouchEvent(true);
+                        if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                         return true;
                     }
 
@@ -86,8 +66,7 @@ public class ZoomableImageView extends AppCompatImageView {
                         float realFactor = newScale / currentScale;
                         currentScale = newScale;
 
-                        imageMatrix.postScale(realFactor, realFactor,
-                                d.getFocusX(), d.getFocusY());
+                        imageMatrix.postScale(realFactor, realFactor, d.getFocusX(), d.getFocusY());
                         setImageMatrix(imageMatrix);
                         fixTranslation();
                         updateZoomState();
@@ -96,15 +75,13 @@ public class ZoomableImageView extends AppCompatImageView {
 
                     @Override
                     public void onScaleEnd(ScaleGestureDetector d) {
-                        getParent().requestDisallowInterceptTouchEvent(false);
+                        if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
                     }
                 });
 
         gestureDetector = new GestureDetector(context,
                 new GestureDetector.SimpleOnGestureListener() {
-
-                    @Override
-                    public boolean onDown(MotionEvent e) { return true; }
+                    @Override public boolean onDown(MotionEvent e) { return true; }
 
                     @Override
                     public boolean onSingleTapConfirmed(MotionEvent e) {
@@ -115,11 +92,9 @@ public class ZoomableImageView extends AppCompatImageView {
                     @Override
                     public boolean onDoubleTap(MotionEvent e) {
                         if (isZoomed) {
-                            // zoom out to fit
                             currentScale = baseScale;
                             setScaleTo(baseScale, e.getX(), e.getY());
                         } else {
-                            // zoom in to DOUBLE_TAP_SCALE
                             currentScale = baseScale * DOUBLE_TAP_SCALE;
                             setScaleTo(currentScale, e.getX(), e.getY());
                         }
@@ -128,11 +103,8 @@ public class ZoomableImageView extends AppCompatImageView {
                     }
 
                     @Override
-                    public boolean onScroll(MotionEvent e1, MotionEvent e2,
-                                            float dx, float dy) {
-                        // Only pan when zoomed in
+                    public boolean onScroll(MotionEvent e1, MotionEvent e2, float dx, float dy) {
                         if (!isZoomed) return false;
-
                         imageMatrix.postTranslate(-dx, -dy);
                         setImageMatrix(imageMatrix);
                         fixTranslation();
@@ -141,7 +113,6 @@ public class ZoomableImageView extends AppCompatImageView {
                 });
     }
 
-    /** Programmatically set scale to a target value, pivoting on (px, py). */
     private void setScaleTo(float targetScale, float px, float py) {
         imageMatrix.getValues(matrixValues);
         float currentMatrixScale = matrixValues[Matrix.MSCALE_X];
@@ -152,7 +123,6 @@ public class ZoomableImageView extends AppCompatImageView {
         fixTranslation();
     }
 
-    /** Keeps the image from drifting off-screen. */
     private void fixTranslation() {
         Drawable d = getDrawable();
         if (d == null) return;
@@ -165,23 +135,24 @@ public class ZoomableImageView extends AppCompatImageView {
 
         float viewW = getWidth();
         float viewH = getHeight();
-        float imgW = d.getIntrinsicWidth() * scaleX;
-        float imgH = d.getIntrinsicHeight() * scaleY;
+        if (viewW <= 0 || viewH <= 0) return;
+
+        // Use drawable intrinsic size; if 0 (e.g., bitmap), fall back to bounds
+        float imgW = d.getIntrinsicWidth() > 0 ? d.getIntrinsicWidth() : d.getBounds().width();
+        float imgH = d.getIntrinsicHeight() > 0 ? d.getIntrinsicHeight() : d.getBounds().height();
+        imgW *= scaleX;
+        imgH *= scaleY;
 
         float deltaX = 0f, deltaY = 0f;
 
-        // If the (scaled) image is narrower than the view → center it
-        if (imgW <= viewW) {
-            deltaX = (viewW - imgW) / 2f - transX;
-        } else {
-            // Otherwise clamp edges
+        if (imgW <= viewW) deltaX = (viewW - imgW) / 2f - transX;
+        else {
             if (transX > 0) deltaX = -transX;
             if (transX + imgW < viewW) deltaX = viewW - (transX + imgW);
         }
 
-        if (imgH <= viewH) {
-            deltaY = (viewH - imgH) / 2f - transY;
-        } else {
+        if (imgH <= viewH) deltaY = (viewH - imgH) / 2f - transY;
+        else {
             if (transY > 0) deltaY = -transY;
             if (transY + imgH < viewH) deltaY = viewH - (transY + imgH);
         }
@@ -196,25 +167,52 @@ public class ZoomableImageView extends AppCompatImageView {
         isZoomed = scale > baseScale * 1.05f;
     }
 
-    /**
-     * Called whenever the drawable is set. Resets zoom and computes base scale
-     * to fit the image inside the view.
-     */
     @Override
     public void setImageDrawable(@Nullable Drawable drawable) {
         super.setImageDrawable(drawable);
+        log("setImageDrawable");
         post(this::resetToFit);
+    }
+
+    /** ★★ FIX: Re-fit when the view is measured/laid out. */
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        log("onSizeChanged: " + oldw + "x" + oldh + " → " + w + "x" + h);
+        if ((oldw == 0 || oldh == 0) && w > 0 && h > 0) {
+            resetToFit();
+        }
     }
 
     private void resetToFit() {
         Drawable d = getDrawable();
-        if (d == null || getWidth() == 0 || getHeight() == 0) return;
+        if (d == null || getWidth() == 0 || getHeight() == 0) {
+            log("resetToFit bailed (drawable=" + (d != null)
+                    + " w=" + getWidth() + " h=" + getHeight() + ")");
+            return;
+        }
 
         float viewW = getWidth();
         float viewH = getHeight();
+
+        // Intrinsic size for bitmaps is often -1; use bounds as fallback
         float imgW = d.getIntrinsicWidth();
         float imgH = d.getIntrinsicHeight();
-        if (imgW <= 0 || imgH <= 0) return;
+        if (imgW <= 0 || imgH <= 0) {
+            imgW = d.getBounds().width();
+            imgH = d.getBounds().height();
+        }
+        if (imgW <= 0 || imgH <= 0) {
+            // Last resort: use bitmap directly if it's a BitmapDrawable
+            if (d instanceof android.graphics.drawable.BitmapDrawable) {
+                android.graphics.Bitmap bmp = ((android.graphics.drawable.BitmapDrawable) d).getBitmap();
+                if (bmp != null) { imgW = bmp.getWidth(); imgH = bmp.getHeight(); }
+            }
+        }
+        if (imgW <= 0 || imgH <= 0) {
+            log("resetToFit bailed (imgW=" + imgW + " imgH=" + imgH + ")");
+            return;
+        }
 
         float scale = Math.min(viewW / imgW, viewH / imgH);
         baseScale = scale;
@@ -222,15 +220,16 @@ public class ZoomableImageView extends AppCompatImageView {
 
         imageMatrix.reset();
         imageMatrix.postScale(scale, scale);
-        // center it
         float dx = (viewW - imgW * scale) / 2f;
         float dy = (viewH - imgH * scale) / 2f;
         imageMatrix.postTranslate(dx, dy);
         setImageMatrix(imageMatrix);
         isZoomed = false;
+        log("resetToFit: img=" + imgW + "x" + imgH
+                + " view=" + viewW + "x" + viewH
+                + " scale=" + scale);
     }
 
-    // ── Touch dispatch ─────────────────────────────────────────────
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         scaleDetector.onTouchEvent(event);
@@ -240,72 +239,42 @@ public class ZoomableImageView extends AppCompatImageView {
             case MotionEvent.ACTION_DOWN:
                 lastTouch.set(event.getX(), event.getY());
                 startTouch.set(event.getX(), event.getY());
-                // Always block parent on DOWN — we'll release later if we don't consume
-                if (getParent() != null) {
-                    getParent().requestDisallowInterceptTouchEvent(true);
-                }
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                 return true;
 
             case MotionEvent.ACTION_POINTER_DOWN:
-                // Second finger touched → definitely a pinch. Keep blocking parent.
-                if (getParent() != null) {
-                    getParent().requestDisallowInterceptTouchEvent(true);
-                }
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                 return true;
 
             case MotionEvent.ACTION_MOVE:
-                // If we're zoomed in, pan ourselves (gestureDetector already did it in onScroll).
-                // If we're NOT zoomed in AND only one finger, let the parent pager swipe.
                 if (!isZoomed && event.getPointerCount() == 1) {
                     float dx = Math.abs(event.getX() - startTouch.x);
                     float dy = Math.abs(event.getY() - startTouch.y);
-                    // Only release to parent if the gesture is clearly horizontal
-                    // and we haven't zoomed in. Give a small threshold.
                     if (dx > 24 && dx > dy) {
-                        if (getParent() != null) {
-                            getParent().requestDisallowInterceptTouchEvent(false);
-                        }
+                        if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
                     }
                 } else {
-                    // Zoomed or multi-touch → keep blocking parent
-                    if (getParent() != null) {
-                        getParent().requestDisallowInterceptTouchEvent(true);
-                    }
+                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                 }
                 return true;
 
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
-                if (getParent() != null) {
-                    getParent().requestDisallowInterceptTouchEvent(false);
-                }
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
                 return true;
         }
         return super.onTouchEvent(event);
     }
 
-    // Required for gestures to work with parent scroll containers
     @Override
-    public boolean canScrollHorizontally(int direction) {
-        // When zoomed, we consume horizontal scrolling; when not, let parent have it
-        return isZoomed;
-    }
+    public boolean canScrollHorizontally(int direction) { return isZoomed; }
 
-    /** Toggles between "fit" and "2.5× fit". Called from FullscreenViewerActivity. */
     public void toggleZoom() {
-        if (isZoomed()) {
-            currentScale = baseScale;
-            // Reset matrix to fit
-            resetToFit();
-        } else {
-            currentScale = baseScale * 2.5f;
-            setScaleTo(currentScale, getWidth() / 2f, getHeight() / 2f);
-            updateZoomState();
-        }
+        if (isZoomed()) { currentScale = baseScale; resetToFit(); }
+        else { currentScale = baseScale * 2.5f; setScaleTo(currentScale, getWidth() / 2f, getHeight() / 2f); updateZoomState(); }
     }
 
     public boolean isZoomed() {
-        // Re-read the matrix in case it was changed externally
         imageMatrix.getValues(matrixValues);
         float scale = matrixValues[Matrix.MSCALE_X];
         return scale > baseScale * 1.05f;
