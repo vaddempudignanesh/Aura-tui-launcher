@@ -9,6 +9,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.Window;
@@ -26,9 +28,9 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
-import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -44,44 +46,58 @@ import ohi.andre.consolelauncher.managers.xml.options.Theme;
 import ohi.andre.consolelauncher.managers.xml.options.Ui;
 
 /**
- * AuraBrowser — a lightweight WebView-based browser embedded in T-UI.
+ * AuraBrowser v3 — real multi-tab, incognito tabs, smooth chrome hide/show.
  *
- * v2 changes:
- *  - Toolbar & footer auto-hide on scroll down, auto-show on scroll up
- *  - Tap address bar → selects all text
- *  - Back/forward moved to bottom footer
- *  - Top-right 3-dot menu: Incognito, Downloads, Add Bookmark, New Tab
- *  - Footer "tabs" button for tab switching (single-tab for now, scaffold)
- *  - Incognito mode uses a separate WebView (fresh CookieManager state)
+ *  - Multi-tab: each tab is its own WebView in a FrameLayout container.
+ *  - Incognito tabs: tagged tabs; disallow 3rd-party cookies + cache.
+ *  - Chrome auto-hide: debounced, direction-aware, no flicker.
+ *  - Footer: Back | Forward | Tabs[count] | Incognito | Downloads
  */
 public class AuraBrowserActivity extends AppCompatActivity {
 
-    public static final String EXTRA_URL        = "aura_url";
-    public static final String EXTRA_INCOGNITO  = "aura_incognito";
-    public static final String DEFAULT_HOME     = "https://www.google.com";
+    public static final String EXTRA_URL       = "aura_url";
+    public static final String EXTRA_INCOGNITO = "aura_incognito";
+    public static final String DEFAULT_HOME    = "https://www.google.com";
 
     // ── Views ────────────────────────────────────────────────────
     private LinearLayout topBar;
     private LinearLayout footerBar;
-    private WebView webView;
+    private FrameLayout webContainer;
     private EditText etUrl;
     private ProgressBar progressBar;
     private Button btnGo;
-    private ImageButton btnMenu;
     private ImageButton btnBack;
     private ImageButton btnForward;
-    private ImageButton btnReload;
-    private ImageButton btnHome;
-    private ImageButton btnTabs;
+    private FrameLayout btnTabsContainer;
+    private ImageButton btnIncognito;
+    private ImageButton btnDownloads;
+    private TextView tabCountView;
 
-    // ── State ────────────────────────────────────────────────────
+    // ── Chrome visibility ────────────────────────────────────────
     private boolean chromeVisible = true;
     private int lastScrollY = 0;
-    private boolean isIncognito = false;
+    private long lastChromeToggleTime = 0L;
+    private static final long CHROME_DEBOUNCE_MS = 350;
+    private static final int CHROME_HIDE_THRESHOLD_PX = 120; // must scroll past this to hide
+    private int accumulatedScrollDown = 0;
+    private int accumulatedScrollUp = 0;
+    private static final int SCROLL_STEP = 40;   // px per direction before toggling
 
-    // Simple in-memory tab scaffold (single tab for now, ready for multi-tab)
-    private final List<String> tabUrls = new ArrayList<>();
-    private int currentTabIndex = 0;
+    // ── Tabs ─────────────────────────────────────────────────────
+    private static class Tab {
+        WebView webView;
+        boolean incognito;
+        String url;
+        Tab(WebView wv, boolean incog, String url) {
+            this.webView = wv;
+            this.incognito = incog;
+            this.url = url;
+        }
+    }
+
+    private final List<Tab> tabs = new ArrayList<>();
+    private int currentTabIndex = -1;
+    private int freshTabCount = 0; // used to name "Tab 1", "Tab 2"
 
     // ── Lifecycle ────────────────────────────────────────────────
     @SuppressLint("SetJavaScriptEnabled")
@@ -108,33 +124,20 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         setContentView(R.layout.activity_aura_browser);
 
-        // ── Bind views ───────────────────────────────────────────
-        topBar       = findViewById(R.id.aura_top_bar);
-        footerBar    = findViewById(R.id.aura_footer_bar);
-        webView      = findViewById(R.id.aura_webview);
-        etUrl        = findViewById(R.id.aura_et_url);
-        progressBar  = findViewById(R.id.aura_progress);
-        btnGo        = findViewById(R.id.aura_btn_go);
-        btnMenu      = findViewById(R.id.aura_btn_menu);
-        btnBack      = findViewById(R.id.aura_btn_back);
-        btnForward   = findViewById(R.id.aura_btn_forward);
-        btnReload    = findViewById(R.id.aura_btn_reload);
-        btnHome      = findViewById(R.id.aura_btn_home);
-        btnTabs      = findViewById(R.id.aura_btn_tabs);
+        topBar          = findViewById(R.id.aura_top_bar);
+        footerBar       = findViewById(R.id.aura_footer_bar);
+        webContainer    = findViewById(R.id.aura_web_container);
+        etUrl           = findViewById(R.id.aura_et_url);
+        progressBar     = findViewById(R.id.aura_progress);
+        btnGo           = findViewById(R.id.aura_btn_go);
+        btnBack         = findViewById(R.id.aura_btn_back);
+        btnForward      = findViewById(R.id.aura_btn_forward);
+        btnTabsContainer= findViewById(R.id.aura_btn_tabs_container);
+        btnIncognito    = findViewById(R.id.aura_btn_incognito);
+        btnDownloads    = findViewById(R.id.aura_btn_downloads);
+        tabCountView    = findViewById(R.id.aura_tab_count);
 
-        // Read intent
-        Intent intent = getIntent();
-        isIncognito = intent != null && intent.getBooleanExtra(EXTRA_INCOGNITO, false);
-        String startUrl = intent != null ? intent.getStringExtra(EXTRA_URL) : null;
-        if (startUrl == null || startUrl.trim().isEmpty()) startUrl = DEFAULT_HOME;
-
-        configureWebView();
-
-        webView.loadUrl(normalizeUrl(startUrl));
-        etUrl.setText(startUrl);
-        tabUrls.add(normalizeUrl(startUrl));
-
-        // ── Address bar: tap selects all ─────────────────────────
+        // ── Address bar select-all on tap ────────────────────────
         etUrl.setOnClickListener(v -> {
             etUrl.selectAll();
             etUrl.requestFocus();
@@ -143,7 +146,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             if (hasFocus) etUrl.selectAll();
         });
 
-        // ── GO ───────────────────────────────────────────────────
         btnGo.setOnClickListener(v -> loadFromBar());
         etUrl.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_GO
@@ -155,52 +157,152 @@ public class AuraBrowserActivity extends AppCompatActivity {
             return false;
         });
 
-        // ── Footer navigation ────────────────────────────────────
+        // ── Footer actions ───────────────────────────────────────
         btnBack.setOnClickListener(v -> {
-            if (webView.canGoBack()) webView.goBack();
+            Tab t = currentTab();
+            if (t != null && t.webView.canGoBack()) t.webView.goBack();
         });
         btnForward.setOnClickListener(v -> {
-            if (webView.canGoForward()) webView.goForward();
+            Tab t = currentTab();
+            if (t != null && t.webView.canGoForward()) t.webView.goForward();
         });
-        btnReload.setOnClickListener(v -> webView.reload());
-        btnHome.setOnClickListener(v -> webView.loadUrl(DEFAULT_HOME));
-        btnTabs.setOnClickListener(v -> showTabsDialog());
+        btnTabsContainer.setOnClickListener(v -> showTabsDialog());
+        btnIncognito.setOnClickListener(v -> newTab(null, true));
+        btnDownloads.setOnClickListener(v -> openDownloads());
 
-        // ── 3-dot menu ───────────────────────────────────────────
-        btnMenu.setOnClickListener(this::showOverflowMenu);
+        // ── Initial tab ──────────────────────────────────────────
+        Intent intent = getIntent();
+        boolean startIncognito = intent != null && intent.getBooleanExtra(EXTRA_INCOGNITO, false);
+        String startUrl = intent != null ? intent.getStringExtra(EXTRA_URL) : null;
+
+        newTab(startUrl, startIncognito);
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  3-dot overflow menu
+    //  Tab management
     // ─────────────────────────────────────────────────────────────
-    private void showOverflowMenu(View anchor) {
-        PopupMenu popup = new PopupMenu(this, anchor);
-        popup.getMenu().add(0, 1, 0, isIncognito ? "🕶️  Exit Incognito" : "🕶️  New Incognito Tab");
-        popup.getMenu().add(0, 2, 1, "⬇️  Downloads");
-        popup.getMenu().add(0, 3, 2, "⭐  Add Bookmark");
-        popup.getMenu().add(0, 4, 3, "➕  New Tab");
-
-        popup.setOnMenuItemClickListener(item -> {
-            switch (item.getItemId()) {
-                case 1: toggleIncognito();          return true;
-                case 2: openDownloads();            return true;
-                case 3: addBookmark();              return true;
-                case 4: openNewTab();               return true;
-            }
-            return false;
-        });
-        popup.show();
+    private Tab currentTab() {
+        if (currentTabIndex < 0 || currentTabIndex >= tabs.size()) return null;
+        return tabs.get(currentTabIndex);
     }
 
-    private void toggleIncognito() {
-        // Launch a fresh AuraBrowserActivity instance marked incognito
-        Intent i = new Intent(this, AuraBrowserActivity.class);
-        i.putExtra(EXTRA_INCOGNITO, !isIncognito);
-        i.putExtra(EXTRA_URL, webView.getUrl());
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(i);
+    @SuppressLint("SetJavaScriptEnabled")
+    private void newTab(String url, boolean incognito) {
+        WebView wv = new WebView(this);
+        wv.setLayoutParams(new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        wv.setBackgroundColor(0xFF000000);
+
+        configureWebViewFor(wv, incognito);
+
+        String startUrl = (url == null || url.trim().isEmpty()) ? DEFAULT_HOME : url;
+        String normalized = normalizeUrl(startUrl);
+
+        Tab tab = new Tab(wv, incognito, normalized);
+        tabs.add(tab);
+
+        // Attach to container but keep hidden until selected
+        webContainer.addView(wv);
+        wv.setVisibility(View.GONE);
+
+        // Load URL
+        wv.loadUrl(normalized);
+
+        // Switch to it
+        switchToTab(tabs.size() - 1);
+
+        freshTabCount++;
+        updateTabCountBadge();
     }
 
+    private void switchToTab(int index) {
+        if (index < 0 || index >= tabs.size()) return;
+
+        // Hide current
+        Tab old = currentTab();
+        if (old != null) {
+            old.webView.setVisibility(View.GONE);
+        }
+
+        // Show new
+        currentTabIndex = index;
+        Tab t = tabs.get(index);
+        t.webView.setVisibility(View.VISIBLE);
+        t.webView.requestFocus();
+
+        // Update URL bar
+        etUrl.setText(t.url != null ? t.url : DEFAULT_HOME);
+
+        // Reset chrome state (show on tab change)
+        showChrome();
+
+        updateTabCountBadge();
+        invalidateOptionsMenu();
+    }
+
+    private void closeTab(int index) {
+        if (index < 0 || index >= tabs.size()) return;
+
+        Tab t = tabs.get(index);
+        try {
+            webContainer.removeView(t.webView);
+            t.webView.loadUrl("about:blank");
+            t.webView.stopLoading();
+            t.webView.setWebChromeClient(null);
+            t.webView.setWebViewClient(null);
+            t.webView.destroy();
+        } catch (Exception ignored) {}
+        tabs.remove(index);
+
+        if (tabs.isEmpty()) {
+            finish();
+            return;
+        }
+
+        if (currentTabIndex >= tabs.size()) currentTabIndex = tabs.size() - 1;
+        switchToTab(currentTabIndex);
+    }
+
+    private void updateTabCountBadge() {
+        tabCountView.setText(String.valueOf(tabs.size()));
+    }
+
+    private void showTabsDialog() {
+        if (tabs.isEmpty()) return;
+
+        final String[] labels = new String[tabs.size() + 1];
+        for (int i = 0; i < tabs.size(); i++) {
+            Tab t = tabs.get(i);
+            String prefix = t.incognito ? "🕶️ " : "🌐 ";
+            String title = t.webView.getTitle();
+            if (title == null || title.isEmpty()) title = t.url != null ? t.url : "New Tab";
+            if (title.length() > 45) title = title.substring(0, 45) + "…";
+            labels[i] = prefix + title;
+        }
+        labels[tabs.size()] = "➕  New Tab";
+        final int newTabRow = tabs.size();
+
+        new AlertDialog.Builder(this)
+                .setTitle("Tabs (" + tabs.size() + ")")
+                .setItems(labels, (d, which) -> {
+                    if (which == newTabRow) {
+                        newTab(null, false);
+                    } else {
+                        switchToTab(which);
+                    }
+                })
+                .setNeutralButton("New Incognito", (d, w) -> newTab(null, true))
+                .setNegativeButton("Close", null)
+                .setPositiveButton("Close Current", (d, w) -> {
+                    if (currentTabIndex >= 0) closeTab(currentTabIndex);
+                })
+                .show();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Downloads
+    // ─────────────────────────────────────────────────────────────
     private void openDownloads() {
         try {
             Intent i = new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS);
@@ -211,53 +313,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    private void addBookmark() {
-        String url = webView.getUrl();
-        String title = webView.getTitle();
-        if (url == null) return;
-
-        // Save to a simple shared-prefs list (lightweight, no DB)
-        getSharedPreferences("aura_bookmarks", MODE_PRIVATE)
-                .edit()
-                .putString(url, title != null ? title : url)
-                .apply();
-
-        Toast.makeText(this, "Bookmarked: " + (title != null ? title : url),
-                Toast.LENGTH_SHORT).show();
-    }
-
-    private void openNewTab() {
-        Intent i = new Intent(this, AuraBrowserActivity.class);
-        i.putExtra(EXTRA_URL, DEFAULT_HOME);
-        i.putExtra(EXTRA_INCOGNITO, isIncognito);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(i);
-    }
-
-    private void showTabsDialog() {
-        // Simple list dialog. (Single-tab scaffold for now.)
-        String[] tabs = tabUrls.isEmpty()
-                ? new String[] { webView.getUrl() == null ? DEFAULT_HOME : webView.getUrl() }
-                : tabUrls.toArray(new String[0]);
-
-        new AlertDialog.Builder(this)
-                .setTitle("Tabs")
-                .setItems(tabs, (d, which) -> {
-                    if (which < tabUrls.size()) {
-                        webView.loadUrl(tabUrls.get(which));
-                    }
-                })
-                .setPositiveButton("New Tab", (d, w) -> openNewTab())
-                .setNegativeButton("Close", null)
-                .show();
-    }
-
     // ─────────────────────────────────────────────────────────────
-    //  WebView setup + scroll-to-hide chrome
+    //  WebView configuration (per-tab, so incognito can differ)
     // ─────────────────────────────────────────────────────────────
     @SuppressLint("SetJavaScriptEnabled")
-    private void configureWebView() {
-        WebSettings s = webView.getSettings();
+    private void configureWebViewFor(WebView wv, boolean incognito) {
+        WebSettings s = wv.getSettings();
 
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -269,11 +330,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(true);
 
-        s.setCacheMode(isIncognito
-                ? WebSettings.LOAD_NO_CACHE
-                : WebSettings.LOAD_DEFAULT);
+        s.setCacheMode(incognito ? WebSettings.LOAD_NO_CACHE : WebSettings.LOAD_DEFAULT);
         s.setGeolocationEnabled(false);
-        s.setSaveFormData(!isIncognito);
+        s.setSaveFormData(!incognito);
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setMediaPlaybackRequiresUserGesture(true);
@@ -283,20 +342,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
 
         CookieManager cm = CookieManager.getInstance();
-        if (isIncognito) {
-            // Do NOT accept third-party cookies in incognito.
-            cm.setAcceptCookie(true);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                cm.setAcceptThirdPartyCookies(webView, false);
-            }
-        } else {
-            cm.setAcceptCookie(true);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                cm.setAcceptThirdPartyCookies(webView, true);
-            }
+        cm.setAcceptCookie(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            cm.setAcceptThirdPartyCookies(wv, !incognito);
         }
 
-        webView.setWebViewClient(new WebViewClient() {
+        wv.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 view.loadUrl(request.getUrl().toString());
@@ -312,48 +363,77 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                progressBar.setVisibility(View.VISIBLE);
-                etUrl.setText(url);
+                if (view == currentTabWebView()) {
+                    progressBar.setVisibility(View.VISIBLE);
+                    etUrl.setText(url);
+                }
+                updateTabUrl(view, url);
+                // Reset scroll-tracking state per page
                 lastScrollY = 0;
+                accumulatedScrollDown = 0;
+                accumulatedScrollUp = 0;
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                progressBar.setVisibility(View.GONE);
-                etUrl.setText(url);
-            }
-
-            // Auto-hide/show top bar and footer on scroll
-            @Override
-            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
-                super.doUpdateVisitedHistory(view, url, isReload);
+                if (view == currentTabWebView()) {
+                    progressBar.setVisibility(View.GONE);
+                    etUrl.setText(url);
+                }
+                updateTabUrl(view, url);
             }
         });
 
-        // Scroll listener: hide chrome on scroll down, show on scroll up
-        webView.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+        // Smooth, debounced chrome hide/show
+        wv.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+            if (v != currentTabWebView()) return;
+
             int delta = scrollY - lastScrollY;
-            if (Math.abs(delta) < 8) return; // debounce small jitters
-
-            if (delta > 0 && scrollY > 80) {
-                // Scrolling down → hide chrome
-                hideChrome();
-            } else if (delta < 0) {
-                // Scrolling up → show chrome
-                showChrome();
-            }
             lastScrollY = scrollY;
+
+            // Accumulate deltas by direction, reset the opposite
+            if (delta > 0) {
+                accumulatedScrollDown += delta;
+                accumulatedScrollUp = 0;
+            } else if (delta < 0) {
+                accumulatedScrollUp += -delta;
+                accumulatedScrollDown = 0;
+            }
+
+            // Hide only when scrolled DOWN enough + we're past top threshold
+            if (accumulatedScrollDown >= SCROLL_STEP
+                    && scrollY > CHROME_HIDE_THRESHOLD_PX
+                    && chromeVisible) {
+                if (canToggleChromeNow()) {
+                    hideChrome();
+                    accumulatedScrollDown = 0;
+                }
+            }
+            // Show only when scrolled UP enough
+            else if (accumulatedScrollUp >= SCROLL_STEP && !chromeVisible) {
+                if (canToggleChromeNow()) {
+                    showChrome();
+                    accumulatedScrollUp = 0;
+                }
+            }
         });
 
-        webView.setWebChromeClient(new WebChromeClient() {
+        wv.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
-                progressBar.setProgress(newProgress);
-                progressBar.setVisibility(newProgress < 100 ? View.VISIBLE : View.GONE);
+                if (view == currentTabWebView()) {
+                    progressBar.setProgress(newProgress);
+                    progressBar.setVisibility(newProgress < 100 ? View.VISIBLE : View.GONE);
+                }
+            }
+
+            @Override
+            public void onReceivedTitle(WebView view, String title) {
+                super.onReceivedTitle(view, title);
             }
         });
 
-        webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
+        wv.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
             try {
                 String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
                 DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
@@ -366,42 +446,70 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
                 if (dm != null) {
                     dm.enqueue(req);
-                    Toast.makeText(this, "Downloading " + fileName, Toast.LENGTH_SHORT).show();
+                    Toast.makeText(AuraBrowserActivity.this,
+                            "Downloading " + fileName, Toast.LENGTH_SHORT).show();
                 }
             } catch (Exception e) {
-                Toast.makeText(this, "Download failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                Toast.makeText(AuraBrowserActivity.this,
+                        "Download failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
             }
         });
     }
 
+    private WebView currentTabWebView() {
+        Tab t = currentTab();
+        return t != null ? t.webView : null;
+    }
+
+    private void updateTabUrl(WebView wv, String url) {
+        for (Tab t : tabs) {
+            if (t.webView == wv) {
+                t.url = url;
+                return;
+            }
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────
-    //  Chrome show/hide animation
+    //  Chrome hide/show — debounced, no flicker
     // ─────────────────────────────────────────────────────────────
+    private boolean canToggleChromeNow() {
+        long now = System.currentTimeMillis();
+        if (now - lastChromeToggleTime < CHROME_DEBOUNCE_MS) return false;
+        lastChromeToggleTime = now;
+        return true;
+    }
+
     private void hideChrome() {
         if (!chromeVisible) return;
         chromeVisible = false;
 
-        TranslateAnimation hideTop = new TranslateAnimation(
+        TranslateAnimation up = new TranslateAnimation(
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, -1f);
-        hideTop.setDuration(220);
-        hideTop.setFillAfter(true);
+        up.setDuration(200);
+        up.setFillAfter(true);
 
-        TranslateAnimation hideBottom = new TranslateAnimation(
+        TranslateAnimation down = new TranslateAnimation(
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, 1f);
-        hideBottom.setDuration(220);
-        hideBottom.setFillAfter(true);
+        down.setDuration(200);
+        down.setFillAfter(true);
 
-        topBar.startAnimation(hideTop);
-        footerBar.startAnimation(hideBottom);
+        topBar.startAnimation(up);
+        footerBar.startAnimation(down);
 
-        topBar.setVisibility(View.GONE);
-        footerBar.setVisibility(View.GONE);
+        // Use post() so the animation plays before removal
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (!chromeVisible) {
+                topBar.setVisibility(View.GONE);
+                footerBar.setVisibility(View.GONE);
+            }
+        }, 200);
     }
 
     private void showChrome() {
@@ -411,40 +519,37 @@ public class AuraBrowserActivity extends AppCompatActivity {
         topBar.setVisibility(View.VISIBLE);
         footerBar.setVisibility(View.VISIBLE);
 
-        TranslateAnimation showTop = new TranslateAnimation(
+        TranslateAnimation downIn = new TranslateAnimation(
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, -1f,
                 Animation.RELATIVE_TO_SELF, 0f);
-        showTop.setDuration(220);
+        downIn.setDuration(200);
 
-        TranslateAnimation showBottom = new TranslateAnimation(
+        TranslateAnimation upIn = new TranslateAnimation(
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, 0f,
                 Animation.RELATIVE_TO_SELF, 1f,
                 Animation.RELATIVE_TO_SELF, 0f);
-        showBottom.setDuration(220);
+        upIn.setDuration(200);
 
-        topBar.startAnimation(showTop);
-        footerBar.startAnimation(showBottom);
+        topBar.startAnimation(downIn);
+        footerBar.startAnimation(upIn);
     }
 
     // ─────────────────────────────────────────────────────────────
     //  URL handling
     // ─────────────────────────────────────────────────────────────
     private void loadFromBar() {
+        Tab t = currentTab();
+        if (t == null) return;
+
         String url = etUrl.getText().toString().trim();
         if (url.isEmpty()) return;
 
         String finalUrl = normalizeUrl(url);
-        webView.loadUrl(finalUrl);
-
-        if (tabUrls.isEmpty()) {
-            tabUrls.add(finalUrl);
-            currentTabIndex = 0;
-        } else {
-            tabUrls.set(currentTabIndex, finalUrl);
-        }
+        t.webView.loadUrl(finalUrl);
+        t.url = finalUrl;
 
         InputMethodManager imm =
                 (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -469,8 +574,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
     // ─────────────────────────────────────────────────────────────
     @Override
     public void onBackPressed() {
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack();
+        Tab t = currentTab();
+        if (t != null && t.webView.canGoBack()) {
+            t.webView.goBack();
+        } else if (tabs.size() > 1) {
+            closeTab(currentTabIndex);
         } else {
             super.onBackPressed();
         }
@@ -479,28 +587,33 @@ public class AuraBrowserActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
-        if (webView != null) webView.onPause();
+        for (Tab t : tabs) t.webView.onPause();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (webView != null) webView.onResume();
+        for (Tab t : tabs) t.webView.onResume();
     }
 
     @Override
     protected void onDestroy() {
-        if (webView != null) {
-            webView.loadUrl("about:blank");
-            webView.stopLoading();
-            webView.setWebChromeClient(null);
-            webView.setWebViewClient(null);
-            webView.destroy();
-            webView = null;
+        for (Tab t : tabs) {
+            try {
+                t.webView.loadUrl("about:blank");
+                t.webView.stopLoading();
+                t.webView.setWebChromeClient(null);
+                t.webView.setWebViewClient(null);
+                t.webView.destroy();
+            } catch (Exception ignored) {}
         }
+        tabs.clear();
         super.onDestroy();
     }
 
+    // ─────────────────────────────────────────────────────────────
+    //  Static entry points
+    // ─────────────────────────────────────────────────────────────
     public static void open(Context ctx, String url) {
         Intent i = new Intent(ctx, AuraBrowserActivity.class);
         if (url != null) i.putExtra(EXTRA_URL, url);

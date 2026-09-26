@@ -7,21 +7,22 @@
     android:background="#FF000000">
 
     <!-- ═══════════════════════════════════════════════════════
-         TOP BAR — only address bar + GO + 3-dot menu
+         TOP BAR — address bar + GO only (no 3-dot menu anymore)
          ═══════════════════════════════════════════════════════ -->
     <LinearLayout
         android:id="@+id/aura_top_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="6dp"
+        android:paddingHorizontal="6dp"
+        android:paddingVertical="4dp"
         android:background="#FF0A0A0A"
         android:gravity="center_vertical">
 
         <EditText
             android:id="@+id/aura_et_url"
             android:layout_width="0dp"
-            android:layout_height="42dp"
+            android:layout_height="38dp"
             android:layout_weight="1"
             android:background="#FF111111"
             android:hint="search or url"
@@ -39,21 +40,12 @@
         <Button
             android:id="@+id/aura_btn_go"
             style="?android:attr/borderlessButtonStyle"
-            android:layout_width="52dp"
-            android:layout_height="42dp"
+            android:layout_width="48dp"
+            android:layout_height="38dp"
             android:text="GO"
             android:textColor="#FF33FF33"
             android:textSize="12sp"
             android:fontFamily="monospace" />
-
-        <ImageButton
-            android:id="@+id/aura_btn_menu"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:src="@android:drawable/ic_menu_more"
-            android:contentDescription="Menu"
-            app:tint="#FF33FF33" />
     </LinearLayout>
 
     <!-- Thin progress bar -->
@@ -67,24 +59,26 @@
         android:visibility="gone" />
 
     <!-- ═══════════════════════════════════════════════════════
-         WEBVIEW (fills remaining space)
+         WebView container — we add/remove WebViews here dynamically
          ═══════════════════════════════════════════════════════ -->
-    <WebView
-        android:id="@+id/aura_webview"
+    <FrameLayout
+        android:id="@+id/aura_web_container"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:background="#FF000000" />
 
     <!-- ═══════════════════════════════════════════════════════
-         FOOTER — back / forward / reload / home / tabs
+         FOOTER — skinny icons, no text labels
+         Back | Forward | Tabs[count] | Incognito | Downloads
          ═══════════════════════════════════════════════════════ -->
     <LinearLayout
         android:id="@+id/aura_footer_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="4dp"
+        android:paddingVertical="2dp"
+        android:paddingHorizontal="2dp"
         android:background="#FF0A0A0A"
         android:gravity="center_vertical"
         android:weightSum="5">
@@ -92,51 +86,84 @@
         <ImageButton
             android:id="@+id/aura_btn_back"
             android:layout_width="0dp"
-            android:layout_height="44dp"
+            android:layout_height="34dp"
             android:layout_weight="1"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:src="@android:drawable/ic_media_previous"
             android:contentDescription="Back"
+            android:scaleType="centerInside"
+            android:padding="4dp"
             app:tint="#FF33FF33" />
 
         <ImageButton
             android:id="@+id/aura_btn_forward"
             android:layout_width="0dp"
-            android:layout_height="44dp"
+            android:layout_height="34dp"
             android:layout_weight="1"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:src="@android:drawable/ic_media_next"
             android:contentDescription="Forward"
+            android:scaleType="centerInside"
+            android:padding="4dp"
             app:tint="#FF33FF33" />
 
-        <ImageButton
-            android:id="@+id/aura_btn_reload"
+        <!-- Tabs button: icon + count badge overlaid -->
+        <FrameLayout
+            android:id="@+id/aura_btn_tabs_container"
             android:layout_width="0dp"
-            android:layout_height="44dp"
+            android:layout_height="34dp"
             android:layout_weight="1"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:src="@android:drawable/ic_popup_sync"
-            android:contentDescription="Reload"
-            app:tint="#FF33FF33" />
+            android:clickable="true"
+            android:focusable="true">
+
+            <ImageView
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:src="@android:drawable/ic_menu_sort_by_size"
+                android:scaleType="centerInside"
+                android:padding="4dp"
+                android:contentDescription="Tabs"
+                app:tint="#FF33FF33" />
+
+            <TextView
+                android:id="@+id/aura_tab_count"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_marginTop="1dp"
+                android:layout_marginEnd="2dp"
+                android:background="#FF33FF33"
+                android:paddingHorizontal="4dp"
+                android:paddingVertical="0dp"
+                android:text="1"
+                android:textColor="#FF000000"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+        </FrameLayout>
 
         <ImageButton
-            android:id="@+id/aura_btn_home"
+            android:id="@+id/aura_btn_incognito"
             android:layout_width="0dp"
-            android:layout_height="44dp"
+            android:layout_height="34dp"
             android:layout_weight="1"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:src="@android:drawable/ic_menu_view"
-            android:contentDescription="Home"
+            android:contentDescription="New incognito tab"
+            android:scaleType="centerInside"
+            android:padding="4dp"
             app:tint="#FF33FF33" />
 
         <ImageButton
-            android:id="@+id/aura_btn_tabs"
+            android:id="@+id/aura_btn_downloads"
             android:layout_width="0dp"
-            android:layout_height="44dp"
+            android:layout_height="34dp"
             android:layout_weight="1"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:src="@android:drawable/ic_menu_sort_by_size"
-            android:contentDescription="Tabs"
+            android:src="@android:drawable/stat_sys_download"
+            android:contentDescription="Downloads"
+            android:scaleType="centerInside"
+            android:padding="4dp"
             app:tint="#FF33FF33" />
     </LinearLayout>
 
