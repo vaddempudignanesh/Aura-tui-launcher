@@ -94,6 +94,7 @@ public class GalleryActivity extends AppCompatActivity {
     private List<MediaItem> mediaItems = new ArrayList<>();
     private List<MediaItem> displayedItems = new ArrayList<>();
     private List<String> albumList = new ArrayList<>();
+    private final java.util.LinkedHashMap<String, String> albumDisplayNames = new java.util.LinkedHashMap<>();
     private boolean showAlbums = false;
 
     // ── Fullscreen ──
@@ -1230,18 +1231,33 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void navigateBackFromAlbum() {
         if (currentAlbum != null) {
-            currentAlbum = null; showAlbums = true;
-            loadAlbums();
+            // Inside an album → go back to the album list
+            currentAlbum = null;
+            showAlbums = true;
+
+            // Hide the grid BEFORE showing the album list to prevent any bleed
             recyclerView.setVisibility(View.GONE);
+            loadAlbums();
             albumRecycler.setVisibility(View.VISIBLE);
+            albumRecycler.setBackgroundColor(Color.parseColor("#FF000000"));
             titleView.setText("Albums");
-            applyFilter(); updateBarsVisibility();
+
+            applyFilter();
+            updateBarsVisibility();
+            updateTopNavBar();
         } else if (showAlbums) {
-            showAlbums = false; currentFilter = FilterMode.ALL;
+            // In album list → go back to main gallery
+            showAlbums = false;
+            currentFilter = FilterMode.ALL;
+            currentAlbum = null;
+
             albumRecycler.setVisibility(View.GONE);
             recyclerView.setVisibility(View.VISIBLE);
             titleView.setText("Gallery");
-            applyFilter(); updateBarsVisibility();
+
+            applyFilter();
+            updateBarsVisibility();
+            updateTopNavBar();
         }
     }
 
@@ -1275,8 +1291,15 @@ public class GalleryActivity extends AppCompatActivity {
                         String album = albumIndex >= 0 ? imageCursor.getString(albumIndex) : "";
                         if (path != null && new File(path).exists()) {
                             boolean isTrashed = path.contains(".trashed.");
-                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_IMAGE, date, isTrashed, album));
-                        }
+                            String parentPath = new File(path).getParent();
+                            String albumKey;
+                            if (parentPath != null) {
+                                try { albumKey = new File(parentPath).getCanonicalPath(); }
+                                catch (Exception e) { albumKey = parentPath; }
+                            } else {
+                                albumKey = album;
+                            }
+                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_IMAGE, date, isTrashed, albumKey));                        }
                     }
                 }
             } catch (SecurityException e) {
@@ -1308,7 +1331,15 @@ public class GalleryActivity extends AppCompatActivity {
                         String album = albumIndex >= 0 ? videoCursor.getString(albumIndex) : "";
                         if (path != null && new File(path).exists()) {
                             boolean isTrashed = path.contains(".trashed.");
-                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_VIDEO, date, isTrashed, album));
+                            String parentPath = new File(path).getParent();
+                            String albumKey;
+                            if (parentPath != null) {
+                                try { albumKey = new File(parentPath).getCanonicalPath(); }
+                                catch (Exception e) { albumKey = parentPath; }
+                            } else {
+                                albumKey = album;
+                            }
+                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_VIDEO, date, isTrashed, albumKey));
                         }
                     }
                 }
@@ -1518,7 +1549,7 @@ public class GalleryActivity extends AppCompatActivity {
         } else {
             for (MediaItem item : mediaItems) {
                 boolean matchesAlbum = currentAlbum == null
-                        || (item.album != null && item.album.equals(currentAlbum));
+                        || (item.album != null && albumPathsEqual(item.album, currentAlbum));
                 if (!matchesAlbum) continue;
 
                 boolean isCurrentlyTrashed = item.path.contains(".trashed.");
@@ -1543,6 +1574,33 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
+
+    /**
+     * Compare two folder paths for equality after normalizing them.
+     * Handles trailing slashes, /mnt/sdcard vs /storage/emulated/0, and symlinks.
+     */
+    private boolean albumPathsEqual(String a, String b) {
+        if (a == null || b == null) return false;
+        if (a.equals(b)) return true;
+
+        String na = normalizePath(a);
+        String nb = normalizePath(b);
+        if (na.equals(nb)) return true;
+
+        // Canonical path fallback (resolves symlinks)
+        try {
+            String ca = new File(a).getCanonicalPath();
+            String cb = new File(b).getCanonicalPath();
+            if (ca.equals(cb)) return true;
+
+            // Last-ditch: strip trailing slashes and compare
+            if (ca.endsWith("/")) ca = ca.substring(0, ca.length() - 1);
+            if (cb.endsWith("/")) cb = cb.substring(0, cb.length() - 1);
+            return ca.equals(cb);
+        } catch (Exception e) {
+            return false;
+        }
+    }
     // ===================== PERMISSIONS =====================
 
     private void checkAndRequestMediaPermissions() {
@@ -2026,31 +2084,229 @@ public class GalleryActivity extends AppCompatActivity {
 
     // ===================== ALBUMS =====================
 
+    /**
+     * Load all folders that contain media, combining:
+     *   - MediaStore (Images + Videos, all storage volumes)
+     *   - Filesystem scan of all storage roots
+     *
+     * Album identity is the FULL PARENT PATH (not just the folder name),
+     * so folders like "hi" and "hi/subfolder" are distinct albums.
+     */
     private void loadAlbums() {
         executor.execute(() -> {
-            List<String> albums = new ArrayList<>();
-            String[] projection = {MediaStore.Images.Media.BUCKET_DISPLAY_NAME};
-            Cursor cursor = getContentResolver().query(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    projection, null, null,
-                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME + " ASC");
-            if (cursor != null) {
-                while (cursor.moveToNext()) {
-                    @SuppressLint("Range") String album = cursor.getString(
-                            cursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME));
-                    if (album != null && !album.isEmpty() && !albums.contains(album)) albums.add(album);
+            // Map: full folder path -> display name
+            java.util.LinkedHashMap<String, String> albums = new java.util.LinkedHashMap<>();
+
+            // ── 1. MediaStore Images ──
+            String[] imgProjection = {
+                    MediaStore.Images.Media.DATA,
+                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+            };
+            Cursor imgCursor = null;
+            try {
+                imgCursor = getContentResolver().query(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        imgProjection, null, null, null);
+                if (imgCursor != null) {
+                    int dataIdx = imgCursor.getColumnIndex(MediaStore.Images.Media.DATA);
+                    int nameIdx = imgCursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
+                    while (imgCursor.moveToNext()) {
+                        String path = dataIdx >= 0 ? imgCursor.getString(dataIdx) : null;
+                        String name = nameIdx >= 0 ? imgCursor.getString(nameIdx) : null;
+                        if (path == null) continue;
+                        File parent = new File(path).getParentFile();
+                        if (parent == null) continue;
+                        String parentPath;
+                        try { parentPath = parent.getCanonicalPath(); }
+                        catch (Exception e) { parentPath = parent.getAbsolutePath(); }                        String display = (name != null && !name.isEmpty())
+                                ? name : parent.getName();
+                        if (!albums.containsKey(parentPath)) {
+                            albums.put(parentPath, display);
+                        }
+                    }
                 }
-                cursor.close();
+            } catch (Exception e) {
+                Log.e(LOG_TAG, "loadAlbums: image query failed", e);
+            } finally { if (imgCursor != null) imgCursor.close(); }
+
+            // ── 2. MediaStore Videos ──
+            String[] vidProjection = {
+                    MediaStore.Video.Media.DATA,
+                    MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+            };
+            Cursor vidCursor = null;
+            try {
+                vidCursor = getContentResolver().query(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                        vidProjection, null, null, null);
+                if (vidCursor != null) {
+                    int dataIdx = vidCursor.getColumnIndex(MediaStore.Video.Media.DATA);
+                    int nameIdx = vidCursor.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME);
+                    while (vidCursor.moveToNext()) {
+                        String path = dataIdx >= 0 ? vidCursor.getString(dataIdx) : null;
+                        String name = nameIdx >= 0 ? vidCursor.getString(nameIdx) : null;
+                        if (path == null) continue;
+                        File parent = new File(path).getParentFile();
+                        if (parent == null) continue;
+                        String parentPath;
+                        try { parentPath = parent.getCanonicalPath(); }
+                        catch (Exception e) { parentPath = parent.getAbsolutePath(); }
+                        String display = (name != null && !name.isEmpty())
+                                ? name : parent.getName();
+                        if (!albums.containsKey(parentPath)) {
+                            albums.put(parentPath, display);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(LOG_TAG, "loadAlbums: video query failed", e);
+            } finally { if (vidCursor != null) vidCursor.close(); }
+
+            // ── 3. Filesystem scan of all storage roots ──
+            List<File> roots = getStorageDirectoriesProper();
+            for (File root : roots) {
+                if (root != null && root.exists()) {
+                    scanFoldersForMedia(root, albums, 0, 5);
+                }
             }
-            runOnUiThread(() -> { albumList = albums; showAlbumGrid(); });
+
+            // Build the display list: use the folder's display name but
+            // disambiguate duplicates by appending the parent folder name.
+            List<String> paths = new ArrayList<>(albums.keySet());
+            Collections.sort(paths, (a, b) -> {
+                String da = albums.get(a);
+                String db = albums.get(b);
+                if (da == null) da = "";
+                if (db == null) db = "";
+                return da.compareToIgnoreCase(db);
+            });
+
+            // Build a display-name map. If two folders share the display name,
+            // append " (parent)" to disambiguate.
+            Map<String, Integer> nameCounts = new java.util.HashMap<>();
+            for (String p : paths) {
+                String d = albums.get(p);
+                if (d == null) d = "";
+                nameCounts.put(d, nameCounts.getOrDefault(d, 0) + 1);
+            }
+
+            Map<String, String> finalDisplayNames = new java.util.HashMap<>();
+            for (String p : paths) {
+                String d = albums.get(p);
+                if (d == null) d = "";
+                if (nameCounts.get(d) > 1) {
+                    File parent = new File(p).getParentFile();
+                    String parentName = parent != null ? parent.getName() : "";
+                    finalDisplayNames.put(p, d + " (" + parentName + ")");
+                } else {
+                    finalDisplayNames.put(p, d);
+                }
+            }
+
+            final List<String> finalPaths = new ArrayList<>(paths);
+            final Map<String, String> finalNames = new java.util.HashMap<>(finalDisplayNames);
+
+            runOnUiThread(() -> {
+                albumList.clear();
+                albumDisplayNames.clear();
+                albumList.addAll(finalPaths);
+                albumDisplayNames.putAll(finalNames);
+                showAlbumGrid();
+            });
         });
     }
 
+    /**
+     * Walk the given directory looking for folders that contain
+     * image or video files (directly, not in subfolders) and add them
+     * to the album map.
+     */
+    private void scanFoldersForMedia(File directory,
+                                     java.util.LinkedHashMap<String, String> albums,
+                                     int depth, int maxDepth) {
+        if (depth > maxDepth || directory == null
+                || !directory.exists() || !directory.isDirectory()) return;
+
+        File[] files;
+        try { files = directory.listFiles(); }
+        catch (Exception e) { return; }
+        if (files == null) return;
+
+        boolean hasMedia = false;
+        for (File f : files) {
+            if (f.isFile() && isMediaFile(f.getName())) {
+                hasMedia = true;
+                break;
+            }
+        }
+
+        if (hasMedia) {
+            String path;
+            try { path = directory.getCanonicalPath(); }
+            catch (Exception e) { path = directory.getAbsolutePath(); }
+            if (!albums.containsKey(path)) {
+                albums.put(path, directory.getName());
+            }
+        }
+
+        // Recurse into subfolders (skip common non-media dirs)
+        String name = directory.getName().toLowerCase(Locale.ROOT);
+        if (name.equals("android") || name.equals("system")
+                || name.equals("cache") || name.equals("tmp")
+                || name.equals("lost+found") || name.equals("app")
+                || name.equals("data") || name.equals("obb")) {
+            return;
+        }
+
+        for (File f : files) {
+            if (f.isDirectory() && !f.getName().startsWith(".")) {
+                scanFoldersForMedia(f, albums, depth + 1, maxDepth);
+            }
+        }
+    }
+
+    private boolean isMediaFile(String name) {
+        if (name == null) return false;
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+                || lower.endsWith(".png") || lower.endsWith(".gif")
+                || lower.endsWith(".bmp") || lower.endsWith(".webp")
+                || lower.endsWith(".heic") || lower.endsWith(".heif")
+                || lower.endsWith(".mp4") || lower.endsWith(".mkv")
+                || lower.endsWith(".webm") || lower.endsWith(".avi")
+                || lower.endsWith(".mov") || lower.endsWith(".3gp")
+                || lower.endsWith(".m4v") || lower.endsWith(".flv")
+                || lower.endsWith(".wmv");
+    }
+
     private void showAlbumGrid() {
-        if (albumList.isEmpty()) { Toast.makeText(this, "No albums found", Toast.LENGTH_SHORT).show(); return; }
-        albumAdapter = new AlbumAdapter(this, albumList, albumName -> {
-            currentAlbum = albumName;
-            titleView.setText("📁 " + albumName);
+        if (albumList.isEmpty()) {
+            Toast.makeText(this, "No albums found", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // Build a display list that shows the human-readable name.
+        List<String> displayList = new ArrayList<>(albumList.size());
+        for (String path : albumList) {
+            String d = albumDisplayNames.get(path);
+            if (d == null || d.isEmpty()) d = new File(path).getName();
+            displayList.add(d);
+        }
+
+        albumAdapter = new AlbumAdapter(this, displayList, displayName -> {
+            // Map the display name back to the full path
+            String chosenPath = null;
+            for (String p : albumList) {
+                String d = albumDisplayNames.get(p);
+                if (d == null) d = new File(p).getName();
+                if (d.equals(displayName)) { chosenPath = p; break; }
+            }
+            if (chosenPath == null) return;
+
+            currentAlbum = chosenPath;
+            String shown = albumDisplayNames.get(chosenPath);
+            if (shown == null) shown = new File(chosenPath).getName();
+            titleView.setText("📁 " + shown);
             applyFilter();
             albumRecycler.setVisibility(View.GONE);
             recyclerView.setVisibility(View.VISIBLE);
@@ -2062,7 +2318,6 @@ public class GalleryActivity extends AppCompatActivity {
         albumRecycler.setVisibility(View.VISIBLE);
         titleView.setText("Albums");
     }
-
     // ===================== UTIL =====================
 
     private String formatFileSize(long size) {

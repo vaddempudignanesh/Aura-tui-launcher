@@ -106,7 +106,8 @@
         android:layout_below="@+id/topNavBar"
         android:layout_above="@+id/bottomBar"
         android:visibility="gone"
-        android:padding="8dp" />
+        android:padding="8dp"
+        android:background="#FF000000" />
     <!-- ===== FULLSCREEN OVERLAY ===== -->
     <RelativeLayout
         android:id="@+id/fullscreenOverlay"
