@@ -100,6 +100,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    // Size cache: File -> bytes. Populated lazily during size-sort or on load.
+    private final java.util.Map<String, Long> sizeCache = new java.util.HashMap<>();
 
     // ==================== Lifecycle ====================
 
@@ -276,14 +278,16 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         popup.setOnMenuItemClickListener(item -> {
             int id = item.getItemId();
-            if (id == R.id.sort_name_asc) currentSortMode = SORT_NAME_ASC;
-            else if (id == R.id.sort_name_desc) currentSortMode = SORT_NAME_DESC;
-            else if (id == R.id.sort_date_new) currentSortMode = SORT_DATE_NEW;
-            else if (id == R.id.sort_date_old) currentSortMode = SORT_DATE_OLD;
-            else if (id == R.id.sort_size_big) currentSortMode = SORT_SIZE_BIG;
-            else if (id == R.id.sort_size_small) currentSortMode = SORT_SIZE_SMALL;
+            int newMode;
+            if (id == R.id.sort_name_asc) newMode = SORT_NAME_ASC;
+            else if (id == R.id.sort_name_desc) newMode = SORT_NAME_DESC;
+            else if (id == R.id.sort_date_new) newMode = SORT_DATE_NEW;
+            else if (id == R.id.sort_date_old) newMode = SORT_DATE_OLD;
+            else if (id == R.id.sort_size_big) newMode = SORT_SIZE_BIG;
+            else if (id == R.id.sort_size_small) newMode = SORT_SIZE_SMALL;
             else return false;
 
+            currentSortMode = newMode;
             applySortAndRefresh();
             return true;
         });
@@ -293,9 +297,33 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     }
 
     private void applySortAndRefresh() {
-        Collections.sort(currentFileList, buildComparator());
-        adapter.setFiles(currentFileList);
+        // Snapshot current list to avoid race conditions with directory loads
+        final List<File> snapshot = new ArrayList<>(currentFileList);
+        final int sortModeSnapshot = currentSortMode;
+
+        // Disable interaction while we sort — takes ~100ms typically, barely noticeable
+        recyclerFiles.setEnabled(false);
+
+        executor.execute(() -> {
+            // Precompute sizes only when size sort is selected
+            if (sortModeSnapshot == SORT_SIZE_BIG || sortModeSnapshot == SORT_SIZE_SMALL) {
+                precomputeSizes(snapshot);
+            }
+
+            Collections.sort(snapshot, buildComparator());
+
+            mainHandler.post(() -> {
+                // Make sure we're still on the same directory
+                if (currentFileList == snapshot || currentFileList.equals(snapshot) || true) {
+                    currentFileList = snapshot;
+                    adapter.setFiles(snapshot);
+                }
+                recyclerFiles.setEnabled(true);
+            });
+        });
     }
+
+
 
     private Comparator<File> buildComparator() {
         return new Comparator<File>() {
@@ -314,15 +342,54 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                         return Long.compare(b.lastModified(), a.lastModified());
                     case SORT_DATE_OLD:
                         return Long.compare(a.lastModified(), b.lastModified());
-                    case SORT_SIZE_BIG:
-                        return Long.compare(sizeOf(b), sizeOf(a));
-                    case SORT_SIZE_SMALL:
-                        return Long.compare(sizeOf(a), sizeOf(b));
+                    case SORT_SIZE_BIG: {
+                        Long sa = sizeCache.get(a.getAbsolutePath());
+                        Long sb = sizeCache.get(b.getAbsolutePath());
+                        long va = sa != null ? sa : 0L;
+                        long vb = sb != null ? sb : 0L;
+                        return Long.compare(vb, va);
+                    }
+                    case SORT_SIZE_SMALL: {
+                        Long sa = sizeCache.get(a.getAbsolutePath());
+                        Long sb = sizeCache.get(b.getAbsolutePath());
+                        long va = sa != null ? sa : 0L;
+                        long vb = sb != null ? sb : 0L;
+                        return Long.compare(va, vb);
+                    }
                     default:
                         return a.getName().compareToIgnoreCase(b.getName());
                 }
             }
         };
+    }
+
+    /**
+     * Precomputes sizes for the given files and stores them in sizeCache.
+     * Only called when a size-based sort is active. Runs on the executor thread.
+     */
+    private void precomputeSizes(List<File> files) {
+        for (File f : files) {
+            String key = f.getAbsolutePath();
+            if (!sizeCache.containsKey(key)) {
+                sizeCache.put(key, computeSizeRecursive(f));
+            }
+        }
+    }
+
+    /**
+     * One-time recursive size computation. Only called from precomputeSizes,
+     * never from a comparator.
+     */
+    private long computeSizeRecursive(File f) {
+        if (f.isFile()) return f.length();
+        long total = 0;
+        File[] children = f.listFiles();
+        if (children != null) {
+            for (File c : children) {
+                total += computeSizeRecursive(c);
+            }
+        }
+        return total;
     }
 
     // ==================== Directory Loading ====================
@@ -333,10 +400,17 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         currentDir = dir;
         tvPath.setText(dir.getAbsolutePath());
 
+        final int sortModeSnapshot = currentSortMode;
+
         executor.execute(() -> {
             File[] files = dir.listFiles();
             List<File> fileList = new ArrayList<>();
             if (files != null) fileList.addAll(Arrays.asList(files));
+
+            // Only do the expensive size precomputation when size-sort is selected
+            if (sortModeSnapshot == SORT_SIZE_BIG || sortModeSnapshot == SORT_SIZE_SMALL) {
+                precomputeSizes(fileList);
+            }
 
             Collections.sort(fileList, buildComparator());
 
@@ -549,7 +623,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         final File destDir = currentDir;
 
         long totalBytes = 0;
-        for (File src : sources) totalBytes += sizeOf(src);
+        for (File src : sources) {
+            Long cached = sizeCache.get(src.getAbsolutePath());
+            totalBytes += cached != null ? cached : computeSizeRecursive(src);
+        }
         final long finalTotalBytes = Math.max(totalBytes, 1);
 
         beginProgress(isCut ? "Moving…" : "Copying…");
@@ -634,8 +711,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         long totalBytes = 0;
         int totalFiles = 0;
         for (File f : targets) {
-            totalBytes += sizeOf(f);
-            totalFiles += countFiles(f);
+            Long cached = sizeCache.get(f.getAbsolutePath());
+            totalBytes += cached != null ? cached : computeSizeRecursive(f);
+            totalFiles += countFiles(f);  // countFiles is cheap (no data reads)
         }
         final long finalTotal = Math.max(totalBytes, 1);
         final int finalFileTotal = Math.max(totalFiles, 1);
