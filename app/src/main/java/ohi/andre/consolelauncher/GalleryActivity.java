@@ -994,9 +994,8 @@ public class GalleryActivity extends AppCompatActivity {
         recyclerView.setLayoutManager(layoutManager);
         recyclerView.setAdapter(adapter);
         recyclerView.setHasFixedSize(true);
-        recyclerView.setItemViewCacheSize(20);
-        recyclerView.setDrawingCacheEnabled(true);
-        recyclerView.setDrawingCacheQuality(View.DRAWING_CACHE_QUALITY_HIGH);
+        recyclerView.setItemViewCacheSize(40);
+        recyclerView.setItemAnimator(null);  // disable default fade/slide → no flicker on selection
     }
 
     // ===================== TRASH OPERATIONS =====================
@@ -1195,7 +1194,8 @@ public class GalleryActivity extends AppCompatActivity {
 
         updateSelectionUI();
         if (adapter != null) {
-            adapter.updateSelectedItems(selectedItems);
+            // Only rebind rows whose selection changed; do NOT call notifyDataSetChanged
+            adapter.notifyItemRangeChanged(0, adapter.getItemCount(), "selection");
         }
     }
 

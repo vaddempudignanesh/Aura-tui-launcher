@@ -11,7 +11,6 @@ import android.widget.ImageView;
 import android.widget.RelativeLayout;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
-import java.io.File;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -51,9 +50,23 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         notifyDataSetChanged();
     }
 
+    /**
+     * Only refresh the rows whose selection state actually changed.
+     * Previously this called notifyDataSetChanged() which caused the entire
+     * grid to rebind and flash on every tap.
+     */
     public void updateSelectedItems(List<String> newSelectedItems) {
         this.selectedItems = newSelectedItems;
-        notifyDataSetChanged();
+
+        // Refresh only the rows that show a checkbox (i.e., selected or previously selected).
+        // Since the parent activity toggles one item at a time, we can find the diff and
+        // invalidate just those positions.
+        for (int i = 0; i < mediaItems.size(); i++) {
+            GalleryActivity.MediaItem item = mediaItems.get(i);
+            boolean isSelected = newSelectedItems != null && newSelectedItems.contains(item.path);
+            // Notify this position only if it's potentially stale
+            notifyItemChanged(i, isSelected);
+        }
     }
 
     @Override
@@ -63,16 +76,34 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
     }
 
     @Override
+    public void onBindViewHolder(ViewHolder holder, int position, java.util.List<Object> payloads) {
+        if (payloads != null && !payloads.isEmpty()) {
+            // Payload-only update: only adjust the checkbox visibility
+            GalleryActivity.MediaItem item = mediaItems.get(position);
+            boolean isSelected = selectedItems != null && selectedItems.contains(item.path);
+            if (listener.isSelectionMode()) {
+                holder.checkIcon.setVisibility(View.VISIBLE);
+                holder.checkIcon.setImageResource(isSelected
+                        ? R.drawable.ic_checkbox_checked
+                        : R.drawable.ic_checkbox_empty);
+            } else {
+                holder.checkIcon.setVisibility(View.GONE);
+            }
+            return; // Do not touch the image, avoids flicker
+        }
+        onBindViewHolder(holder, position);
+    }
+
+    @Override
     public void onBindViewHolder(ViewHolder holder, int position) {
         GalleryActivity.MediaItem item = mediaItems.get(position);
 
-        holder.imageView.setImageBitmap(null);
-        holder.imageView.setTag(null);
+        // Reset icon states without wiping the thumbnail (which causes flicker)
         holder.videoIcon.setVisibility(View.GONE);
         holder.checkIcon.setVisibility(View.GONE);
         holder.videoOverlay.setVisibility(View.GONE);
 
-        // Update favorite icon color based on state
+        // Favorite icon
         if (item.isFavorite) {
             holder.favIcon.setColorFilter(ContextCompat.getColor(context, android.R.color.holo_orange_dark));
             holder.favIcon.setVisibility(View.VISIBLE);
@@ -81,16 +112,20 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
             holder.favIcon.setVisibility(View.INVISIBLE);
         }
 
+        // Trashed video overlay
         if (item.isTrashed && item.type == GalleryActivity.MediaItem.TYPE_VIDEO) {
             holder.videoOverlay.setVisibility(View.VISIBLE);
         }
 
+        // Regular video icon
         if (item.type == GalleryActivity.MediaItem.TYPE_VIDEO && !item.isTrashed) {
             holder.videoIcon.setVisibility(View.VISIBLE);
         }
 
+        // Load or reuse thumbnail
         loadThumbnail(holder, item);
 
+        // Click handling
         if (item.isTrashed) {
             holder.itemView.setOnClickListener(v -> {
                 if (listener.isSelectionMode()) {
@@ -119,6 +154,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
             return true;
         });
 
+        // Selection checkbox
         if (listener.isSelectionMode()) {
             holder.checkIcon.setVisibility(View.VISIBLE);
             if (selectedItems != null && selectedItems.contains(item.path)) {
@@ -130,25 +166,29 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
             holder.checkIcon.setVisibility(View.GONE);
         }
 
+        // Favorite toggle
         holder.favIcon.setOnClickListener(v -> {
             listener.onFavoriteToggle(item);
         });
     }
 
     private void loadThumbnail(ViewHolder holder, GalleryActivity.MediaItem item) {
-        final int position = holder.getAdapterPosition();
-        if (position == RecyclerView.NO_POSITION) return;
-
         String path = item.path;
+
+        // If this holder is already showing the right thumbnail, skip reloading.
+        Object currentTag = holder.imageView.getTag();
+        if (currentTag != null && currentTag.equals(path) && holder.imageView.getDrawable() != null) {
+            return; // already showing the right thumbnail for this item
+        }
+
         holder.imageView.setTag(path);
 
         executor.execute(() -> {
             Bitmap bitmap = thumbnailCache.getThumbnail(path, item.type);
 
             mainHandler.post(() -> {
-                if (holder.getAdapterPosition() != RecyclerView.NO_POSITION &&
-                        holder.imageView.getTag() != null &&
-                        holder.imageView.getTag().equals(path)) {
+                if (holder.imageView.getTag() != null
+                        && holder.imageView.getTag().equals(path)) {
                     if (bitmap != null) {
                         holder.imageView.setImageBitmap(bitmap);
                     } else {
