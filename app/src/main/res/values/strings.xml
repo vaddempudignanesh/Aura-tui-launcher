@@ -437,4 +437,5 @@
     <string name="help_browser">browser [url] — opens AuraBrowser, a lightweight WebView browser</string>
     <string name="output_openingbrowser">Opening AuraBrowser → %1$s</string>
     <string name="browser_label">AuraBrowser</string>
+    <string name="help_filemanager">Opens the file manager</string>
 </resources>
