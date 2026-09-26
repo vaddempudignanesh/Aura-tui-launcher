@@ -465,6 +465,48 @@ public class GalleryActivity extends AppCompatActivity {
             fullscreenInfoHeader.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
 
+    /**
+     * Robust rename that tries File.renameTo first, then falls back to
+     * java.nio.file.Files.move (API 26+) which uses a lower-level syscall
+     * and succeeds where renameTo fails (external SD cards, FUSE, hidden files).
+     *
+     * Returns true on success, false otherwise. Logs the outcome.
+     */
+    private boolean renameFileRobust(File src, File dst) {
+        if (src == null || dst == null) return false;
+        if (!src.exists()) {
+            Log.e(LOG_TAG, "renameFileRobust: src does not exist: " + src);
+            return false;
+        }
+
+        // Fast path: File.renameTo (works in same filesystem without FUSE quirks)
+        try {
+            if (src.renameTo(dst)) {
+                Log.d(LOG_TAG, "renameFileRobust: renameTo OK " + src + " → " + dst);
+                return true;
+            }
+        } catch (Exception e) {
+            Log.w(LOG_TAG, "renameFileRobust: renameTo threw", e);
+        }
+
+        // Slow path: java.nio.file.Files.move (API 26+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                java.nio.file.Files.move(
+                        src.toPath(),
+                        dst.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Log.d(LOG_TAG, "renameFileRobust: Files.move OK " + src + " → " + dst);
+                return true;
+            } catch (Exception e) {
+                Log.e(LOG_TAG, "renameFileRobust: Files.move failed " + src + " → " + dst, e);
+            }
+        }
+
+        Log.e(LOG_TAG, "renameFileRobust: all attempts failed " + src + " → " + dst);
+        return false;
+    }
+
     // ===================== OVERLAY VIDEO CONTROLS =====================
 
     private void setupOverlayVideoControls() {
@@ -1311,134 +1353,246 @@ public class GalleryActivity extends AppCompatActivity {
     private void moveToTrash(MediaItem item) {
         if (item.isTrashed) return;
         File file = new File(item.path);
-        if (!file.exists()) return;
+        if (!file.exists()) {
+            Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
+            return;
+        }
 
         String parent = file.getParent();
         String name = file.getName();
         String cleanName = cleanFileName(name);
         File trashedFile = new File(parent, ".trashed." + cleanName);
 
+        // If the trashed name already exists, append _1, _2, ...
         if (trashedFile.exists()) {
             int count = 1;
-            String newName;
-            File newFile = trashedFile;
-            while (newFile.exists()) {
-                int dotIndex = cleanName.lastIndexOf(".");
-                if (dotIndex > 0) {
-                    String base = cleanName.substring(0, dotIndex);
-                    String ext = cleanName.substring(dotIndex);
-                    newName = ".trashed." + base + "_" + count + ext;
-                } else {
-                    newName = ".trashed." + cleanName + "_" + count;
-                }
-                newFile = new File(parent, newName);
+            String baseName = cleanName;
+            String ext = "";
+            int dotIndex = cleanName.lastIndexOf(".");
+            if (dotIndex > 0) {
+                baseName = cleanName.substring(0, dotIndex);
+                ext = cleanName.substring(dotIndex);
+            }
+            while (trashedFile.exists()) {
+                trashedFile = new File(parent, ".trashed." + baseName + "_" + count + ext);
                 count++;
             }
-            trashedFile = newFile;
         }
 
-        if (file.renameTo(trashedFile)) {
-            String oldPath = item.path;
-            item.path = trashedFile.getAbsolutePath();
-            item.isTrashed = true;
-            item.name = trashedFile.getName();
+        if (!renameFileRobust(file, trashedFile)) {
+            Toast.makeText(this, "Could not move to Bin: " + name, Toast.LENGTH_SHORT).show();
+            return;
+        }
 
-            MediaScannerConnection.scanFile(this, new String[]{trashedFile.getAbsolutePath()}, null, null);
-            MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
+        String oldPath = item.path;
+        item.path = trashedFile.getAbsolutePath();
+        item.isTrashed = true;
+        item.name = trashedFile.getName();
 
-            for (int i = 0; i < mediaItems.size(); i++) {
-                if (mediaItems.get(i).path.equals(oldPath)) {
-                    mediaItems.set(i, item); break;
-                }
+        MediaScannerConnection.scanFile(this, new String[]{trashedFile.getAbsolutePath()}, null, null);
+        MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
+
+        for (int i = 0; i < mediaItems.size(); i++) {
+            if (mediaItems.get(i).path.equals(oldPath)) {
+                mediaItems.set(i, item);
+                break;
             }
-            applyFilter();
         }
+
+        applyFilter();
     }
 
-    private void restoreFromTrash(MediaItem item) {
+    private boolean restoreFromTrash(MediaItem item) {
         File file = new File(item.path);
-        if (!file.exists()) { Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show(); return; }
+        if (!file.exists()) {
+            Log.e(LOG_TAG, "restoreFromTrash: file not found: " + item.path);
+            return false;
+        }
 
         String parent = file.getParent();
         String name = file.getName();
         String cleanName = cleanFileName(name);
+
         File restoredFile = new File(parent, cleanName);
 
+        // If the clean name is taken, try _1, _2, ...
         if (restoredFile.exists()) {
             int count = 1;
-            String base = cleanName;
+            String baseName = cleanName;
             String ext = "";
             int dotIndex = cleanName.lastIndexOf(".");
             if (dotIndex > 0) {
-                base = cleanName.substring(0, dotIndex);
+                baseName = cleanName.substring(0, dotIndex);
                 ext = cleanName.substring(dotIndex);
             }
             while (restoredFile.exists()) {
-                restoredFile = new File(parent, base + "_" + count + ext);
+                restoredFile = new File(parent, baseName + "_" + count + ext);
                 count++;
             }
         }
 
-        if (file.renameTo(restoredFile)) {
-            String oldPath = item.path;
-            item.path = restoredFile.getAbsolutePath();
-            item.isTrashed = false;
-            item.name = restoredFile.getName();
-
-            MediaScannerConnection.scanFile(this, new String[]{restoredFile.getAbsolutePath()}, null, null);
-            MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
-
-            for (int i = 0; i < mediaItems.size(); i++) {
-                if (mediaItems.get(i).path.equals(oldPath)) {
-                    mediaItems.set(i, item); break;
-                }
-            }
-            applyFilter();
-            Toast.makeText(this, "Restored: " + cleanName, Toast.LENGTH_SHORT).show();
-        } else {
-            Toast.makeText(this, "Failed to restore", Toast.LENGTH_SHORT).show();
+        if (!renameFileRobust(file, restoredFile)) {
+            Log.e(LOG_TAG, "restoreFromTrash: renameFileRobust failed "
+                    + item.path + " → " + restoredFile.getAbsolutePath());
+            return false;
         }
+
+        String oldPath = item.path;
+        item.path = restoredFile.getAbsolutePath();
+        item.isTrashed = false;
+        item.name = restoredFile.getName();
+
+        MediaScannerConnection.scanFile(this, new String[]{restoredFile.getAbsolutePath()}, null, null);
+        MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
+
+        for (int i = 0; i < mediaItems.size(); i++) {
+            if (mediaItems.get(i).path.equals(oldPath)) {
+                mediaItems.set(i, item);
+                break;
+            }
+        }
+        return true;
     }
 
     private void moveSelectedToTrash() {
         if (selectedItems.isEmpty()) return;
-        for (String path : selectedItems) {
-            for (MediaItem item : mediaItems) {
-                if (item.path.equals(path)) { moveToTrash(item); break; }
+
+        // Work off the actual paths from the current view, not from mediaItems.
+        List<String> paths = new ArrayList<>(selectedItems);
+
+        int moved = 0;
+        int failed = 0;
+
+        for (String path : paths) {
+            File f = new File(path);
+            if (!f.exists()) { failed++; continue; }
+
+            MediaItem item = new MediaItem(path, f.getName(),
+                    MediaItem.TYPE_IMAGE, 0, false, "");
+            String lower = path.toLowerCase(Locale.ROOT);
+            if (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
+                    || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
+                    || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv")) {
+                item.type = MediaItem.TYPE_VIDEO;
+            }
+
+            // Only attempt if it's not already trashed
+            if (!f.getName().startsWith(".trashed.")) {
+                moveToTrash(item);
+                moved++;
+            } else {
+                // Already trashed, count as moved
+                moved++;
             }
         }
-        clearSelection(); applyFilter();
-        Toast.makeText(this, "Moved to Bin", Toast.LENGTH_SHORT).show();
+
+        clearSelection();
+        applyFilter();
+        Toast.makeText(this, "Moved " + moved + " item(s) to Bin"
+                        + (failed > 0 ? " (" + failed + " failed)" : ""),
+                Toast.LENGTH_SHORT).show();
     }
 
     private void restoreSelectedItems() {
         if (selectedItems.isEmpty()) return;
-        List<MediaItem> toRestore = new ArrayList<>();
-        for (String path : selectedItems) {
-            for (MediaItem item : mediaItems) {
-                if (item.path.equals(path) && item.isTrashed) { toRestore.add(item); break; }
+
+        // Work off the selected PATHS directly. The bin adapter put these in
+        // selectedItems, and they are the actual ".trashed.*" paths on disk.
+        List<String> paths = new ArrayList<>(selectedItems);
+
+        int restored = 0;
+        int failed = 0;
+
+        for (String path : paths) {
+            File file = new File(path);
+            if (!file.exists()) {
+                Log.e(LOG_TAG, "restoreSelectedItems: file gone: " + path);
+                failed++;
+                continue;
+            }
+
+            // Build a temp MediaItem from the path.
+            MediaItem item = new MediaItem(path, file.getName(),
+                    MediaItem.TYPE_IMAGE, 0, true, "");
+
+            // Figure out the real type from the extension.
+            String lower = path.toLowerCase(Locale.ROOT);
+            if (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
+                    || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
+                    || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv")) {
+                item.type = MediaItem.TYPE_VIDEO;
+            }
+
+            if (restoreFromTrash(item)) {
+                restored++;
+            } else {
+                failed++;
             }
         }
-        for (MediaItem item : toRestore) restoreFromTrash(item);
-        clearSelection(); applyFilter();
-        Toast.makeText(this, "Restored " + toRestore.size() + " items", Toast.LENGTH_SHORT).show();
+
+        clearSelection();
+        applyFilter();
+
+        if (failed == 0) {
+            Toast.makeText(this, "Restored " + restored + " item(s)", Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "Restored " + restored + ", failed " + failed,
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     private void deletePermanentlySelectedItems() {
         if (selectedItems.isEmpty()) return;
+
+        final List<String> paths = new ArrayList<>(selectedItems);
+
         new AlertDialog.Builder(this)
                 .setTitle("Delete Permanently")
-                .setMessage("Are you sure? This cannot be undone.")
+                .setMessage("Are you sure you want to permanently delete "
+                        + paths.size() + " item(s)? This cannot be undone.")
                 .setPositiveButton("Delete", (d, w) -> {
-                    for (String path : selectedItems) {
+                    int deleted = 0;
+                    int failed = 0;
+
+                    for (String path : paths) {
                         File f = new File(path);
-                        if (f.exists()) f.delete();
-                        for (int i = mediaItems.size() - 1; i >= 0; i--) {
-                            if (mediaItems.get(i).path.equals(path)) { mediaItems.remove(i); break; }
+                        boolean ok = false;
+
+                        if (f.exists()) {
+                            try {
+                                ok = f.delete();
+                            } catch (Exception e) {
+                                Log.e(LOG_TAG, "delete failed: " + path, e);
+                            }
+                        } else {
+                            ok = true; // already gone
+                        }
+
+                        if (ok) {
+                            deleted++;
+                            // Remove from mediaItems if present
+                            for (int i = mediaItems.size() - 1; i >= 0; i--) {
+                                if (mediaItems.get(i).path.equals(path)) {
+                                    mediaItems.remove(i);
+                                    break;
+                                }
+                            }
+                        } else {
+                            failed++;
+                            Log.e(LOG_TAG, "Could not delete: " + path);
                         }
                     }
-                    clearSelection(); applyFilter();
-                    Toast.makeText(this, "Deleted permanently", Toast.LENGTH_SHORT).show();
+
+                    clearSelection();
+                    applyFilter();
+
+                    if (failed == 0) {
+                        Toast.makeText(this, "Deleted " + deleted + " item(s)",
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(this, "Deleted " + deleted + ", failed " + failed,
+                                Toast.LENGTH_LONG).show();
+                    }
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
