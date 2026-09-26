@@ -72,7 +72,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private EditText etUrl;
     private ProgressBar progressBar;
     private ImageButton btnDarkMode;
-    private ImageButton btnBookmark;
+    private ImageButton btnRefresh;
     private ImageButton btnBack;
     private ImageButton btnForward;
     private FrameLayout btnTabsContainer;
@@ -93,6 +93,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
     // ── Dark mode ────────────────────────────────────────────────
     private boolean forceDark = false;
 
+    // ── Page loading state (for refresh/stop toggle) ────────────
+    private boolean isPageLoading = false;
     // ── Tabs ─────────────────────────────────────────────────────
     private static class Tab {
         WebView webView;
@@ -143,7 +145,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         etUrl            = findViewById(R.id.aura_et_url);
         progressBar      = findViewById(R.id.aura_progress);
         btnDarkMode      = findViewById(R.id.aura_btn_darkmode);
-        btnBookmark      = findViewById(R.id.aura_btn_bookmark);
+        btnRefresh       = findViewById(R.id.aura_btn_refresh);
         btnBack          = findViewById(R.id.aura_btn_back);
         btnForward       = findViewById(R.id.aura_btn_forward);
         btnTabsContainer = findViewById(R.id.aura_btn_tabs_container);
@@ -168,8 +170,19 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnDarkMode.setOnClickListener(v -> toggleForceDark());
         updateDarkIconTint();
 
-        // Bookmark
-        btnBookmark.setOnClickListener(v -> addBookmark());
+        // Refresh / Stop toggle
+        btnRefresh.setOnClickListener(v -> {
+            Tab t = currentTab();
+            if (t == null) return;
+            if (isPageLoading) {
+                t.webView.stopLoading();
+                isPageLoading = false;
+                progressBar.setVisibility(View.GONE);
+                btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
+            } else {
+                t.webView.reload();
+            }
+        });
 
         // Footer nav
         btnBack.setOnClickListener(v -> {
@@ -283,24 +296,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         wv.evaluateJavascript(css, null);
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  Bookmark
-    // ═════════════════════════════════════════════════════════════
-    private void addBookmark() {
-        Tab t = currentTab();
-        if (t == null) return;
-        String url = t.webView.getUrl();
-        String title = t.webView.getTitle();
-        if (url == null) return;
 
-        getSharedPreferences("aura_bookmarks", MODE_PRIVATE)
-                .edit()
-                .putString(url, title != null ? title : url)
-                .apply();
-
-        Toast.makeText(this, "⭐ Bookmarked", Toast.LENGTH_SHORT).show();
-        btnBookmark.setColorFilter(0xFFFFAA00);
-    }
 
     // ═════════════════════════════════════════════════════════════
     //  Tab sheet
@@ -489,6 +485,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
         etUrl.setText(t.url != null ? t.url : DEFAULT_HOME);
         showChrome();
         updateTabCountBadge();
+
+        // Reset refresh/stop icon when switching tabs
+        isPageLoading = false;
+        progressBar.setVisibility(View.GONE);
+        btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
     }
 
     private void closeTab(int index) {
@@ -876,6 +877,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 if (view == currentTabWebView()) {
                     progressBar.setVisibility(View.VISIBLE);
                     etUrl.setText(url);
+                    isPageLoading = true;
+                    btnRefresh.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
                 }
                 updateTabUrl(view, url);
                 lastScrollY = 0;
@@ -888,6 +891,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 if (view == currentTabWebView()) {
                     progressBar.setVisibility(View.GONE);
                     etUrl.setText(url);
+                    isPageLoading = false;
+                    btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
                 }
                 updateTabUrl(view, url);
                 if (forceDark) injectPureBlackCSS(view);

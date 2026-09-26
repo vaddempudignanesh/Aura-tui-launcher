@@ -46,12 +46,12 @@
             android:selectAllOnFocus="true" />
 
         <ImageButton
-            android:id="@+id/aura_btn_bookmark"
+            android:id="@+id/aura_btn_refresh"
             android:layout_width="36dp"
             android:layout_height="38dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:src="@android:drawable/btn_star_big_off"
-            android:contentDescription="Bookmark this page"
+            android:src="@android:drawable/ic_popup_sync"
+            android:contentDescription="Reload / Stop"
             android:scaleType="centerInside"
             android:padding="4dp"
             app:tint="#FF33FF33" />
