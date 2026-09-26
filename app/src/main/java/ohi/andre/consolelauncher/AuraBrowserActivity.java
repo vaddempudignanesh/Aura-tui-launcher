@@ -22,7 +22,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.animation.Animation;
 import android.view.animation.TranslateAnimation;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
@@ -33,7 +32,6 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -48,6 +46,10 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewFeature;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -56,13 +58,16 @@ import ohi.andre.consolelauncher.managers.xml.options.Theme;
 import ohi.andre.consolelauncher.managers.xml.options.Ui;
 
 /**
- * AuraBrowser v4 — tab preview sheet, swipe tabs, bookmark star, forced dark mode.
+ * AuraBrowser v5 — fixed dark mode, skinny tab badge, working swipe, aria2c downloads.
  */
 public class AuraBrowserActivity extends AppCompatActivity {
 
     public static final String EXTRA_URL       = "aura_url";
     public static final String EXTRA_INCOGNITO = "aura_incognito";
     public static final String DEFAULT_HOME    = "https://www.google.com";
+
+    // aria2c external download destination
+    private static final String DOWNLOAD_DIR   = "/storage/emulated/0/Download";
 
     // ── Views ────────────────────────────────────────────────────
     private LinearLayout topBar;
@@ -107,6 +112,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private final List<Tab> tabs = new ArrayList<>();
     private int currentTabIndex = -1;
 
+    // Swipe on tab badge to switch tabs
+    private GestureDetector tabSwipeDetector;
+
     // ── Lifecycle ────────────────────────────────────────────────
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -146,7 +154,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnDownloads     = findViewById(R.id.aura_btn_downloads);
         tabCountView     = findViewById(R.id.aura_tab_count);
 
-        // Address bar select-all
+        // ── Address bar ──────────────────────────────────────────
         etUrl.setOnClickListener(v -> { etUrl.selectAll(); etUrl.requestFocus(); });
         etUrl.setOnFocusChangeListener((v, hasFocus) -> { if (hasFocus) etUrl.selectAll(); });
         etUrl.setOnEditorActionListener((v, actionId, event) -> {
@@ -159,13 +167,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
             return false;
         });
 
-        // Dark mode toggle
+        // ── Dark mode ────────────────────────────────────────────
         btnDarkMode.setOnClickListener(v -> toggleForceDark());
+        updateDarkIconTint();
 
-        // Bookmark star
+        // ── Bookmark ─────────────────────────────────────────────
         btnBookmark.setOnClickListener(v -> addBookmark());
 
-        // Footer
+        // ── Footer ───────────────────────────────────────────────
         btnBack.setOnClickListener(v -> {
             Tab t = currentTab();
             if (t != null && t.webView.canGoBack()) t.webView.goBack();
@@ -174,7 +183,48 @@ public class AuraBrowserActivity extends AppCompatActivity {
             Tab t = currentTab();
             if (t != null && t.webView.canGoForward()) t.webView.goForward();
         });
+
+        // Swipe detector on tabs container: left → next tab, right → prev tab
+        tabSwipeDetector = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
+                    @Override
+                    public boolean onDown(MotionEvent e) { return true; }
+
+                    @Override
+                    public boolean onFling(MotionEvent e1, MotionEvent e2,
+                                           float vx, float vy) {
+                        if (e1 == null || e2 == null) return false;
+                        float dx = e2.getX() - e1.getX();
+                        float dy = e2.getY() - e1.getY();
+
+                        // Horizontal only
+                        if (Math.abs(dx) < Math.abs(dy)) return false;
+                        if (Math.abs(dx) < 40) return false;
+                        if (Math.abs(vx) < 100) return false;
+
+                        if (dx > 0) {
+                            // swipe right → previous tab
+                            if (currentTabIndex > 0) switchToTab(currentTabIndex - 1);
+                        } else {
+                            // swipe left → next tab
+                            if (currentTabIndex < tabs.size() - 1)
+                                switchToTab(currentTabIndex + 1);
+                        }
+                        return true;
+                    }
+                });
+
+        // Attach to the tabs button — LONG PRESS opens the sheet, TAP opens the sheet,
+        // SWIPE switches tabs
+        btnTabsContainer.setOnTouchListener((v, event) -> {
+            boolean handled = tabSwipeDetector.onTouchEvent(event);
+            if (event.getAction() == MotionEvent.ACTION_UP && !handled) {
+                v.performClick();
+            }
+            return true;
+        });
         btnTabsContainer.setOnClickListener(v -> showTabSheet());
+
         btnIncognito.setOnClickListener(v -> newTab(null, true));
         btnDownloads.setOnClickListener(v -> openDownloads());
 
@@ -186,40 +236,68 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  Dark mode
+    //  Dark mode — applied to existing + future tabs
     // ─────────────────────────────────────────────────────────────
     private void toggleForceDark() {
         forceDark = !forceDark;
+        updateDarkIconTint();
         applyForceDarkToAllTabs();
-        btnDarkMode.setImageResource(forceDark
-                ? android.R.drawable.ic_menu_day     // "light is available"
-                : android.R.drawable.ic_menu_day);   // keep same icon; toggling via tint
-        // Tint feedback
+    }
+
+    private void updateDarkIconTint() {
         int tint = forceDark ? 0xFFFFAA00 : 0xFF33FF33;
         btnDarkMode.setColorFilter(tint);
+        btnDarkMode.setImageResource(forceDark
+                ? android.R.drawable.ic_menu_day       // bright icon while dark is ON
+                : android.R.drawable.ic_menu_day);     // same icon, tint signals state
     }
 
     private void applyForceDarkToAllTabs() {
-        for (Tab t : tabs) {
-            applyForceDark(t.webView);
-        }
+        for (Tab t : tabs) applyForceDark(t.webView);
     }
 
     @SuppressLint("RequiresFeature")
     private void applyForceDark(WebView wv) {
         if (wv == null) return;
         try {
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-                WebSettingsCompat.setForceDark(wv.getSettings(),
-                        forceDark ? WebSettingsCompat.FORCE_DARK_ON
-                                : WebSettingsCompat.FORCE_DARK_OFF);
-            } else if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
-                WebSettingsCompat.setForceDarkStrategy(wv.getSettings(),
+            WebSettings settings = wv.getSettings();
+
+            // Strategy first — must be set before FORCE_DARK
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+                WebSettingsCompat.setForceDarkStrategy(settings,
                         WebSettingsCompat.DARK_STRATEGY_WEB_THEME_DARKENING_ONLY);
             }
-            // Reload so changes take effect
-            wv.reload();
+
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                WebSettingsCompat.setForceDark(settings,
+                        forceDark ? WebSettingsCompat.FORCE_DARK_ON
+                                : WebSettingsCompat.FORCE_DARK_OFF);
+            }
+
+            if (forceDark) {
+                // Inject CSS: pure black background on <html> and <body>
+                injectPureBlackCSS(wv);
+            } else {
+                // Remove the injected CSS by reloading
+                wv.reload();
+            }
         } catch (Exception ignored) {}
+    }
+
+    private void injectPureBlackCSS(WebView wv) {
+        String css =
+                "(function(){" +
+                        "  var s = document.getElementById('aura-dark-css');" +
+                        "  if (!s) {" +
+                        "    s = document.createElement('style');" +
+                        "    s.id = 'aura-dark-css';" +
+                        "    document.documentElement.appendChild(s);" +
+                        "  }" +
+                        "  s.textContent = 'html,body{background:#000 !important;color:#ccc !important;}' +" +
+                        "                  'html{color-scheme:dark;}' +" +
+                        "                  'a{color:#7aa2f7 !important;}';" +
+                        "})();";
+        wv.evaluateJavascript(css, null);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -238,29 +316,25 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 .apply();
 
         Toast.makeText(this, "⭐ Bookmarked", Toast.LENGTH_SHORT).show();
-        // Visual feedback
         btnBookmark.setColorFilter(0xFFFFAA00);
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  Tab sheet (custom dark dialog above footer)
+    //  Tab sheet
     // ─────────────────────────────────────────────────────────────
     private void showTabSheet() {
         if (tabs.isEmpty()) return;
 
-        // Build the dialog
         final Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setCancelable(true);
 
-        // Root: vertical scrollable card
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(0xFF0A0A0A);
         int pad = dp(8);
         root.setPadding(pad, pad, pad, pad);
 
-        // Title row
         TextView title = new TextView(this);
         title.setText("Tabs");
         title.setTextColor(0xFF33FF33);
@@ -268,7 +342,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         title.setPadding(dp(6), dp(4), dp(6), dp(6));
         root.addView(title);
 
-        // Scrollable list of tabs
         ScrollView scroll = new ScrollView(this);
         scroll.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(280)));
@@ -288,12 +361,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             rowLp.setMargins(0, dp(2), 0, dp(2));
             row.setLayoutParams(rowLp);
+            row.setBackgroundColor(i == currentTabIndex ? 0xFF1A3A1A : 0xFF111111);
 
-            // Highlight current tab
-            boolean isCurrent = (i == currentTabIndex);
-            row.setBackgroundColor(isCurrent ? 0xFF1A3A1A : 0xFF111111);
-
-            // Incognito / normal indicator
             ImageView icon = new ImageView(this);
             icon.setImageResource(t.incognito
                     ? android.R.drawable.ic_menu_view
@@ -304,7 +373,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             icon.setLayoutParams(iconLp);
             row.addView(icon);
 
-            // Title text
             TextView tv = new TextView(this);
             String tt = t.webView.getTitle();
             if (tt == null || tt.isEmpty()) tt = t.url != null ? t.url : "New Tab";
@@ -318,7 +386,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             row.addView(tv);
 
-            // Close button
             ImageButton close = new ImageButton(this);
             close.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
             close.setColorFilter(0xFFFF6666);
@@ -331,43 +398,16 @@ public class AuraBrowserActivity extends AppCompatActivity {
             });
             row.addView(close);
 
-            // Tap to select
             row.setOnClickListener(v -> {
                 switchToTab(idx);
                 dialog.dismiss();
             });
-
-            // Swipe left/right → switch tab based on finger direction
-            final GestureDetector gd = new GestureDetector(this,
-                    new GestureDetector.SimpleOnGestureListener() {
-                        @Override
-                        public boolean onFling(MotionEvent e1, MotionEvent e2,
-                                               float vx, float vy) {
-                            if (e1 == null || e2 == null) return false;
-                            float dx = e2.getX() - e1.getX();
-                            float dy = e2.getY() - e1.getY();
-                            if (Math.abs(dx) < Math.abs(dy)) return false;  // vertical, ignore
-                            if (Math.abs(dx) < 60) return false;            // too small
-
-                            if (dx > 0) {
-                                // swipe right → previous tab
-                                if (idx > 0) switchToTab(idx - 1);
-                            } else {
-                                // swipe left → next tab
-                                if (idx < tabs.size() - 1) switchToTab(idx + 1);
-                            }
-                            dialog.dismiss();
-                            return true;
-                        }
-                    });
-            row.setOnTouchListener((v, ev) -> gd.onTouchEvent(ev));
 
             list.addView(row);
         }
 
         root.addView(scroll);
 
-        // "+ New Tab" button below list
         TextView plus = new TextView(this);
         plus.setText("+   New Tab");
         plus.setTextColor(0xFF33FF33);
@@ -387,7 +427,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         dialog.setContentView(root);
 
-        // Position: attached above footer, full width
         Window w = dialog.getWindow();
         if (w != null) {
             w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
@@ -398,7 +437,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             WindowManager.LayoutParams lp = w.getAttributes();
             lp.dimAmount = 0.5f;
-            lp.y = footerBar.getHeight() + dp(4); // sit above footer
+            lp.y = footerBar.getHeight() + dp(4);
             w.setAttributes(lp);
         }
 
@@ -436,8 +475,19 @@ public class AuraBrowserActivity extends AppCompatActivity {
         webContainer.addView(wv);
         wv.setVisibility(View.GONE);
 
-        // Apply current dark mode preference before load
-        applyForceDark(wv);
+        // Apply dark mode BEFORE load, so first paint is dark
+        try {
+            WebSettings s = wv.getSettings();
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+                WebSettingsCompat.setForceDarkStrategy(s,
+                        WebSettingsCompat.DARK_STRATEGY_WEB_THEME_DARKENING_ONLY);
+            }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                WebSettingsCompat.setForceDark(s,
+                        forceDark ? WebSettingsCompat.FORCE_DARK_ON
+                                : WebSettingsCompat.FORCE_DARK_OFF);
+            }
+        } catch (Exception ignored) {}
 
         wv.loadUrl(normalized);
         switchToTab(tabs.size() - 1);
@@ -485,15 +535,142 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  Downloads
+    //  Downloads — aria2c first, DownloadManager fallback
     // ─────────────────────────────────────────────────────────────
     private void openDownloads() {
+        // Long-press or direct tap on downloads icon: open the Download folder
         try {
-            Intent i = new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(Uri.parse("file://" + DOWNLOAD_DIR), "resource/folder");
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(i);
         } catch (Exception e) {
-            Toast.makeText(this, "No downloads app found", Toast.LENGTH_SHORT).show();
+            // Fallback: open with any file manager
+            try {
+                Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                i.setType("*/*");
+                startActivity(Intent.createChooser(i, "Browse downloads"));
+            } catch (Exception e2) {
+                Toast.makeText(this, "Downloads: " + DOWNLOAD_DIR,
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    /**
+     * Called from the WebView download listener.
+     * Tries aria2c first (with resume + parallel).
+     * Falls back to Android DownloadManager if aria2c isn't available.
+     */
+    private void startAria2Download(String url, String userAgent,
+                                    String contentDisposition, String mimeType) {
+        final String finalUrl = url;
+        final String referer = currentTabWebView() != null
+                ? currentTabWebView().getUrl() : "";
+
+        new Thread(() -> {
+            String aria2Path = ensureAria2Binary();
+            if (aria2Path != null) {
+                try {
+                    // aria2c -x 16 -j 16 -c -d <dir> -U <ua> -R <referer> <url>
+                    // -x 16 = 16 connections per server
+                    // -j 16 = 16 parallel downloads (only matters with multiple URLs)
+                    // -c    = continue/resume (picks up where paused)
+                    // -d    = destination directory
+                    // -U    = user agent
+                    // -R    = referer
+                    // --file-allocation=none = don't preallocate (faster start on some FS)
+                    List<String> cmd = new ArrayList<>();
+                    cmd.add(aria2Path);
+                    cmd.add("-x"); cmd.add("16");
+                    cmd.add("-j"); cmd.add("16");
+                    cmd.add("-c");
+                    cmd.add("--file-allocation=none");
+                    cmd.add("-d"); cmd.add(DOWNLOAD_DIR);
+                    if (userAgent != null && !userAgent.isEmpty()) {
+                        cmd.add("-U"); cmd.add(userAgent);
+                    }
+                    if (referer != null && !referer.isEmpty()) {
+                        cmd.add("-R"); cmd.add(referer);
+                    }
+                    cmd.add(finalUrl);
+
+                    ProcessBuilder pb = new ProcessBuilder(cmd);
+                    pb.redirectErrorStream(true);
+                    Process proc = pb.start();
+
+                    // Drain output so it doesn't block
+                    InputStream in = proc.getInputStream();
+                    byte[] buf = new byte[4096];
+                    while (in.read(buf) != -1) { /* discard */ }
+
+                    int exit = proc.waitFor();
+
+                    runOnUiThread(() -> {
+                        if (exit == 0) {
+                            Toast.makeText(this,
+                                    "aria2c: done → " + DOWNLOAD_DIR,
+                                    Toast.LENGTH_LONG).show();
+                        } else {
+                            Toast.makeText(this,
+                                    "aria2c exited with code " + exit,
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> fallbackDownloadManager(
+                            finalUrl, userAgent, contentDisposition, mimeType));
+                }
+            } else {
+                runOnUiThread(() -> {
+                    Toast.makeText(this,
+                            "aria2c not bundled — using DownloadManager fallback",
+                            Toast.LENGTH_SHORT).show();
+                    fallbackDownloadManager(finalUrl, userAgent, contentDisposition, mimeType);
+                });
+            }
+        }).start();
+    }
+
+    /** Extract aria2c from assets to filesDir on first use, chmod +x. */
+    private String ensureAria2Binary() {
+        File out = new File(getFilesDir(), "aria2c");
+        if (out.exists() && out.canExecute()) return out.getAbsolutePath();
+
+        try (InputStream is = getAssets().open("aria2c");
+             OutputStream os = new FileOutputStream(out)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) > 0) os.write(buf, 0, n);
+        } catch (Exception e) {
+            return null; // no bundled binary
+        }
+
+        try {
+            Process p = Runtime.getRuntime().exec(
+                    new String[]{"chmod", "755", out.getAbsolutePath()});
+            p.waitFor();
+        } catch (Exception ignored) {}
+
+        return out.canExecute() ? out.getAbsolutePath() : null;
+    }
+
+    private void fallbackDownloadManager(String url, String ua,
+                                         String contentDisposition, String mimeType) {
+        try {
+            String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
+            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+            req.setMimeType(mimeType);
+            if (ua != null) req.addRequestHeader("User-Agent", ua);
+            req.setNotificationVisibility(
+                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+
+            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm != null) dm.enqueue(req);
+        } catch (Exception e) {
+            Toast.makeText(this, "Download failed: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
         }
     }
 
@@ -564,6 +741,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     etUrl.setText(url);
                 }
                 updateTabUrl(view, url);
+
+                // Re-inject dark CSS after page load
+                if (forceDark) injectPureBlackCSS(view);
             }
         });
 
@@ -600,26 +780,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         });
 
+        // Downloads → aria2c
         wv.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
-            try {
-                String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
-                DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
-                req.setMimeType(mimeType);
-                req.addRequestHeader("User-Agent", userAgent);
-                req.setNotificationVisibility(
-                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
-
-                DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-                if (dm != null) {
-                    dm.enqueue(req);
-                    Toast.makeText(AuraBrowserActivity.this,
-                            "Downloading " + fileName, Toast.LENGTH_SHORT).show();
-                }
-            } catch (Exception e) {
-                Toast.makeText(AuraBrowserActivity.this,
-                        "Download failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            }
+            Toast.makeText(this, "Downloading via aria2c...", Toast.LENGTH_SHORT).show();
+            startAria2Download(url, userAgent, contentDisposition, mimeType);
         });
     }
 
@@ -752,9 +916,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         super.onDestroy();
     }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Static entry points
-    // ─────────────────────────────────────────────────────────────
     public static void open(Context ctx, String url) {
         Intent i = new Intent(ctx, AuraBrowserActivity.class);
         if (url != null) i.putExtra(EXTRA_URL, url);

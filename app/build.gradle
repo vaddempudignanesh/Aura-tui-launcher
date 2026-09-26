@@ -4,6 +4,10 @@ android {
     namespace "ohi.andre.consolelauncher"
     compileSdk 34
 
+    androidResources {
+        noCompress 'aria2c'
+    }
+
     def keystorePropertiesFile = rootProject.file("local.properties")
     def keystoreProperties = new Properties()
     if (keystorePropertiesFile.exists()) {
