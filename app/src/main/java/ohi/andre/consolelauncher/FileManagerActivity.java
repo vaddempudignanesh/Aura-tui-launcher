@@ -1,7 +1,6 @@
 package ohi.andre.consolelauncher;
 
 import android.app.AlertDialog;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
@@ -19,7 +18,6 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.PopupMenu;
@@ -52,7 +50,18 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
     private static final String HOME_DIR = Environment.getExternalStorageDirectory().getAbsolutePath();
 
-    // Header views
+    // Sort modes
+    private static final int SORT_NAME_ASC   = 0;
+    private static final int SORT_NAME_DESC  = 1;
+    private static final int SORT_DATE_NEW   = 2;
+    private static final int SORT_DATE_OLD   = 3;
+    private static final int SORT_SIZE_BIG   = 4;
+    private static final int SORT_SIZE_SMALL = 5;
+
+    private int currentSortMode = SORT_NAME_ASC;
+    private List<File> currentFileList = new ArrayList<>();
+
+    // Views
     private DrawerLayout drawerLayout;
     private RecyclerView recyclerFiles;
     private RecyclerView recyclerStorage;
@@ -61,13 +70,14 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private TextView tvEmpty;
     private TextView tvSelectionInfo;
     private ImageView btnMenu;
+    private ImageView btnSort;
     private ImageView btnCopy;
     private ImageView btnMove;
     private ImageView btnDelete;
     private ImageView btnMore;
     private ImageView btnCloseSelection;
 
-    // Footer views
+    // Footer
     private LinearLayout footerBar;
     private LinearLayout footerActions;
     private LinearLayout footerProgress;
@@ -88,7 +98,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private boolean isCutOperation = false;
     private boolean isTransferring = false;
 
-    // Background work
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -124,6 +133,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         tvEmpty = findViewById(R.id.tv_empty);
         tvSelectionInfo = findViewById(R.id.tv_selection_info);
         btnMenu = findViewById(R.id.btn_menu);
+        btnSort = findViewById(R.id.btn_sort);
         btnCopy = findViewById(R.id.btn_copy);
         btnMove = findViewById(R.id.btn_move);
         btnDelete = findViewById(R.id.btn_delete);
@@ -159,8 +169,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private void setupListeners() {
         btnMenu.setOnClickListener(v -> drawerLayout.openDrawer(drawerPanel));
         btnMore.setOnClickListener(v -> showActionsMenu(v));
+        btnSort.setOnClickListener(v -> showSortMenu(v));
 
-        // ✅ Icon button shortcuts
         btnCopy.setOnClickListener(v -> {
             List<File> sel = new ArrayList<>(adapter.getSelectedFiles());
             if (!sel.isEmpty()) doCopy(sel);
@@ -185,7 +195,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             clipboard.clear();
             isCutOperation = false;
             updateFooterBar();
-            Toast.makeText(this, "Cancelled", Toast.LENGTH_SHORT).show();
         });
 
         btnFooterPaste.setOnClickListener(v -> {
@@ -195,10 +204,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
-                if (isTransferring) {
-                    Toast.makeText(FileManagerActivity.this,
-                            "Transfer in progress…", Toast.LENGTH_SHORT).show();
-                } else if (drawerLayout.isDrawerOpen(drawerPanel)) {
+                if (isTransferring) return;
+                if (drawerLayout.isDrawerOpen(drawerPanel)) {
                     drawerLayout.closeDrawer(drawerPanel);
                 } else if (adapter.isSelectionMode()) {
                     adapter.setSelectionMode(false);
@@ -254,24 +261,74 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         storageAdapter.setItems(items);
     }
 
-    // ==================== Black Dialog helper ====================
+    // ==================== Dialogs ====================
 
-    /**
-     * Every dialog in this activity uses this so we get pure black bg + green text
-     * consistently across all ROMs.
-     */
     private AlertDialog.Builder blackDialogBuilder() {
-        return new AlertDialog.Builder(
-                new ContextThemeWrapper(this, R.style.BlackDialog));
+        return new AlertDialog.Builder(new ContextThemeWrapper(this, R.style.BlackDialog));
+    }
+
+    // ==================== Sort ====================
+
+    private void showSortMenu(View anchor) {
+        ContextThemeWrapper wrapper = new ContextThemeWrapper(this, R.style.PopupMenu_Black);
+        PopupMenu popup = new PopupMenu(wrapper, anchor);
+        popup.getMenuInflater().inflate(R.menu.menu_sort_options, popup.getMenu());
+
+        popup.setOnMenuItemClickListener(item -> {
+            int id = item.getItemId();
+            if (id == R.id.sort_name_asc) currentSortMode = SORT_NAME_ASC;
+            else if (id == R.id.sort_name_desc) currentSortMode = SORT_NAME_DESC;
+            else if (id == R.id.sort_date_new) currentSortMode = SORT_DATE_NEW;
+            else if (id == R.id.sort_date_old) currentSortMode = SORT_DATE_OLD;
+            else if (id == R.id.sort_size_big) currentSortMode = SORT_SIZE_BIG;
+            else if (id == R.id.sort_size_small) currentSortMode = SORT_SIZE_SMALL;
+            else return false;
+
+            applySortAndRefresh();
+            return true;
+        });
+
+        forceBlackPopupBackground(popup);
+        popup.show();
+    }
+
+    private void applySortAndRefresh() {
+        Collections.sort(currentFileList, buildComparator());
+        adapter.setFiles(currentFileList);
+    }
+
+    private Comparator<File> buildComparator() {
+        return new Comparator<File>() {
+            @Override
+            public int compare(File a, File b) {
+                // Directories always first
+                if (a.isDirectory() && !b.isDirectory()) return -1;
+                if (!a.isDirectory() && b.isDirectory()) return 1;
+
+                switch (currentSortMode) {
+                    case SORT_NAME_ASC:
+                        return a.getName().compareToIgnoreCase(b.getName());
+                    case SORT_NAME_DESC:
+                        return b.getName().compareToIgnoreCase(a.getName());
+                    case SORT_DATE_NEW:
+                        return Long.compare(b.lastModified(), a.lastModified());
+                    case SORT_DATE_OLD:
+                        return Long.compare(a.lastModified(), b.lastModified());
+                    case SORT_SIZE_BIG:
+                        return Long.compare(sizeOf(b), sizeOf(a));
+                    case SORT_SIZE_SMALL:
+                        return Long.compare(sizeOf(a), sizeOf(b));
+                    default:
+                        return a.getName().compareToIgnoreCase(b.getName());
+                }
+            }
+        };
     }
 
     // ==================== Directory Loading ====================
 
     private void loadDirectory(File dir) {
-        if (dir == null || !dir.exists() || !dir.canRead()) {
-            Toast.makeText(this, "Cannot access directory", Toast.LENGTH_SHORT).show();
-            return;
-        }
+        if (dir == null || !dir.exists() || !dir.canRead()) return;
 
         currentDir = dir;
         tvPath.setText(dir.getAbsolutePath());
@@ -281,16 +338,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             List<File> fileList = new ArrayList<>();
             if (files != null) fileList.addAll(Arrays.asList(files));
 
-            Collections.sort(fileList, new Comparator<File>() {
-                @Override
-                public int compare(File a, File b) {
-                    if (a.isDirectory() && !b.isDirectory()) return -1;
-                    if (!a.isDirectory() && b.isDirectory()) return 1;
-                    return a.getName().compareToIgnoreCase(b.getName());
-                }
-            });
+            Collections.sort(fileList, buildComparator());
 
             mainHandler.post(() -> {
+                currentFileList = fileList;
                 adapter.setFiles(fileList);
                 adapter.setSelectionMode(false);
                 updateSelectionUI();
@@ -371,9 +422,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         try {
             startActivity(intent);
-        } catch (Exception e) {
-            Toast.makeText(this, "No app to open this file", Toast.LENGTH_SHORT).show();
-        }
+        } catch (Exception ignored) { }
     }
 
     private String getMimeType(File file) {
@@ -424,8 +473,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             else if (id == R.id.action_cut) { doCut(selected); return true; }
             else if (id == R.id.action_rename) { showRenameDialog(selected.get(0)); return true; }
             else if (id == R.id.action_delete) { confirmDelete(selected); return true; }
-            else if (id == R.id.action_extract) { extractZip(selected.get(0)); return true; }
-            else if (id == R.id.action_zip) { zipFiles(selected); return true; }
+            else if (id == R.id.action_extract) { startExtract(selected.get(0)); return true; }
+            else if (id == R.id.action_zip) { startZip(selected); return true; }
             else if (id == R.id.action_share) { shareFiles(selected); return true; }
             else if (id == R.id.action_info) { showFileInfo(selected.get(0)); return true; }
             else if (id == R.id.action_select_all) {
@@ -479,8 +528,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         adapter.setSelectionMode(false);
         updateSelectionUI();
         updateFooterBar();
-        Toast.makeText(this, "Copied " + selected.size() + " item(s) — navigate & paste",
-                Toast.LENGTH_SHORT).show();
     }
 
     private void doCut(List<File> selected) {
@@ -490,8 +537,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         adapter.setSelectionMode(false);
         updateSelectionUI();
         updateFooterBar();
-        Toast.makeText(this, "Cut " + selected.size() + " item(s) — navigate & paste",
-                Toast.LENGTH_SHORT).show();
     }
 
     // ==================== Paste with Progress ====================
@@ -507,12 +552,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         for (File src : sources) totalBytes += sizeOf(src);
         final long finalTotalBytes = Math.max(totalBytes, 1);
 
-        isTransferring = true;
-        updateFooterBar();
-        progressBar.setProgress(0);
-        tvProgressTitle.setText(isCut ? "Moving…" : "Copying…");
-        tvProgressStats.setText("Preparing…");
-        tvProgressPath.setText("");
+        beginProgress(isCut ? "Moving…" : "Copying…");
 
         executor.execute(() -> {
             final long[] transferred = {0};
@@ -531,12 +571,11 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                                 postProgress(transferred[0], finalTotalBytes, startTime,
                                         src.getName(), src.getAbsolutePath(),
                                         destDir.getAbsolutePath(),
-                                        fileCount[0], fileTotal[0]);
+                                        fileCount[0], fileTotal[0],
+                                        isCut ? "Moving" : "Copying");
                             },
                             () -> fileCount[0]++);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
+                } catch (Exception ignored) { }
             }
 
             mainHandler.post(() -> {
@@ -545,8 +584,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 isCutOperation = false;
                 updateFooterBar();
                 loadDirectory(currentDir);
-                Toast.makeText(this, isCut ? "Move complete" : "Copy complete",
-                        Toast.LENGTH_SHORT).show();
             });
         });
     }
@@ -580,23 +617,229 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
+    // ==================== Delete with Progress ====================
+
+    private void confirmDelete(List<File> files) {
+        blackDialogBuilder()
+                .setTitle("Delete")
+                .setMessage("Delete " + files.size() + " item(s)?")
+                .setPositiveButton("Delete", (dialog, which) -> startDelete(files))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void startDelete(List<File> files) {
+        final List<File> targets = new ArrayList<>(files);
+
+        long totalBytes = 0;
+        int totalFiles = 0;
+        for (File f : targets) {
+            totalBytes += sizeOf(f);
+            totalFiles += countFiles(f);
+        }
+        final long finalTotal = Math.max(totalBytes, 1);
+        final int finalFileTotal = Math.max(totalFiles, 1);
+
+        beginProgress("Deleting…");
+
+        executor.execute(() -> {
+            final long[] deleted = {0};
+            final int[] fileCount = {0};
+            final long startTime = System.currentTimeMillis();
+
+            for (File f : targets) {
+                deleteRecursiveWithProgress(f, deleted,
+                        bytes -> postProgress(deleted[0], finalTotal, startTime,
+                                f.getName(), f.getAbsolutePath(), "(deleted)",
+                                fileCount[0], finalFileTotal, "Deleting"),
+                        () -> fileCount[0]++);
+            }
+
+            mainHandler.post(() -> {
+                isTransferring = false;
+                updateFooterBar();
+                loadDirectory(currentDir);
+            });
+        });
+    }
+
+    private void deleteRecursiveWithProgress(File file,
+                                             long[] deletedBytes,
+                                             ProgressCallback onBytes,
+                                             FileCompletedCallback onFileCompleted) {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursiveWithProgress(child, deletedBytes, onBytes, onFileCompleted);
+                }
+            }
+            file.delete();
+        } else {
+            long size = file.length();
+            if (file.delete()) {
+                deletedBytes[0] += size;
+                onBytes.onBytes(size);
+                onFileCompleted.onFileCompleted();
+            }
+        }
+    }
+
+    // ==================== Extract with Progress ====================
+
+    private void startExtract(File zipFile) {
+        long totalBytes = Math.max(zipFile.length(), 1);
+        final long finalTotal = totalBytes;
+
+        beginProgress("Extracting…");
+        adapter.setSelectionMode(false);
+        updateSelectionUI();
+
+        executor.execute(() -> {
+            String destDir = zipFile.getParent() + "/" + zipFile.getName().replace(".zip", "");
+            new File(destDir).mkdirs();
+
+            final long startTime = System.currentTimeMillis();
+            final long[] written = {0};
+            final int[] fileCount = {0};
+
+            try (ZipInputStream zis = new ZipInputStream(new FileInputStream(zipFile))) {
+                ZipEntry entry;
+                while ((entry = zis.getNextEntry()) != null) {
+                    File outFile = new File(destDir, entry.getName());
+                    if (entry.isDirectory()) {
+                        outFile.mkdirs();
+                    } else {
+                        outFile.getParentFile().mkdirs();
+                        try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                            byte[] buf = new byte[64 * 1024];
+                            int len;
+                            while ((len = zis.read(buf)) > 0) {
+                                fos.write(buf, 0, len);
+                                written[0] += len;
+                                long w = written[0];
+                                int fc = fileCount[0];
+                                postProgress(w, finalTotal, startTime,
+                                        entry.getName(), zipFile.getAbsolutePath(),
+                                        destDir, fc, 0, "Extracting");
+                            }
+                        }
+                        fileCount[0]++;
+                    }
+                    zis.closeEntry();
+                }
+            } catch (Exception ignored) { }
+
+            mainHandler.post(() -> {
+                isTransferring = false;
+                updateFooterBar();
+                loadDirectory(currentDir);
+            });
+        });
+    }
+
+    // ==================== Zip with Progress ====================
+
+    private void startZip(List<File> files) {
+        final List<File> targets = new ArrayList<>(files);
+
+        long totalBytes = 0;
+        int totalFiles = 0;
+        for (File f : targets) {
+            totalBytes += sizeOf(f);
+            totalFiles += countFiles(f);
+        }
+        final long finalTotal = Math.max(totalBytes, 1);
+        final int finalFileTotal = Math.max(totalFiles, 1);
+
+        String zipName = "archive_" + System.currentTimeMillis() + ".zip";
+        final File zipFile = new File(currentDir, zipName);
+
+        beginProgress("Compressing…");
+        adapter.setSelectionMode(false);
+        updateSelectionUI();
+
+        executor.execute(() -> {
+            final long startTime = System.currentTimeMillis();
+            final long[] processed = {0};
+            final int[] fileCount = {0};
+
+            try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
+                for (File f : targets) {
+                    zipRecursiveWithProgress(f, f.getName(), zos, processed, fileCount,
+                            bytes -> postProgress(processed[0], finalTotal, startTime,
+                                    f.getName(), f.getAbsolutePath(), zipFile.getAbsolutePath(),
+                                    fileCount[0], finalFileTotal, "Compressing"));
+                }
+            } catch (Exception ignored) { }
+
+            mainHandler.post(() -> {
+                isTransferring = false;
+                updateFooterBar();
+                loadDirectory(currentDir);
+            });
+        });
+    }
+
+    private void zipRecursiveWithProgress(File file, String entryName, ZipOutputStream zos,
+                                          long[] processed, int[] fileCount,
+                                          ProgressCallback onBytes) throws IOException {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    zipRecursiveWithProgress(child, entryName + "/" + child.getName(),
+                            zos, processed, fileCount, onBytes);
+                }
+            }
+        } else {
+            try (FileInputStream fis = new FileInputStream(file)) {
+                zos.putNextEntry(new ZipEntry(entryName));
+                byte[] buf = new byte[64 * 1024];
+                int len;
+                while ((len = fis.read(buf)) > 0) {
+                    zos.write(buf, 0, len);
+                    processed[0] += len;
+                    onBytes.onBytes(len);
+                }
+                zos.closeEntry();
+                fileCount[0]++;
+            }
+        }
+    }
+
+    // ==================== Progress Helpers ====================
+
+    private void beginProgress(String title) {
+        isTransferring = true;
+        updateFooterBar();
+        progressBar.setProgress(0);
+        tvProgressTitle.setText(title);
+        tvProgressStats.setText("Preparing…");
+        tvProgressPath.setText("");
+    }
+
     private void postProgress(long transferred, long total, long startTime,
                               String currentFile, String srcPath, String destPath,
-                              int completedFiles, int totalFiles) {
+                              int completedFiles, int totalFiles, String verb) {
         mainHandler.post(() -> {
-            int percent = (int) ((transferred * 100) / total);
+            int percent = (int) Math.min(100, (transferred * 100) / total);
             progressBar.setProgress(percent);
 
             long elapsed = System.currentTimeMillis() - startTime;
-            double speedBytesPerSec = elapsed > 0 ? (transferred * 1000.0 / elapsed) : 0;
+            double speed = elapsed > 0 ? (transferred * 1000.0 / elapsed) : 0;
 
-            String progressText = "[" + completedFiles + "/" + totalFiles + "] "
+            String fileCounter = totalFiles > 0
+                    ? "[" + completedFiles + "/" + totalFiles + "]  "
+                    : "";
+
+            String stats = fileCounter
                     + percent + "%  "
                     + formatSize(transferred) + " / " + formatSize(total)
-                    + "  •  " + formatSpeed(speedBytesPerSec);
+                    + "  •  " + formatSpeed(speed);
 
-            tvProgressStats.setText(progressText);
-            tvProgressTitle.setText(currentFile);
+            tvProgressStats.setText(stats);
+            tvProgressTitle.setText(verb + ": " + currentFile);
             tvProgressPath.setText(srcPath + "  →  " + destPath);
         });
     }
@@ -652,194 +895,12 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
                     File newFile = new File(file.getParent(), newName);
                     if (file.renameTo(newFile)) {
-                        Toast.makeText(this, "Renamed", Toast.LENGTH_SHORT).show();
                         adapter.setSelectionMode(false);
                         loadDirectory(currentDir);
-                    } else {
-                        Toast.makeText(this, "Rename failed", Toast.LENGTH_SHORT).show();
                     }
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
-    }
-
-    // ==================== Delete with Progress ====================
-
-    private void confirmDelete(List<File> files) {
-        blackDialogBuilder()
-                .setTitle("Delete")
-                .setMessage("Delete " + files.size() + " item(s)?")
-                .setPositiveButton("Delete", (dialog, which) -> startDelete(files))
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    private void startDelete(List<File> files) {
-        final List<File> targets = new ArrayList<>(files);
-
-        // Compute total bytes/files for progress
-        long totalBytes = 0;
-        int totalFiles = 0;
-        for (File f : targets) {
-            totalBytes += sizeOf(f);
-            totalFiles += countFiles(f);
-        }
-        final long finalTotal = Math.max(totalBytes, 1);
-        final int finalFileTotal = Math.max(totalFiles, 1);
-
-        isTransferring = true;
-        adapter.setSelectionMode(false);
-        updateSelectionUI();
-        updateFooterBar();
-        progressBar.setProgress(0);
-        tvProgressTitle.setText("Deleting…");
-        tvProgressStats.setText("Preparing…");
-        tvProgressPath.setText("");
-
-        executor.execute(() -> {
-            final long[] deleted = {0};
-            final int[] fileCount = {0};
-            final long startTime = System.currentTimeMillis();
-
-            for (File f : targets) {
-                deleteRecursiveWithProgress(f, deleted,
-                        bytes -> postDeleteProgress(deleted[0], finalTotal, startTime,
-                                f.getName(), f.getAbsolutePath(),
-                                fileCount[0], finalFileTotal),
-                        () -> fileCount[0]++);
-            }
-
-            mainHandler.post(() -> {
-                isTransferring = false;
-                updateFooterBar();
-                loadDirectory(currentDir);
-                Toast.makeText(this, "Deleted", Toast.LENGTH_SHORT).show();
-            });
-        });
-    }
-
-    private void deleteRecursiveWithProgress(File file,
-                                             long[] deletedBytes,
-                                             ProgressCallback onBytes,
-                                             FileCompletedCallback onFileCompleted) {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    deleteRecursiveWithProgress(child, deletedBytes, onBytes, onFileCompleted);
-                }
-            }
-            file.delete();
-        } else {
-            long size = file.length();
-            if (file.delete()) {
-                deletedBytes[0] += size;
-                onBytes.onBytes(size);
-                onFileCompleted.onFileCompleted();
-            }
-        }
-    }
-
-    private void postDeleteProgress(long deleted, long total, long startTime,
-                                    String currentFile, String path,
-                                    int completedFiles, int totalFiles) {
-        mainHandler.post(() -> {
-            int percent = (int) ((deleted * 100) / total);
-            progressBar.setProgress(percent);
-
-            long elapsed = System.currentTimeMillis() - startTime;
-            double speed = elapsed > 0 ? (deleted * 1000.0 / elapsed) : 0;
-
-            String text = "[" + completedFiles + "/" + totalFiles + "] "
-                    + percent + "%  "
-                    + formatSize(deleted) + " / " + formatSize(total)
-                    + "  •  " + formatSpeed(speed);
-
-            tvProgressStats.setText(text);
-            tvProgressTitle.setText("Deleting: " + currentFile);
-            tvProgressPath.setText(path);
-        });
-    }
-
-    // Simple (non-progress) delete — still used by zip failures etc.
-    private void deleteRecursive(File file) {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) for (File child : children) deleteRecursive(child);
-        }
-        file.delete();
-    }
-
-    // ==================== Zip / Extract ====================
-
-    private void extractZip(File zipFile) {
-        executor.execute(() -> {
-            String destDir = zipFile.getParent() + "/" + zipFile.getName().replace(".zip", "");
-            new File(destDir).mkdirs();
-
-            try (ZipInputStream zis = new ZipInputStream(new FileInputStream(zipFile))) {
-                ZipEntry entry;
-                while ((entry = zis.getNextEntry()) != null) {
-                    File outFile = new File(destDir, entry.getName());
-                    if (entry.isDirectory()) {
-                        outFile.mkdirs();
-                    } else {
-                        outFile.getParentFile().mkdirs();
-                        try (FileOutputStream fos = new FileOutputStream(outFile)) {
-                            byte[] buf = new byte[8192];
-                            int len;
-                            while ((len = zis.read(buf)) > 0) fos.write(buf, 0, len);
-                        }
-                    }
-                    zis.closeEntry();
-                }
-                mainHandler.post(() -> {
-                    Toast.makeText(this, "Extracted to " + destDir, Toast.LENGTH_SHORT).show();
-                    loadDirectory(currentDir);
-                });
-            } catch (IOException e) {
-                e.printStackTrace();
-                mainHandler.post(() -> Toast.makeText(this, "Extract failed", Toast.LENGTH_SHORT).show());
-            }
-        });
-    }
-
-    private void zipFiles(List<File> files) {
-        String zipName = "archive_" + System.currentTimeMillis() + ".zip";
-        File zipFile = new File(currentDir, zipName);
-
-        executor.execute(() -> {
-            try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile))) {
-                for (File f : files) zipRecursive(f, f.getName(), zos);
-                mainHandler.post(() -> {
-                    Toast.makeText(this, "Created " + zipName, Toast.LENGTH_SHORT).show();
-                    adapter.setSelectionMode(false);
-                    loadDirectory(currentDir);
-                });
-            } catch (IOException e) {
-                e.printStackTrace();
-                mainHandler.post(() -> Toast.makeText(this, "Zip failed", Toast.LENGTH_SHORT).show());
-            }
-        });
-    }
-
-    private void zipRecursive(File file, String entryName, ZipOutputStream zos) throws IOException {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    zipRecursive(child, entryName + "/" + child.getName(), zos);
-                }
-            }
-        } else {
-            try (FileInputStream fis = new FileInputStream(file)) {
-                zos.putNextEntry(new ZipEntry(entryName));
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = fis.read(buf)) > 0) zos.write(buf, 0, len);
-                zos.closeEntry();
-            }
-        }
     }
 
     // ==================== Share ====================
@@ -857,16 +918,11 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                             getPackageName() + ".fileprovider", f);
                     uris.add(uri);
                     mimeType = getMimeType(f);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
+                } catch (Exception ignored) { }
             }
         }
 
-        if (uris.isEmpty()) {
-            Toast.makeText(this, "Cannot share folders", Toast.LENGTH_SHORT).show();
-            return;
-        }
+        if (uris.isEmpty()) return;
 
         Intent intent;
         if (uris.size() == 1) {
@@ -881,9 +937,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         try {
             startActivity(Intent.createChooser(intent, "Share via"));
-        } catch (Exception e) {
-            Toast.makeText(this, "No app to share", Toast.LENGTH_SHORT).show();
-        }
+        } catch (Exception ignored) { }
 
         adapter.setSelectionMode(false);
         updateSelectionUI();

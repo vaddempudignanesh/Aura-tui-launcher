@@ -10,3 +10,4 @@
     <item android:id="@+id/action_info" android:title="Properties" />
     <item android:id="@+id/action_select_all" android:title="Select All" />
 </menu>
+

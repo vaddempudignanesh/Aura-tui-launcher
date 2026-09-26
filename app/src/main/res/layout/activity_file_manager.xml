@@ -6,7 +6,6 @@
     android:layout_height="match_parent"
     android:background="#FF000000">
 
-    <!-- Main Content -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -45,7 +44,18 @@
                 android:ellipsize="start"
                 android:paddingStart="8dp" />
 
-            <!-- ✅ Copy icon (visible in selection mode, multiple ok) -->
+            <!-- Sort (always visible) -->
+            <ImageView
+                android:id="@+id/btn_sort"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_sort"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Sort"
+                android:padding="8dp"
+                app:tint="#00FF00" />
+
+            <!-- Selection-only icons -->
             <ImageView
                 android:id="@+id/btn_copy"
                 android:layout_width="40dp"
@@ -57,7 +67,6 @@
                 app:tint="#00FF00"
                 android:visibility="gone" />
 
-            <!-- ✅ Move icon (visible in selection mode, multiple ok) -->
             <ImageView
                 android:id="@+id/btn_move"
                 android:layout_width="40dp"
@@ -69,7 +78,6 @@
                 app:tint="#00FF00"
                 android:visibility="gone" />
 
-            <!-- ✅ Delete icon (mandatory — always visible in selection mode) -->
             <ImageView
                 android:id="@+id/btn_delete"
                 android:layout_width="40dp"
@@ -103,6 +111,7 @@
                 app:tint="#00FF00"
                 android:visibility="gone" />
         </LinearLayout>
+
         <!-- Selection Info Bar -->
         <TextView
             android:id="@+id/tv_selection_info"
@@ -114,7 +123,6 @@
             android:textSize="12sp"
             android:visibility="gone" />
 
-        <!-- File List -->
         <!-- File List -->
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/recycler_files"
@@ -137,7 +145,7 @@
             android:textSize="16sp"
             android:visibility="gone" />
 
-        <!-- Bottom Footer: switches between action bar and progress bar -->
+        <!-- Bottom Footer -->
         <LinearLayout
             android:id="@+id/footer_bar"
             android:layout_width="match_parent"
@@ -147,7 +155,6 @@
             android:visibility="gone"
             android:elevation="8dp">
 
-            <!-- Mode 1: Action Buttons (CANCEL / PASTE) -->
             <LinearLayout
                 android:id="@+id/footer_actions"
                 android:layout_width="match_parent"
@@ -184,7 +191,6 @@
                     android:background="?attr/selectableItemBackground" />
             </LinearLayout>
 
-            <!-- Mode 2: Progress Bar -->
             <LinearLayout
                 android:id="@+id/footer_progress"
                 android:layout_width="match_parent"
@@ -197,7 +203,7 @@
                     android:id="@+id/tv_progress_title"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Copying…"
+                    android:text="Working…"
                     android:textColor="#FF00FF00"
                     android:textSize="13sp"
                     android:textStyle="bold"
@@ -238,20 +244,9 @@
                     android:ellipsize="start" />
             </LinearLayout>
         </LinearLayout>
-        <!-- Empty View -->
-        <TextView
-            android:id="@+id/tv_empty"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="Empty folder"
-            android:textColor="#00FF00"
-            android:textSize="16sp"
-            android:visibility="gone" />
     </LinearLayout>
 
-    <!-- Navigation Drawer -->
+    <!-- Drawer -->
     <LinearLayout
         android:id="@+id/drawer_panel"
         android:layout_width="280dp"
