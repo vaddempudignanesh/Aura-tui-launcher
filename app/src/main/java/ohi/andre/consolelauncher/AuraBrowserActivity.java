@@ -722,6 +722,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
             long spd = 0;
             try { spd = Long.parseLong(speed); } catch (Exception ignored) {}
+            // ⬇️ Only show speed for ACTIVE downloads — otherwise it's stale
+            if (!"active".equals(status)) {
+                spd = 0;
+            }
             tvInfo.setText(statusIcon + "  " + pct + "%  •  " + formatSpeed(spd));
             tvInfo.setTextColor(0xFF999999);
             tvInfo.setTextSize(11);
@@ -797,6 +801,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     private String formatSpeed(long bytesPerSec) {
+        if (bytesPerSec <= 0) return "—";
         if (bytesPerSec < 1024) return bytesPerSec + " B/s";
         if (bytesPerSec < 1024 * 1024)
             return String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024.0);

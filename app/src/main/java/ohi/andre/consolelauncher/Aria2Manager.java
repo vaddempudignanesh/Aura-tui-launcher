@@ -32,6 +32,8 @@ public final class Aria2Manager {
     private static final String RPC_URL = "http://127.0.0.1:6800/jsonrpc";
     private static final int    RPC_PORT = 6800;
 
+    private static final String SESSION_FILE = "aria2.session";
+
     public static final String DOWNLOAD_DIR = "/storage/emulated/0/Download";
 
     private static Aria2Manager INSTANCE;
@@ -60,7 +62,7 @@ public final class Aria2Manager {
     // Add this field to track whether we've tried to kill stale processes this session
 
     public synchronized boolean ensureStarted() {
-        if (started && process != null) return true;   // ← Trust the flag, not isAlive()
+        if (started && process != null) return true;
 
         // Only attempt to kill stale daemon ONCE per JVM lifetime
         if (!staleKillAttempted) {
@@ -98,6 +100,17 @@ public final class Aria2Manager {
         // ── Step 3: CA bundle ────────────────────────────────────
         String caBundle = ensureCaBundle();
 
+        // ── Step 3b: prepare session file (survives app restarts) ─
+        File sessionFile = new File(appContext.getFilesDir(), SESSION_FILE);
+        if (!sessionFile.exists()) {
+            try {
+                sessionFile.createNewFile();
+                Log.i(TAG, "Created empty session file: " + sessionFile.getAbsolutePath());
+            } catch (Exception e) {
+                Log.w(TAG, "Could not create session file: " + e.getMessage());
+            }
+        }
+
         // ── Step 4: launch RPC daemon ────────────────────────────
         try {
             List<String> cmd = new ArrayList<>();
@@ -115,6 +128,13 @@ public final class Aria2Manager {
             cmd.add("--summary-interval=0");
             cmd.add("--dir=" + DOWNLOAD_DIR);
             cmd.add("--daemon=false");
+
+            // ⬇️ SESSION PERSISTENCE — keeps paused downloads across restarts
+            cmd.add("--save-session=" + sessionFile.getAbsolutePath());
+            cmd.add("--save-session-interval=1");
+            cmd.add("--force-save=true");
+            cmd.add("--input-file=" + sessionFile.getAbsolutePath());
+
             if (caBundle != null) cmd.add("--ca-certificate=" + caBundle);
             cmd.add("--check-certificate=true");
 
@@ -139,11 +159,13 @@ public final class Aria2Manager {
                 if (rpcCall("aria2.getVersion", new JSONArray())) {
                     lastError = null;
                     started = true;
+                    Log.i(TAG, "aria2c RPC ready on port " + RPC_PORT);
                     return true;
                 }
             }
 
             lastError = "aria2c RPC did not respond within 5s";
+            Log.e(TAG, lastError);
             return false;
 
         } catch (Exception e) {
@@ -155,6 +177,8 @@ public final class Aria2Manager {
 
     public synchronized void stop() {
         try {
+            // Persist unfinished/paused downloads before shutting down.
+            rpcCall("aria2.saveSession", new JSONArray());
             rpcCall("aria2.shutdown", new JSONArray());
         } catch (Exception ignored) {}
         if (process != null) {
@@ -233,6 +257,8 @@ public final class Aria2Manager {
         try {
             JSONArray p = new JSONArray().put(gid);
             JSONObject r = rpc("aria2.pause", p);
+            // Force immediate session save
+            rpcCall("aria2.saveSession", new JSONArray());
             return r != null && r.has("result");
         } catch (Exception e) { return false; }
     }
@@ -241,6 +267,7 @@ public final class Aria2Manager {
         try {
             JSONArray p = new JSONArray().put(gid);
             JSONObject r = rpc("aria2.unpause", p);
+            rpcCall("aria2.saveSession", new JSONArray());
             return r != null && r.has("result");
         } catch (Exception e) { return false; }
     }
@@ -262,6 +289,14 @@ public final class Aria2Manager {
 
     public JSONArray listAll() {
         JSONArray out = new JSONArray();
+
+        // The browser can be reopened without starting a new download.
+        // Restart aria2 from its saved session before querying the RPC endpoint.
+        if (!ensureStarted()) {
+            Log.w(TAG, "listAll: aria2c could not be started: " + lastError);
+            return out;
+        }
+
         try {
             JSONObject active = rpc("aria2.tellActive", new JSONArray());
             int aCount = 0;
@@ -275,7 +310,7 @@ public final class Aria2Manager {
             Log.i(TAG, "tellActive → " + aCount + " jobs");
 
             JSONArray wp = new JSONArray();
-            wp.put(0); wp.put(100);
+            wp.put(0); wp.put(1000);
             JSONObject waiting = rpc("aria2.tellWaiting", wp);
             int wCount = 0;
             if (waiting != null && waiting.has("result")) {
@@ -286,7 +321,7 @@ public final class Aria2Manager {
             Log.i(TAG, "tellWaiting → " + wCount + " jobs");
 
             JSONArray sp = new JSONArray();
-            sp.put(0); sp.put(100);
+            sp.put(0); sp.put(1000);
             JSONObject stopped = rpc("aria2.tellStopped", sp);
             int sCount = 0;
             if (stopped != null && stopped.has("result")) {
