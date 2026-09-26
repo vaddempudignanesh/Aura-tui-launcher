@@ -2,7 +2,6 @@ package ohi.andre.consolelauncher;
 
 import android.annotation.SuppressLint;
 import android.app.Dialog;
-import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -11,9 +10,9 @@ import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -26,7 +25,6 @@ import android.view.animation.TranslateAnimation;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
-import android.webkit.URLUtil;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -46,28 +44,26 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewFeature;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import ohi.andre.consolelauncher.managers.xml.XMLPrefsManager;
 import ohi.andre.consolelauncher.managers.xml.options.Theme;
 import ohi.andre.consolelauncher.managers.xml.options.Ui;
 
 /**
- * AuraBrowser v5 — fixed dark mode, skinny tab badge, working swipe, aria2c downloads.
+ * AuraBrowser v7 — full code with CA-bundle fix and improved download panel.
  */
 public class AuraBrowserActivity extends AppCompatActivity {
 
     public static final String EXTRA_URL       = "aura_url";
     public static final String EXTRA_INCOGNITO = "aura_incognito";
     public static final String DEFAULT_HOME    = "https://www.google.com";
-
-    // aria2c external download destination
-    private static final String DOWNLOAD_DIR   = "/storage/emulated/0/Download";
 
     // ── Views ────────────────────────────────────────────────────
     private LinearLayout topBar;
@@ -112,10 +108,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private final List<Tab> tabs = new ArrayList<>();
     private int currentTabIndex = -1;
 
-    // Swipe on tab badge to switch tabs
     private GestureDetector tabSwipeDetector;
 
-    // ── Lifecycle ────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
+    //  Lifecycle
+    // ═════════════════════════════════════════════════════════════
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -154,7 +151,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnDownloads     = findViewById(R.id.aura_btn_downloads);
         tabCountView     = findViewById(R.id.aura_tab_count);
 
-        // ── Address bar ──────────────────────────────────────────
+        // Address bar
         etUrl.setOnClickListener(v -> { etUrl.selectAll(); etUrl.requestFocus(); });
         etUrl.setOnFocusChangeListener((v, hasFocus) -> { if (hasFocus) etUrl.selectAll(); });
         etUrl.setOnEditorActionListener((v, actionId, event) -> {
@@ -167,14 +164,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
             return false;
         });
 
-        // ── Dark mode ────────────────────────────────────────────
+        // Dark mode
         btnDarkMode.setOnClickListener(v -> toggleForceDark());
         updateDarkIconTint();
 
-        // ── Bookmark ─────────────────────────────────────────────
+        // Bookmark
         btnBookmark.setOnClickListener(v -> addBookmark());
 
-        // ── Footer ───────────────────────────────────────────────
+        // Footer nav
         btnBack.setOnClickListener(v -> {
             Tab t = currentTab();
             if (t != null && t.webView.canGoBack()) t.webView.goBack();
@@ -184,7 +181,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             if (t != null && t.webView.canGoForward()) t.webView.goForward();
         });
 
-        // Swipe detector on tabs container: left → next tab, right → prev tab
+        // Swipe on tabs badge to change tabs
         tabSwipeDetector = new GestureDetector(this,
                 new GestureDetector.SimpleOnGestureListener() {
                     @Override
@@ -196,17 +193,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         if (e1 == null || e2 == null) return false;
                         float dx = e2.getX() - e1.getX();
                         float dy = e2.getY() - e1.getY();
-
-                        // Horizontal only
                         if (Math.abs(dx) < Math.abs(dy)) return false;
                         if (Math.abs(dx) < 40) return false;
                         if (Math.abs(vx) < 100) return false;
 
                         if (dx > 0) {
-                            // swipe right → previous tab
                             if (currentTabIndex > 0) switchToTab(currentTabIndex - 1);
                         } else {
-                            // swipe left → next tab
                             if (currentTabIndex < tabs.size() - 1)
                                 switchToTab(currentTabIndex + 1);
                         }
@@ -214,8 +207,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     }
                 });
 
-        // Attach to the tabs button — LONG PRESS opens the sheet, TAP opens the sheet,
-        // SWIPE switches tabs
         btnTabsContainer.setOnTouchListener((v, event) -> {
             boolean handled = tabSwipeDetector.onTouchEvent(event);
             if (event.getAction() == MotionEvent.ACTION_UP && !handled) {
@@ -226,7 +217,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnTabsContainer.setOnClickListener(v -> showTabSheet());
 
         btnIncognito.setOnClickListener(v -> newTab(null, true));
-        btnDownloads.setOnClickListener(v -> openDownloads());
+        btnDownloads.setOnClickListener(v -> showDownloadPanel());
 
         // Initial tab
         Intent intent = getIntent();
@@ -235,9 +226,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         newTab(startUrl, startIncognito);
     }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Dark mode — applied to existing + future tabs
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
+    //  Dark mode
+    // ═════════════════════════════════════════════════════════════
     private void toggleForceDark() {
         forceDark = !forceDark;
         updateDarkIconTint();
@@ -247,9 +238,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private void updateDarkIconTint() {
         int tint = forceDark ? 0xFFFFAA00 : 0xFF33FF33;
         btnDarkMode.setColorFilter(tint);
-        btnDarkMode.setImageResource(forceDark
-                ? android.R.drawable.ic_menu_day       // bright icon while dark is ON
-                : android.R.drawable.ic_menu_day);     // same icon, tint signals state
+        btnDarkMode.setImageResource(android.R.drawable.ic_menu_day);
     }
 
     private void applyForceDarkToAllTabs() {
@@ -261,24 +250,18 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (wv == null) return;
         try {
             WebSettings settings = wv.getSettings();
-
-            // Strategy first — must be set before FORCE_DARK
             if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
                 WebSettingsCompat.setForceDarkStrategy(settings,
                         WebSettingsCompat.DARK_STRATEGY_WEB_THEME_DARKENING_ONLY);
             }
-
             if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
                 WebSettingsCompat.setForceDark(settings,
                         forceDark ? WebSettingsCompat.FORCE_DARK_ON
                                 : WebSettingsCompat.FORCE_DARK_OFF);
             }
-
             if (forceDark) {
-                // Inject CSS: pure black background on <html> and <body>
                 injectPureBlackCSS(wv);
             } else {
-                // Remove the injected CSS by reloading
                 wv.reload();
             }
         } catch (Exception ignored) {}
@@ -300,9 +283,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         wv.evaluateJavascript(css, null);
     }
 
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     //  Bookmark
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     private void addBookmark() {
         Tab t = currentTab();
         if (t == null) return;
@@ -319,9 +302,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnBookmark.setColorFilter(0xFFFFAA00);
     }
 
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     //  Tab sheet
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     private void showTabSheet() {
         if (tabs.isEmpty()) return;
 
@@ -448,9 +431,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return (int) (v * getResources().getDisplayMetrics().density);
     }
 
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     //  Tab management
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     private Tab currentTab() {
         if (currentTabIndex < 0 || currentTabIndex >= tabs.size()) return null;
         return tabs.get(currentTabIndex);
@@ -475,7 +458,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         webContainer.addView(wv);
         wv.setVisibility(View.GONE);
 
-        // Apply dark mode BEFORE load, so first paint is dark
         try {
             WebSettings s = wv.getSettings();
             if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
@@ -534,149 +516,311 @@ public class AuraBrowserActivity extends AppCompatActivity {
         tabCountView.setText(String.valueOf(tabs.size()));
     }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Downloads — aria2c first, DownloadManager fallback
-    // ─────────────────────────────────────────────────────────────
-    private void openDownloads() {
-        // Long-press or direct tap on downloads icon: open the Download folder
-        try {
-            Intent i = new Intent(Intent.ACTION_VIEW);
-            i.setDataAndType(Uri.parse("file://" + DOWNLOAD_DIR), "resource/folder");
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(i);
-        } catch (Exception e) {
-            // Fallback: open with any file manager
-            try {
-                Intent i = new Intent(Intent.ACTION_GET_CONTENT);
-                i.setType("*/*");
-                startActivity(Intent.createChooser(i, "Browse downloads"));
-            } catch (Exception e2) {
-                Toast.makeText(this, "Downloads: " + DOWNLOAD_DIR,
-                        Toast.LENGTH_LONG).show();
-            }
-        }
-    }
-
-    /**
-     * Called from the WebView download listener.
-     * Tries aria2c first (with resume + parallel).
-     * Falls back to Android DownloadManager if aria2c isn't available.
-     */
+    // ═════════════════════════════════════════════════════════════
+    //  DOWNLOADS — aria2c daemon + in-app panel
+    // ═════════════════════════════════════════════════════════════
     private void startAria2Download(String url, String userAgent,
                                     String contentDisposition, String mimeType) {
-        final String finalUrl = url;
-        final String referer = currentTabWebView() != null
+        String referer = currentTabWebView() != null
                 ? currentTabWebView().getUrl() : "";
 
+        Aria2Manager mgr = Aria2Manager.get(this);
+
         new Thread(() -> {
-            String aria2Path = ensureAria2Binary();
-            if (aria2Path != null) {
-                try {
-                    // aria2c -x 16 -j 16 -c -d <dir> -U <ua> -R <referer> <url>
-                    // -x 16 = 16 connections per server
-                    // -j 16 = 16 parallel downloads (only matters with multiple URLs)
-                    // -c    = continue/resume (picks up where paused)
-                    // -d    = destination directory
-                    // -U    = user agent
-                    // -R    = referer
-                    // --file-allocation=none = don't preallocate (faster start on some FS)
-                    List<String> cmd = new ArrayList<>();
-                    cmd.add(aria2Path);
-                    cmd.add("-x"); cmd.add("16");
-                    cmd.add("-j"); cmd.add("16");
-                    cmd.add("-c");
-                    cmd.add("--file-allocation=none");
-                    cmd.add("-d"); cmd.add(DOWNLOAD_DIR);
-                    if (userAgent != null && !userAgent.isEmpty()) {
-                        cmd.add("-U"); cmd.add(userAgent);
-                    }
-                    if (referer != null && !referer.isEmpty()) {
-                        cmd.add("-R"); cmd.add(referer);
-                    }
-                    cmd.add(finalUrl);
-
-                    ProcessBuilder pb = new ProcessBuilder(cmd);
-                    pb.redirectErrorStream(true);
-                    Process proc = pb.start();
-
-                    // Drain output so it doesn't block
-                    InputStream in = proc.getInputStream();
-                    byte[] buf = new byte[4096];
-                    while (in.read(buf) != -1) { /* discard */ }
-
-                    int exit = proc.waitFor();
-
-                    runOnUiThread(() -> {
-                        if (exit == 0) {
-                            Toast.makeText(this,
-                                    "aria2c: done → " + DOWNLOAD_DIR,
-                                    Toast.LENGTH_LONG).show();
-                        } else {
-                            Toast.makeText(this,
-                                    "aria2c exited with code " + exit,
-                                    Toast.LENGTH_LONG).show();
-                        }
-                    });
-                } catch (Exception e) {
-                    runOnUiThread(() -> fallbackDownloadManager(
-                            finalUrl, userAgent, contentDisposition, mimeType));
-                }
-            } else {
-                runOnUiThread(() -> {
-                    Toast.makeText(this,
-                            "aria2c not bundled — using DownloadManager fallback",
-                            Toast.LENGTH_SHORT).show();
-                    fallbackDownloadManager(finalUrl, userAgent, contentDisposition, mimeType);
-                });
+            boolean ok = mgr.ensureStarted();
+            if (!ok) {
+                final String err = mgr.getLastError();
+                runOnUiThread(() -> Toast.makeText(this,
+                        "aria2c failed: " + (err == null ? "unknown" : err),
+                        Toast.LENGTH_LONG).show());
+                return;
             }
+            String gid = mgr.addDownload(url, userAgent, referer);
+            runOnUiThread(() -> {
+                if (gid != null) {
+                    Toast.makeText(this, "Download added",
+                            Toast.LENGTH_SHORT).show();
+                    showDownloadPanel();
+                } else {
+                    Toast.makeText(this, "Failed to add download",
+                            Toast.LENGTH_LONG).show();
+                }
+            });
         }).start();
     }
 
-    /** Extract aria2c from assets to filesDir on first use, chmod +x. */
-    private String ensureAria2Binary() {
-        File out = new File(getFilesDir(), "aria2c");
-        if (out.exists() && out.canExecute()) return out.getAbsolutePath();
+    private void showDownloadPanel() {
+        final Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setCancelable(true);
 
-        try (InputStream is = getAssets().open("aria2c");
-             OutputStream os = new FileOutputStream(out)) {
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = is.read(buf)) > 0) os.write(buf, 0, n);
-        } catch (Exception e) {
-            return null; // no bundled binary
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(0xFF0A0A0A);
+        int pad = dp(8);
+        root.setPadding(pad, pad, pad, pad);
+
+        // Header
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = new TextView(this);
+        title.setText("Downloads");
+        title.setTextColor(0xFF33FF33);
+        title.setTextSize(14);
+        title.setPadding(dp(6), dp(4), dp(6), dp(6));
+        title.setLayoutParams(new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        header.addView(title);
+
+        TextView clearBtn = new TextView(this);
+        clearBtn.setText("Clear all");
+        clearBtn.setTextColor(0xFFFF6666);
+        clearBtn.setTextSize(12);
+        clearBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+        clearBtn.setOnClickListener(v -> {
+            new Thread(() -> {
+                Aria2Manager.get(this).clearStopped();
+            }).start();
+        });
+        header.addView(clearBtn);
+        root.addView(header);
+
+        // Scrollable list
+        ScrollView scroll = new ScrollView(this);
+        scroll.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(340)));
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(list);
+        root.addView(scroll);
+
+        dialog.setContentView(root);
+
+        Window w = dialog.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.setLayout(
+                    (int) (getResources().getDisplayMetrics().widthPixels * 0.95),
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            w.setGravity(Gravity.BOTTOM);
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams lp = w.getAttributes();
+            lp.dimAmount = 0.5f;
+            lp.y = footerBar.getHeight() + dp(4);
+            w.setAttributes(lp);
         }
 
+        final Handler h = new Handler(Looper.getMainLooper());
+        final boolean[] alive = {true};
+
+        // Poll on a BACKGROUND thread, then post to main for UI
+        Thread pollThread = new Thread(() -> {
+            while (alive[0]) {
+                try {
+                    // ⬇️ RPC runs on THIS background thread, not main
+                    final JSONArray arr = Aria2Manager.get(this).listAll();
+
+                    // Post UI update to main thread
+                    h.post(() -> {
+                        if (!dialog.isShowing()) return;
+                        renderDownloadList(list, dialog, arr);
+                    });
+
+                    Thread.sleep(700);
+                } catch (InterruptedException ie) {
+                    break;
+                } catch (Exception e) {
+                    Log.e("AuraBrowser", "poll error", e);
+                }
+            }
+        }, "aura-poll");
+        pollThread.start();
+
+        dialog.setOnDismissListener(d -> alive[0] = false);
+        dialog.show();
+    }
+
+    /**
+     * Renders the downloaded list. MUST be called on the main thread.
+     * The JSONArray has already been fetched on a background thread.
+     */
+    private void renderDownloadList(LinearLayout list, Dialog dialog, JSONArray arr) {
+        list.removeAllViews();
+
+        if (arr.length() == 0) {
+            TextView empty = new TextView(this);
+            empty.setText("No downloads");
+            empty.setTextColor(0xFF777777);
+            empty.setTextSize(13);
+            empty.setPadding(dp(8), dp(12), dp(8), dp(12));
+            list.addView(empty);
+            return;
+        }
+
+        for (int i = 0; i < arr.length(); i++) {
+            try {
+                JSONObject job = arr.getJSONObject(i);
+                addDownloadRow(list, dialog, job);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void addDownloadRow(LinearLayout list, Dialog dialog, JSONObject job) {
         try {
-            Process p = Runtime.getRuntime().exec(
-                    new String[]{"chmod", "755", out.getAbsolutePath()});
-            p.waitFor();
+            String gid = job.optString("gid", "");
+            String status = job.optString("status", "unknown");
+
+            String name;
+            JSONArray files = job.optJSONArray("files");
+            if (files != null && files.length() > 0) {
+                JSONObject f = files.getJSONObject(0);
+                String path = f.optString("path", "");
+                if (!path.isEmpty()) {
+                    int slash = path.lastIndexOf('/');
+                    name = slash >= 0 ? path.substring(slash + 1) : path;
+                } else {
+                    name = "unknown";
+                }
+            } else {
+                name = "unknown";
+            }
+
+            long completed = job.optLong("completedLength", 0);
+            long total = job.optLong("totalLength", 0);
+            int pct = total > 0 ? (int) ((completed * 100) / total) : 0;
+            String speed = job.optString("downloadSpeed", "0");
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(8), dp(8), dp(8), dp(8));
+            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rp.setMargins(0, dp(3), 0, dp(3));
+            row.setLayoutParams(rp);
+            row.setBackgroundColor(0xFF111111);
+
+            TextView tvName = new TextView(this);
+            tvName.setText(name);
+            tvName.setTextColor(0xFFEEEEEE);
+            tvName.setTextSize(12);
+            tvName.setMaxLines(1);
+            tvName.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            row.addView(tvName);
+
+            TextView tvInfo = new TextView(this);
+            String statusIcon;
+            switch (status) {
+                case "active":  statusIcon = "⬇"; break;
+                case "paused":  statusIcon = "⏸"; break;
+                case "waiting": statusIcon = "⏳"; break;
+                case "complete": statusIcon = "✅"; break;
+                case "error":   statusIcon = "❌"; break;
+                case "removed": statusIcon = "🗑"; break;
+                default:        statusIcon = "•"; break;
+            }
+            long spd = 0;
+            try { spd = Long.parseLong(speed); } catch (Exception ignored) {}
+            tvInfo.setText(statusIcon + "  " + pct + "%  •  " + formatSpeed(spd));
+            tvInfo.setTextColor(0xFF999999);
+            tvInfo.setTextSize(11);
+            row.addView(tvInfo);
+
+            // Error message row (only for errors)
+            if ("error".equals(status)) {
+                String errMsg = job.optString("errorMessage", "");
+                if (errMsg.isEmpty()) {
+                    JSONObject errObj = job.optJSONObject("error");
+                    if (errObj != null) errMsg = errObj.optString("message", "");
+                }
+                TextView tvErr = new TextView(this);
+                tvErr.setText("⚠ " + (errMsg.isEmpty() ? "Download failed" : errMsg));
+                tvErr.setTextColor(0xFFFF6666);
+                tvErr.setTextSize(10);
+                tvErr.setPadding(0, dp(3), 0, 0);
+                row.addView(tvErr);
+            }
+
+            // Action buttons
+            LinearLayout actions = new LinearLayout(this);
+            actions.setOrientation(LinearLayout.HORIZONTAL);
+            actions.setPadding(0, dp(6), 0, 0);
+
+            final String g = gid;
+            final String s = status;
+
+            if ("active".equals(s)) {
+                actions.addView(makeActionButton("⏸ Pause", () -> {
+                    new Thread(() -> {
+                        Aria2Manager.get(this).pause(g);
+                    }).start();
+                }));
+            } else if ("paused".equals(s)) {
+                actions.addView(makeActionButton("▶ Resume", () -> {
+                    new Thread(() -> {
+                        Aria2Manager.get(this).unpause(g);
+                    }).start();
+                }));
+            } else if ("complete".equals(s)) {
+                actions.addView(makeActionButton("📂 Open", () ->
+                        openFile(new File(Aria2Manager.DOWNLOAD_DIR, name))));
+            }
+
+            if (!"removed".equals(s)) {
+                actions.addView(makeActionButton("✕ Remove", () -> {
+                    new Thread(() -> {
+                        Aria2Manager.get(this).remove(g);
+                    }).start();
+                }));
+            }
+
+            row.addView(actions);
+            list.addView(row);
+
         } catch (Exception ignored) {}
-
-        return out.canExecute() ? out.getAbsolutePath() : null;
     }
 
-    private void fallbackDownloadManager(String url, String ua,
-                                         String contentDisposition, String mimeType) {
-        try {
-            String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
-            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
-            req.setMimeType(mimeType);
-            if (ua != null) req.addRequestHeader("User-Agent", ua);
-            req.setNotificationVisibility(
-                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+    private TextView makeActionButton(String label, Runnable onClick) {
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setTextColor(0xFF33FF33);
+        tv.setTextSize(12);
+        tv.setPadding(dp(10), dp(6), dp(10), dp(6));
+        tv.setBackgroundColor(0xFF1A1A1A);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMarginEnd(dp(6));
+        tv.setLayoutParams(lp);
+        tv.setOnClickListener(v -> onClick.run());
+        return tv;
+    }
 
-            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            if (dm != null) dm.enqueue(req);
+    private String formatSpeed(long bytesPerSec) {
+        if (bytesPerSec < 1024) return bytesPerSec + " B/s";
+        if (bytesPerSec < 1024 * 1024)
+            return String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024.0);
+        return String.format(Locale.US, "%.1f MB/s",
+                bytesPerSec / (1024.0 * 1024.0));
+    }
+
+    private void openFile(File f) {
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", f);
+            i.setDataAndType(uri, "*/*");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
         } catch (Exception e) {
-            Toast.makeText(this, "Download failed: " + e.getMessage(),
-                    Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Cannot open: " + e.getMessage(),
+                    Toast.LENGTH_SHORT).show();
         }
     }
 
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     //  WebView configuration
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     @SuppressLint("SetJavaScriptEnabled")
     private void configureWebViewFor(WebView wv, boolean incognito) {
         WebSettings s = wv.getSettings();
@@ -741,8 +885,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     etUrl.setText(url);
                 }
                 updateTabUrl(view, url);
-
-                // Re-inject dark CSS after page load
                 if (forceDark) injectPureBlackCSS(view);
             }
         });
@@ -780,7 +922,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         });
 
-        // Downloads → aria2c
         wv.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
             Toast.makeText(this, "Downloading via aria2c...", Toast.LENGTH_SHORT).show();
             startAria2Download(url, userAgent, contentDisposition, mimeType);
@@ -798,9 +939,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     //  Chrome hide/show
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     private boolean canToggleChromeNow() {
         long now = System.currentTimeMillis();
         if (now - lastChromeToggleTime < CHROME_DEBOUNCE_MS) return false;
@@ -844,9 +985,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         footerBar.startAnimation(upIn);
     }
 
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     //  URL handling
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     private void loadFromBar() {
         Tab t = currentTab();
         if (t == null) return;
@@ -874,9 +1015,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return "https://www.google.com/search?q=" + Uri.encode(u);
     }
 
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     //  Lifecycle
-    // ─────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════
     @Override
     public void onBackPressed() {
         Tab t = currentTab();
@@ -913,9 +1054,19 @@ public class AuraBrowserActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
         }
         tabs.clear();
+
+        if (isFinishing()) {
+            try {
+                Aria2Manager.get(this).stop();
+            } catch (Exception ignored) {}
+        }
+
         super.onDestroy();
     }
 
+    // ═════════════════════════════════════════════════════════════
+    //  Static entry points
+    // ═════════════════════════════════════════════════════════════
     public static void open(Context ctx, String url) {
         Intent i = new Intent(ctx, AuraBrowserActivity.class);
         if (url != null) i.putExtra(EXTRA_URL, url);

@@ -6,4 +6,6 @@
     <external-cache-path name="external_cache" path="." />
     <files-path name="files" path="." />
     <root-path name="root" path="/" />
+    <external-path name="downloads" path="Download/" />
+    <files-path name="files" path="." />
 </paths>
