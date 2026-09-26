@@ -63,6 +63,8 @@ public class GalleryActivity extends AppCompatActivity {
 
     private static final String LOG_TAG = "gallery-tui";
     private final String idHash = Integer.toHexString(System.identityHashCode(this));
+
+    private boolean userIsSwiping = false;
     private String src() { return "[GalleryActivity:" + idHash + "]"; }
     private void log(String msg) { Log.d(LOG_TAG, src() + " " + msg); }
 
@@ -342,9 +344,9 @@ public class GalleryActivity extends AppCompatActivity {
                 String path = fullscreenMediaPaths.get(pos);
                 boolean nowFav = toggleFavoriteForPath(path);
                 updateFullscreenFavoriteIcon(path);
-                Toast.makeText(this,
-                        nowFav ? "⭐ Added to Favorites" : "Removed from Favorites",
-                        Toast.LENGTH_SHORT).show();
+                // ★ Refresh the grid so the tile's star updates immediately
+                applyFilter();
+
             }
         });
 
@@ -389,7 +391,7 @@ public class GalleryActivity extends AppCompatActivity {
                     currentFullscreenVideo = null;
                     currentFullscreenVideoPosition = -1;
                 }
-                hideAllControls();
+                // ★ Do NOT auto-hide the chrome on images. Chrome stays as the user left it.
                 videoHandler.removeCallbacks(overlayProgressRunnable);
             }
 
@@ -415,7 +417,11 @@ public class GalleryActivity extends AppCompatActivity {
                     updateOverlayTitle();
                     updateOverlaySeekBar();
                     startOverlayProgressUpdate();
-                    showAllControlsWithTimeout();
+
+                    // ★ Only start the auto-hide timer if we're NOT in the middle of a swipe
+                    if (!userIsSwiping) {
+                        showAllControlsWithTimeout();
+                    }
                 } else {
                     log("  video is for off-screen page " + position
                             + " — deferring start to onPageSelected");
@@ -427,6 +433,13 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenViewPager.setOffscreenPageLimit(1);
 
         fullscreenViewPager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
+            @Override
+            public void onPageScrollStateChanged(int state) {
+                // Track swipe gesture so we don't auto-hide mid-swipe
+                userIsSwiping = (state != ViewPager2.SCROLL_STATE_IDLE);
+                log("onPageScrollStateChanged: state=" + state + " userIsSwiping=" + userIsSwiping);
+            }
+
             @Override
             public void onPageSelected(int position) {
                 log("onPageSelected: " + position
@@ -448,6 +461,7 @@ public class GalleryActivity extends AppCompatActivity {
                 fullscreenCurrentPosition = position;
                 fullscreenCurrentIndex = position;
 
+                // ★ Update the header (name / details / path / video title / fav icon)
                 updateFullscreenInfo(position);
 
                 if (position >= 0 && position < fullscreenMediaPaths.size()) {
@@ -455,9 +469,9 @@ public class GalleryActivity extends AppCompatActivity {
                     if (isVideoPath(path)) {
                         log("  new page is video — starting");
                         findAndStartVideoForPosition(position);
-                    } else {
-                        hideAllControls();
                     }
+                    // ★ Do NOT auto-hide controls on swipe. The user will tap to toggle,
+                    // or the video's own onVideoVisible will manage the auto-hide.
                 }
             }
         });
@@ -493,6 +507,25 @@ public class GalleryActivity extends AppCompatActivity {
 
         View topNavBar = findViewById(R.id.topNavBar);
         if (topNavBar != null) updateTopNavBar();
+    }
+
+    /**
+     * Set a favorite star icon + tint based on state.
+     * Gold when favorited, white when not.
+     */
+    private void applyStarIcon(ImageView v, boolean fav) {
+        if (v == null) return;
+        v.setImageResource(fav ? R.drawable.ic_star_filled : R.drawable.ic_star_empty);
+        // setImageTintList is more reliable than setColorFilter across
+        // visibility changes on modern Android.
+        int color = fav
+                ? android.graphics.Color.parseColor("#FFD700")
+                : android.graphics.Color.WHITE;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            v.setImageTintList(android.content.res.ColorStateList.valueOf(color));
+        } else {
+            v.setColorFilter(color);
+        }
     }
 
     // ===================== FAVORITES PERSISTENCE =====================
@@ -534,24 +567,40 @@ public class GalleryActivity extends AppCompatActivity {
         }
         saveFavoritePaths(favs);
 
+        // ★ Update the in-memory list so applyFilter() picks up the change
+        boolean found = false;
         for (MediaItem item : mediaItems) {
             if (item.path.equals(path)) {
                 item.isFavorite = nowFav;
+                found = true;
                 break;
             }
         }
+
+        if (!found) {
+            Log.w(LOG_TAG, "toggleFavoriteForPath: path not found in mediaItems: " + path);
+        }
+
         return nowFav;
     }
 
     private void updateFullscreenFavoriteIcon(String path) {
-        if (fsBtnFavoriteIcon == null || path == null) return;
+        if (path == null) return;
         boolean fav = false;
+
+        // First try the in-memory list
         for (MediaItem item : mediaItems) {
             if (item.path.equals(path)) { fav = item.isFavorite; break; }
         }
-        fsBtnFavoriteIcon.setImageResource(fav
-                ? R.drawable.ic_star_filled
-                : R.drawable.ic_star_empty);
+
+        // ★ Fall back to the persisted set — the in-memory list may be stale
+        // if loadMedia() hasn't re-run since the last star toggle.
+        if (!fav && loadFavoritePaths().contains(path)) {
+            fav = true;
+        }
+
+        applyStarIcon(fsBtnFavoriteIcon, fav);
+        applyStarIcon(btnFavoriteOverlay, fav);
     }
 
     // ===================== TAP TOGGLING (UNIFIED) =====================
@@ -577,7 +626,12 @@ public class GalleryActivity extends AppCompatActivity {
         }
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
         overlayHideControlsRunnable = () -> {
-            if (isOverlayVideoPlaying) hideAllControls();
+            // ★ Only auto-hide when:
+            //   - a video is playing, AND
+            //   - the user is not actively swiping
+            if (isOverlayVideoPlaying && !userIsSwiping) {
+                hideAllControls();
+            }
         };
         videoHandler.postDelayed(overlayHideControlsRunnable, OVERLAY_CONTROLS_TIMEOUT);
     }
@@ -597,14 +651,15 @@ public class GalleryActivity extends AppCompatActivity {
         if (fullscreenBottomBar != null)
             fullscreenBottomBar.setVisibility(visible ? View.VISIBLE : View.GONE);
 
-        if (visible && fsBtnFavoriteIcon != null) {
+        // ★ Always re-apply the star tint when chrome becomes visible,
+        // regardless of previous state — prevents "stuck white star" bug.
+        if (visible) {
             int pos = fullscreenCurrentPosition;
             if (pos >= 0 && pos < fullscreenMediaPaths.size()) {
                 updateFullscreenFavoriteIcon(fullscreenMediaPaths.get(pos));
             }
         }
     }
-
     // ===================== RENAME + SCAN + REFRESH =====================
 
     private boolean renameFileRobust(File src, File dst) {
@@ -731,6 +786,8 @@ public class GalleryActivity extends AppCompatActivity {
                     String path = fullscreenMediaPaths.get(fullscreenCurrentPosition);
                     boolean nowFav = toggleFavoriteForPath(path);
                     updateFullscreenFavoriteIcon(path);
+                    // ★ Refresh the grid so the tile's star updates immediately
+                    applyFilter();
                     Toast.makeText(this,
                             nowFav ? "⭐ Added" : "Removed",
                             Toast.LENGTH_SHORT).show();
@@ -1004,8 +1061,11 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenOverlay.setVisibility(View.VISIBLE);
         fullscreenOverlay.bringToFront();
 
-        hideAllControls();
+// ★ Update info BEFORE showing chrome so the star tint is correct
         updateFullscreenInfo(currentIndex);
+
+// ★ Start with chrome visible; user taps to hide
+        showAllControls();
 
         bottomBar.setVisibility(View.GONE);
         log("  overlay visible");
@@ -1016,6 +1076,16 @@ public class GalleryActivity extends AppCompatActivity {
             int finalIndex = currentIndex;
             fullscreenViewPager.post(() -> findAndStartVideoForPosition(finalIndex));
         }
+    }
+
+    /** Show chrome without starting the auto-hide timer. */
+    private void showAllControls() {
+        setFullscreenChromeVisible(true);
+        if (currentFullscreenPageIsVideo && videoControlContainer != null) {
+            videoControlContainer.setVisibility(View.VISIBLE);
+            overlayControlsVisible = true;
+        }
+        videoHandler.removeCallbacks(overlayHideControlsRunnable);
     }
 
     private void closeFullscreenViewer() {
@@ -2018,10 +2088,14 @@ public class GalleryActivity extends AppCompatActivity {
     private void addSelectedToFavorites() {
         if (selectedItems.isEmpty()) return;
         Set<String> favs = loadFavoritePaths();
+        int added = 0;
         for (String path : selectedItems) {
             File f = new File(path);
             if (!f.exists()) continue;
-            favs.add(path);
+            if (!favs.contains(path)) {
+                favs.add(path);
+                added++;
+            }
             for (MediaItem item : mediaItems) {
                 if (item.path.equals(path)) { item.isFavorite = true; break; }
             }
@@ -2029,7 +2103,7 @@ public class GalleryActivity extends AppCompatActivity {
         saveFavoritePaths(favs);
         clearSelection();
         applyFilter();
-        Toast.makeText(this, "Added to Favorites", Toast.LENGTH_SHORT).show();
+
     }
 
     // ===================== LIFECYCLE =====================
