@@ -41,7 +41,10 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.webkit.Profile;
+import androidx.webkit.ProfileStore;
 import androidx.webkit.WebSettingsCompat;
+import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
 import org.json.JSONArray;
@@ -91,10 +94,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
         WebView webView;
         boolean incognito;
         String url;
-        Tab(WebView wv, boolean incog, String url) {
+        String profileName;
+
+        Tab(WebView wv, boolean incog, String url, String profileName) {
             this.webView = wv;
             this.incognito = incog;
             this.url = url;
+            this.profileName = profileName;
         }
     }
 
@@ -222,6 +228,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         btnIncognito.setOnClickListener(v -> newTab(null, true));
         btnDownloads.setOnClickListener(v -> showDownloadPanel());
+
+        cleanupOrphanedIncognitoProfiles();
 
         // Initial tab
         Intent intent = getIntent();
@@ -429,6 +437,20 @@ public class AuraBrowserActivity extends AppCompatActivity {
     @SuppressLint("SetJavaScriptEnabled")
     private void newTab(String url, boolean incognito) {
         WebView wv = new WebView(this);
+
+        // Incognito MUST get its own profile before any WebView operation.
+        String profileName = null;
+        if (incognito) {
+            profileName = attachFreshIncognitoProfile(wv);
+            if (profileName == null) {
+                Toast.makeText(this,
+                        "Incognito mode is unavailable on this WebView",
+                        Toast.LENGTH_LONG).show();
+                wv.destroy();
+                return;
+            }
+        }
+
         wv.setLayoutParams(new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -439,28 +461,69 @@ public class AuraBrowserActivity extends AppCompatActivity {
         String startUrl = (url == null || url.trim().isEmpty()) ? DEFAULT_HOME : url;
         String normalized = normalizeUrl(startUrl);
 
-        Tab tab = new Tab(wv, incognito, normalized);
+        Tab tab = new Tab(wv, incognito, normalized, profileName);
         tabs.add(tab);
 
         webContainer.addView(wv);
         wv.setVisibility(View.GONE);
 
-        try {
-            WebSettings s = wv.getSettings();
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
-                WebSettingsCompat.setForceDarkStrategy(s,
-                        WebSettingsCompat.DARK_STRATEGY_WEB_THEME_DARKENING_ONLY);
-            }
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-                WebSettingsCompat.setForceDark(s,
-                        forceDark ? WebSettingsCompat.FORCE_DARK_ON
-                                : WebSettingsCompat.FORCE_DARK_OFF);
-            }
-        } catch (Exception ignored) {}
-
+        applyForceDark(wv);
         wv.loadUrl(normalized);
         switchToTab(tabs.size() - 1);
         updateTabCountBadge();
+    }
+
+    private static final String INCOGNITO_PROFILE_PREFIX = "aura_incognito_";
+
+    private String attachFreshIncognitoProfile(WebView wv) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+            Log.e("AuraBrowser",
+                    "WebView MULTI_PROFILE is unavailable; incognito isolation cannot be guaranteed");
+            return null;
+        }
+
+        String profileName = INCOGNITO_PROFILE_PREFIX + System.nanoTime();
+
+        try {
+            WebViewCompat.setProfile(wv, profileName);
+            return profileName;
+        } catch (Exception e) {
+            Log.e("AuraBrowser", "Failed to create incognito profile", e);
+            return null;
+        }
+    }
+
+    private void cleanupOrphanedIncognitoProfiles() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return;
+
+        try {
+            ProfileStore store = ProfileStore.getInstance();
+            List<String> names = new ArrayList<>(store.getAllProfileNames());
+
+            for (String name : names) {
+                if (name != null && name.startsWith(INCOGNITO_PROFILE_PREFIX)) {
+                    try {
+                        store.deleteProfile(name);
+                    } catch (Exception ignored) {
+                        // A profile still used by a live WebView is left alone.
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w("AuraBrowser", "Incognito profile cleanup failed", e);
+        }
+    }
+
+    private void deleteIncognitoProfile(String profileName) {
+        if (profileName == null || profileName.isEmpty()) return;
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return;
+
+        try {
+            ProfileStore.getInstance().deleteProfile(profileName);
+        } catch (Exception e) {
+            Log.w("AuraBrowser",
+                    "Could not delete incognito profile " + profileName, e);
+        }
     }
 
     private void switchToTab(int index) {
@@ -495,6 +558,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
             t.webView.setWebViewClient(null);
             t.webView.destroy();
         } catch (Exception ignored) {}
+
+        if (t.incognito) {
+            deleteIncognitoProfile(t.profileName);
+        }
+
         tabs.remove(index);
 
         if (tabs.isEmpty()) { finish(); return; }
@@ -843,8 +911,22 @@ public class AuraBrowserActivity extends AppCompatActivity {
             s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         }
 
+        // Normal tabs use the Default profile. Incognito uses only its
+        // separate profile cookie store.
         CookieManager cm = CookieManager.getInstance();
+
+        if (incognito) {
+            try {
+                Profile profile = WebViewCompat.getProfile(wv);
+                cm = profile.getCookieManager();
+            } catch (Exception e) {
+                Log.e("AuraBrowser",
+                        "Incognito profile cookie manager unavailable", e);
+            }
+        }
+
         cm.setAcceptCookie(true);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             cm.setAcceptThirdPartyCookies(wv, !incognito);
         }
@@ -985,6 +1067,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 t.webView.setWebViewClient(null);
                 t.webView.destroy();
             } catch (Exception ignored) {}
+
+            if (t.incognito) {
+                deleteIncognitoProfile(t.profileName);
+            }
         }
         tabs.clear();
 
