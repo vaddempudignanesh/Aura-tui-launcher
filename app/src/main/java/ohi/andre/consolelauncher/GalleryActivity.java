@@ -57,7 +57,10 @@ public class GalleryActivity extends AppCompatActivity {
     private final String idHash = Integer.toHexString(System.identityHashCode(this));
     private String src() { return "[GalleryActivity:" + idHash + "]"; }
     private void log(String msg) { Log.d(LOG_TAG, src() + " " + msg); }
-
+    // Debounce for post-restore / post-delete media refresh
+    private final Handler mediaRefreshHandler = new Handler(Looper.getMainLooper());
+    private Runnable pendingMediaRefresh;
+    private static final long MEDIA_REFRESH_DEBOUNCE_MS = 400L;
     private RecyclerView recyclerView;
     private RecyclerView albumRecycler;
     private GalleryAdapter adapter;
@@ -507,8 +510,79 @@ public class GalleryActivity extends AppCompatActivity {
         return false;
     }
 
-    // ===================== OVERLAY VIDEO CONTROLS =====================
 
+    /**
+     * Scan the given paths with MediaScannerConnection and invoke callback
+     * (on the main thread) after ALL of them complete.
+     */
+    private void scanPathsAndThen(java.util.List<String> paths, Runnable callback) {
+        if (paths == null || paths.isEmpty()) {
+            if (callback != null) mediaRefreshHandler.post(callback);
+            return;
+        }
+
+        final java.util.concurrent.atomic.AtomicInteger remaining =
+                new java.util.concurrent.atomic.AtomicInteger(paths.size());
+        final java.util.List<String> toScan = new java.util.ArrayList<>(paths);
+
+        final MediaScannerConnection[] connHolder = new MediaScannerConnection[1];
+
+        connHolder[0] = new MediaScannerConnection(this,
+                new MediaScannerConnection.MediaScannerConnectionClient() {
+                    @Override
+                    public void onMediaScannerConnected() {
+                        for (String p : toScan) {
+                            try {
+                                connHolder[0].scanFile(p, null);
+                            } catch (Exception e) {
+                                Log.e(LOG_TAG, "scanFile threw: " + p, e);
+                                if (remaining.decrementAndGet() == 0) {
+                                    finish();
+                                }
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onScanCompleted(String path, android.net.Uri uri) {
+                        Log.d(LOG_TAG, "scan completed: " + path + " → " + uri);
+                        if (remaining.decrementAndGet() == 0) {
+                            finish();
+                        }
+                    }
+
+                    private void finish() {
+                        try { connHolder[0].disconnect(); } catch (Exception ignored) {}
+                        if (callback != null) mediaRefreshHandler.post(callback);
+                    }
+                });
+        connHolder[0].connect();
+    }
+
+    /**
+     * Schedule a MediaStore re-scan and rebuild the in-memory media list.
+     * Debounced so a bulk restore/delete triggers exactly one refresh.
+     *
+     * @param delayMs milliseconds to wait before refreshing (allows the async
+     *                MediaScanner to finish indexing new paths)
+     */
+    private void scheduleMediaRefresh(long delayMs) {
+        if (!isActivityAlive()) return;
+
+        if (pendingMediaRefresh != null) {
+            mediaRefreshHandler.removeCallbacks(pendingMediaRefresh);
+        }
+
+        pendingMediaRefresh = () -> {
+            log("scheduleMediaRefresh: running loadMedia()");
+            // loadMedia() already runs on the executor and rebuilds mediaItems
+            // then calls applyFilter() + setupRecyclerView() on the UI thread.
+            loadMedia();
+            pendingMediaRefresh = null;
+        };
+
+        mediaRefreshHandler.postDelayed(pendingMediaRefresh, delayMs);
+    }
     private void setupOverlayVideoControls() {
         if (btnCenterPlayPause != null)
             btnCenterPlayPause.setOnClickListener(v -> toggleOverlayPlayPause());
@@ -1442,15 +1516,22 @@ public class GalleryActivity extends AppCompatActivity {
         item.isTrashed = false;
         item.name = restoredFile.getName();
 
-        MediaScannerConnection.scanFile(this, new String[]{restoredFile.getAbsolutePath()}, null, null);
-        MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
-
+// Update the in-memory list entry (may be absent after a rescan).
         for (int i = 0; i < mediaItems.size(); i++) {
             if (mediaItems.get(i).path.equals(oldPath)) {
                 mediaItems.set(i, item);
                 break;
             }
         }
+
+// Ask MediaScanner to index the new name and notify on completion.
+        scanPathsAndThen(
+                java.util.Arrays.asList(restoredFile.getAbsolutePath(), oldPath),
+                () -> {
+                    log("restoreFromTrash: scanner finished → refreshing list");
+                    scheduleMediaRefresh(0L);
+                });
+
         return true;
     }
 
@@ -1533,6 +1614,11 @@ public class GalleryActivity extends AppCompatActivity {
         clearSelection();
         applyFilter();
 
+// Refresh MediaStore once for the whole batch.
+        if (restored > 0) {
+            scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
+        }
+
         if (failed == 0) {
             Toast.makeText(this, "Restored " + restored + " item(s)", Toast.LENGTH_SHORT).show();
         } else {
@@ -1585,6 +1671,10 @@ public class GalleryActivity extends AppCompatActivity {
 
                     clearSelection();
                     applyFilter();
+
+                    if (deleted > 0) {
+                        scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
+                    }
 
                     if (failed == 0) {
                         Toast.makeText(this, "Deleted " + deleted + " item(s)",
@@ -1858,6 +1948,8 @@ public class GalleryActivity extends AppCompatActivity {
         videoHandler.removeCallbacks(hideControlsRunnable);
         videoHandler.removeCallbacks(overlayProgressRunnable);
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
+        mediaRefreshHandler.removeCallbacksAndMessages(null);
+        pendingMediaRefresh = null;
         executor.shutdown();
     }
 
