@@ -610,28 +610,31 @@
         android:background="#FF000000"
         android:padding="8dp"
         android:elevation="12dp">
-
         <TextView android:id="@+id/sortImages" style="@style/SortOptionButton"
             android:layout_width="match_parent" android:layout_height="48dp"
             android:gravity="center" android:text="🖼️ Images"
+            android:background="#FF000000"
             android:textColor="#FFFFFF" android:textSize="16sp" android:padding="8dp" />
         <View android:layout_width="match_parent" android:layout_height="1dp"
-            android:background="#33FFFFFF" />
+            android:background="#FF000000" />
         <TextView android:id="@+id/sortVideos" style="@style/SortOptionButton"
             android:layout_width="match_parent" android:layout_height="48dp"
             android:gravity="center" android:text="🎬 Videos"
+            android:background="#FF000000"
             android:textColor="#FFFFFF" android:textSize="16sp" android:padding="8dp" />
         <View android:layout_width="match_parent" android:layout_height="1dp"
-            android:background="#33FFFFFF" />
+            android:background="#FF000000" />
         <TextView android:id="@+id/sortFavorites" style="@style/SortOptionButton"
             android:layout_width="match_parent" android:layout_height="48dp"
             android:gravity="center" android:text="⭐ Favorites"
+            android:background="#FF000000"
             android:textColor="#FFFFFF" android:textSize="16sp" android:padding="8dp" />
         <View android:layout_width="match_parent" android:layout_height="1dp"
-            android:background="#33FFFFFF" />
+            android:background="#FF000000" />
         <TextView android:id="@+id/sortBin" style="@style/SortOptionButton"
             android:layout_width="match_parent" android:layout_height="48dp"
             android:gravity="center" android:text="🗑️ Bin"
+            android:background="#FF000000"
             android:textColor="#FFFFFF" android:textSize="16sp" android:padding="8dp" />
     </LinearLayout>
 
