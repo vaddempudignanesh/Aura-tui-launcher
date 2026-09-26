@@ -18,18 +18,24 @@ import java.io.IOException;
 /**
  * SurfaceView-based video player.
  *
- * Aspect-ratio handling is ported from VLC's vout_display_PlacePicture():
- *   - Video is stored with a Sample Aspect Ratio (SAR), which is separate from
- *     its pixel dimensions. e.g. a 720x480 NTSC video has SAR 32:27, giving
- *     a 16:9 Display Aspect Ratio (DAR), even though its pixels aren't square.
- *   - The view computes the "placed rectangle" that the video should occupy
- *     inside the available bounds, honoring SAR and the requested fit mode.
- *   - Fitting modes match VLC's:
- *       FIT_SMALLER  — letterbox (fit the whole video inside the view)
- *       FIT_LARGER   — crop (fill the view, cropping edges)
- *       FIT_WIDTH    — match view width (may overflow top/bottom)
- *       FIT_HEIGHT   — match view height (may overflow left/right)
- *       FIT_NONE     — use video pixel size as-is (1:1)
+ * Aspect-ratio handling ported from VLC's vout_display_PlacePicture().
+ *
+ * VLC computes the "placed rectangle" of the video inside the display bounds:
+ *   - DAR (Display Aspect Ratio) = (visible_width * SAR_num) / (visible_height * SAR_den)
+ *   - Then it computes a uniform scale so that the DAR-fitted rectangle
+ *     fits inside the available bounds, according to the fitting mode.
+ *
+ * For the common case SAR = 1:1 (all phone-camera, WhatsApp, and standard MP4
+ * videos), the DAR equals visible_width : visible_height, and the scale factor
+ * is simply:
+ *
+ *   scale = min(availW / visW, availH / visH)   for SMALLER (letterbox)
+ *   scale = max(availW / visW, availH / visH)   for LARGER  (crop)
+ *   scale = availW / visW                        for WIDTH
+ *   scale = availH / visH                        for HEIGHT
+ *
+ * The view's measured width = visW * scale, height = visH * scale.
+ * This preserves the original aspect ratio exactly — no stretching.
  */
 public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callback {
 
@@ -38,15 +44,12 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
 
     private final String id = Integer.toHexString(System.identityHashCode(this));
 
-    // ═════════════════════════════════════════════════════════════
-    //  Fitting modes (ported from VLC's vlc_video_fitting)
-    // ═════════════════════════════════════════════════════════════
     public enum Fit {
-        NONE,       // 1:1 pixel — no scaling
-        SMALLER,    // letterbox — entire video visible (default for portrait)
-        LARGER,     // crop to fill view
-        WIDTH,      // match width, may overflow vertically
-        HEIGHT;     // match height, may overflow horizontally
+        NONE,       // 1:1 pixel
+        SMALLER,    // letterbox (fit whole video)
+        LARGER,     // crop to fill
+        WIDTH,      // match width
+        HEIGHT;     // match height
     }
 
     public interface OnTapListener { void onTap(); }
@@ -62,26 +65,12 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
 
     private int mediaGeneration = 0;
 
-    // ═════════════════════════════════════════════════════════════
-    //  Video geometry (source side)
-    // ═════════════════════════════════════════════════════════════
-    private int videoWidth = 0;        // i_width (coded width)
-    private int videoHeight = 0;       // i_height
-    private int videoVisibleWidth = 0; // i_visible_width  (may be < coded)
-    private int videoVisibleHeight = 0;// i_visible_height
-    private int sarNum = 1;            // i_sar_num
-    private int sarDen = 1;            // i_sar_den
+    // ── Source geometry ──
+    private int videoWidth = 0;
+    private int videoHeight = 0;
 
-    // Fitting mode — default SMALLER (letterbox), switch to LARGER in landscape
+    // Fit mode
     private Fit fit = Fit.SMALLER;
-
-    // Pan/pinch
-    private float panX = 0f, panY = 0f, currentScale = 1f;
-    private final android.graphics.PointF lastTouch = new android.graphics.PointF();
-    private final android.graphics.PointF startTouch = new android.graphics.PointF();
-    private android.view.ScaleGestureDetector scaleDetector;
-    private boolean isDragging = false;
-    private boolean isPinching = false;
 
     private MediaPlayer.OnPreparedListener preparedListener;
     private MediaPlayer.OnErrorListener errorListener;
@@ -105,31 +94,7 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
         setFocusable(true);
         setFocusableInTouchMode(true);
         setClickable(true);
-
-        scaleDetector = new android.view.ScaleGestureDetector(getContext(),
-                new android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
-                    @Override public boolean onScaleBegin(android.view.ScaleGestureDetector d) {
-                        isPinching = true; return true;
-                    }
-                    @Override public boolean onScale(android.view.ScaleGestureDetector d) {
-                        float factor = d.getScaleFactor();
-                        float ns = currentScale * factor;
-                        if (ns < 0.5f) ns = 0.5f;
-                        if (ns > 5f) ns = 5f;
-                        currentScale = ns;
-                        setScaleX(currentScale);
-                        setScaleY(currentScale);
-                        return true;
-                    }
-                    @Override public void onScaleEnd(android.view.ScaleGestureDetector d) {
-                        isPinching = false;
-                    }
-                });
     }
-
-    // ═════════════════════════════════════════════════════════════
-    //  Fitting mode
-    // ═════════════════════════════════════════════════════════════
 
     public void setFit(Fit mode) {
         if (fit != mode) {
@@ -142,50 +107,19 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
     public Fit getFit() { return fit; }
 
     // ═════════════════════════════════════════════════════════════
-    //  Touch: tap + drag + pinch
+    //  Touch: tap only
     // ═════════════════════════════════════════════════════════════
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        scaleDetector.onTouchEvent(event);
-
-        switch (event.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN:
-                lastTouch.set(event.getX(), event.getY());
-                startTouch.set(event.getX(), event.getY());
-                isDragging = false;
-                return true;
-            case MotionEvent.ACTION_MOVE:
-                if (isPinching) return true;
-                float dx = event.getX() - lastTouch.x;
-                float dy = event.getY() - lastTouch.y;
-                if (Math.abs(event.getX() - startTouch.x) > 12
-                        || Math.abs(event.getY() - startTouch.y) > 12) {
-                    isDragging = true;
-                }
-                if (isDragging) {
-                    panX += dx; panY += dy;
-                    setX(panX); setY(panY);
-                }
-                lastTouch.set(event.getX(), event.getY());
-                return true;
-            case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                if (!isDragging && !isPinching && tapListener != null) tapListener.onTap();
-                isDragging = false;
-                return true;
+        if (event.getAction() == MotionEvent.ACTION_UP) {
+            if (tapListener != null) tapListener.onTap();
         }
-        return super.onTouchEvent(event);
-    }
-
-    public void resetTransform() {
-        panX = 0f; panY = 0f; currentScale = 1f;
-        setX(0f); setY(0f);
-        setScaleX(1f); setScaleY(1f);
+        return true;
     }
 
     // ═════════════════════════════════════════════════════════════
-    //  Aspect-ratio-aware measurement — VLC's vout_display_PlacePicture()
+    //  VLC-style aspect-ratio-preserving measure
     // ═════════════════════════════════════════════════════════════
 
     @Override
@@ -193,78 +127,62 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
         int availW = MeasureSpec.getSize(widthMeasureSpec);
         int availH = MeasureSpec.getSize(heightMeasureSpec);
 
+        // Before the video size is known, fill the parent so the SurfaceView
+        // gets a valid surface.
         if (videoWidth <= 0 || videoHeight <= 0) {
-            // Not yet known — fill parent
             setMeasuredDimension(availW, availH);
             return;
         }
 
-        // ── Step 1: compute the displayed aspect ratio ──
-        // VLC: DAR = (visible_width * SAR_num) / (visible_height * SAR_den)
-        // We use the visible region (in case of coded > visible).
-        int visW = videoVisibleWidth > 0 ? videoVisibleWidth : videoWidth;
-        int visH = videoVisibleHeight > 0 ? videoVisibleHeight : videoHeight;
-        if (visW <= 0 || visH <= 0) { visW = videoWidth; visH = videoHeight; }
+        // Guard against pathological sizes.
+        if (availW <= 0 || availH <= 0) {
+            setMeasuredDimension(availW, availH);
+            return;
+        }
 
-        // Displayed dimensions after SAR correction — these are "logical" pixels.
-        // We keep them as ints using a common denominator.
-        long darNum = (long) visW * sarNum;
-        long darDen = (long) visH * sarDen;
-        if (darNum <= 0 || darDen <= 0) { darNum = visW; darDen = visH; }
-
-        // ── Step 2: compute scaling factor based on fit mode ──
-        // scale = min or max of (availW/darW) and (availH/darH)
-        // We work in "display pixels" = available bounds, and map back to
-        // the video's natural size via the ratio.
-        double scaleW = (double) availW / (double) visW;
-        double scaleH = (double) availH / (double) visH;
-
-        // Account for SAR: if SAR is not 1:1, effective horizontal scale differs
-        // We compute scale in the "display space":
-        //    displayedW = visW * scale * (sarNum/sarDen)   ← visual width
-        //    displayedH = visH * scale                     ← visual height
-        // But since we're returning layout dimensions, we want:
-        //    layoutW = visW * scale
-        //    layoutH = visH * scale
-        // And the visual result is layoutW_visual = layoutW * sarNum/sarDen.
-        //
-        // To fit visual-in-available:
-        //    layoutW * sarNum / sarDen ≤ availW   →   layoutW ≤ availW * sarDen / sarNum
-        //    layoutH ≤ availH
-        double effAvailW = (double) availW * sarDen / sarNum;
+        // ── VLC: scale factor per fitting mode ──
+        // All videos from cameras / WhatsApp / standard MP4 have SAR = 1:1,
+        // so DAR == videoWidth : videoHeight and no correction is needed.
+        final double scaleW = (double) availW / (double) videoWidth;
+        final double scaleH = (double) availH / (double) videoHeight;
 
         double chosenScale;
         switch (fit) {
             case NONE:
-                // 1:1 — but still account for SAR for visual fit
                 chosenScale = 1.0;
                 break;
             case LARGER:
-                chosenScale = Math.max(effAvailW / visW, (double) availH / visH);
+                chosenScale = Math.max(scaleW, scaleH);
                 break;
             case WIDTH:
-                chosenScale = effAvailW / visW;
+                chosenScale = scaleW;
                 break;
             case HEIGHT:
-                chosenScale = (double) availH / visH;
+                chosenScale = scaleH;
                 break;
             case SMALLER:
             default:
-                chosenScale = Math.min(effAvailW / visW, (double) availH / visH);
+                chosenScale = Math.min(scaleW, scaleH);
                 break;
         }
 
-        int measuredW = (int) Math.round(visW * chosenScale);
-        int measuredH = (int) Math.round(visH * chosenScale);
+        int measuredW = (int) Math.round(videoWidth * chosenScale);
+        int measuredH = (int) Math.round(videoHeight * chosenScale);
 
-        // Guard against zero
+        // Never let the measured size exceed the available bounds for
+        // SMALLER (this is what VLC does with the placed rectangle).
+        if (fit == Fit.SMALLER || fit == Fit.NONE) {
+            if (measuredW > availW) measuredW = availW;
+            if (measuredH > availH) measuredH = availH;
+        }
+
         if (measuredW < 1) measuredW = 1;
         if (measuredH < 1) measuredH = 1;
 
-        log("onMeasure: vid=" + visW + "x" + visH
-                + " sar=" + sarNum + ":" + sarDen
+        log("onMeasure: vid=" + videoWidth + "x" + videoHeight
                 + " avail=" + availW + "x" + availH
                 + " fit=" + fit
+                + " scale=" + chosenScale
                 + " → " + measuredW + "x" + measuredH);
 
         setMeasuredDimension(measuredW, measuredH);
@@ -274,21 +192,9 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
         if (w > 0 && h > 0 && (w != videoWidth || h != videoHeight)) {
             videoWidth = w;
             videoHeight = h;
-            // Assume visible == coded unless we have better info
-            if (videoVisibleWidth <= 0) videoVisibleWidth = w;
-            if (videoVisibleHeight <= 0) videoVisibleHeight = h;
             log("applyVideoSize: " + w + "x" + h);
             requestLayout();
         }
-    }
-
-    /** Called from the activity if it has better geometry (SAR, visible rect). */
-    public void setVideoGeometry(int visibleW, int visibleH, int sar_num, int sar_den) {
-        if (visibleW > 0) videoVisibleWidth = visibleW;
-        if (visibleH > 0) videoVisibleHeight = visibleH;
-        if (sar_num > 0) sarNum = sar_num;
-        if (sar_den > 0) sarDen = sar_den;
-        requestLayout();
     }
 
     // ═════════════════════════════════════════════════════════════

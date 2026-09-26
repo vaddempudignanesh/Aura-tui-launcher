@@ -17,7 +17,7 @@
         android:focusable="true"
         android:focusableInTouchMode="true" />
 
-    <!-- ★ Wrapper so the video can be centered while smaller than the page -->
+    <!-- Wrapper so the video can be centered while smaller than the page -->
     <FrameLayout
         android:id="@+id/video_container"
         android:layout_width="match_parent"

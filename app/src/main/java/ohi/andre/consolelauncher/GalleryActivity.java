@@ -90,6 +90,7 @@ public class GalleryActivity extends AppCompatActivity {
     private ImageButton btnCenterPlayPause;
     private ImageButton btnSkipForwardOverlay;
     private ImageButton btnSkipBackwardOverlay;
+    private View videoControlsOverlay;
     private ImageButton btnFavoriteOverlay;
     private ImageButton btnInfoOverlay;
     private ImageButton btnDeleteOverlay;
@@ -102,7 +103,7 @@ public class GalleryActivity extends AppCompatActivity {
     private boolean overlayControlsVisible = false;
     private Runnable overlayHideControlsRunnable;
     private Runnable overlayProgressRunnable;
-
+    private android.view.GestureDetector overlayTapDetector;
     private static final int OVERLAY_CONTROLS_TIMEOUT = 3000;
     private static final int SKIP_FORWARD_MS = 10000;
     private static final int SKIP_BACKWARD_MS = 10000;
@@ -262,21 +263,38 @@ public class GalleryActivity extends AppCompatActivity {
         videoTimeTotal = findViewById(R.id.videoTimeTotal);
         videoTitleOverlay = findViewById(R.id.videoTitle);
         videoSeekBar = findViewById(R.id.videoSeekBar);
+        videoControlsOverlay = findViewById(R.id.videoControlsOverlay);
 
         btnCloseFullscreen.setOnClickListener(v -> closeFullscreenViewer());
 
-        // Toggle-all-controls button
-        ImageButton btnToggleAll = findViewById(R.id.btnToggleAllControls);
-        if (btnToggleAll != null) {
-            btnToggleAll.setOnClickListener(v -> {
-                log("btnToggleAllControls clicked");
-                if (fullscreenChromeVisible || overlayControlsVisible) {
-                    hideAllControls();
-                } else {
-                    showAllControlsWithTimeout();
-                }
-            });
-        }
+// ★ Tap-anywhere on the fullscreen overlay toggles controls, but does NOT
+// consume swipes. We use a GestureDetector so single taps fire onFullscreenTap
+// while horizontal flings/swipes are passed through to the ViewPager2.
+        overlayTapDetector = new android.view.GestureDetector(this,
+                new android.view.GestureDetector.SimpleOnGestureListener() {
+                    @Override
+                    public boolean onDown(android.view.MotionEvent e) {
+                        // Must return true so the detector receives subsequent events.
+                        // Returning true here does NOT consume the event from the parent
+                        // because we do not set an OnClickListener on the view.
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onSingleTapUp(android.view.MotionEvent e) {
+                        onFullscreenTap();
+                        return true;
+                    }
+                });
+
+// Set the detector as the touch listener on the fullscreen overlay.
+// Returning false from onTouch lets the event continue to ViewPager2 for swipes,
+// but we still get onSingleTapUp for taps.
+        fullscreenOverlay.setOnTouchListener((v, event) -> {
+            overlayTapDetector.onTouchEvent(event);
+            return false;   // ★ IMPORTANT: let ViewPager2 handle swipes
+        });
+
 
         setupOverlayVideoControls();
 
@@ -355,12 +373,7 @@ public class GalleryActivity extends AppCompatActivity {
                 }
 
                 fullscreenCurrentPosition = position;
-                // Reset any pan/zoom applied by the previous video
-                if (currentFullscreenVideo != null) {
-                    try { currentFullscreenVideo.resetTransform(); } catch (Exception ignored) {}
-                }
                 fullscreenCurrentIndex = position;
-                updateFullscreenInfo(position);
 
                 if (position >= 0 && position < fullscreenMediaPaths.size()) {
                     String path = fullscreenMediaPaths.get(position);
@@ -768,19 +781,6 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenViewPager.setCurrentItem(currentIndex, false);
 
         fullscreenOverlay.setVisibility(View.VISIBLE);
-        // Reset transform for all pages
-        fullscreenViewPager.post(() -> {
-            RecyclerView rv = (RecyclerView) fullscreenViewPager.getChildAt(0);
-            if (rv != null) {
-                for (int i = 0; i < rv.getChildCount(); i++) {
-                    View child = rv.getChildAt(i);
-                    if (child != null) {
-                        CustomVideoView vv = child.findViewById(R.id.fullscreen_video);
-                        if (vv != null) vv.resetTransform();
-                    }
-                }
-            }
-        });
         fullscreenOverlay.bringToFront();
 
         hideAllControls();

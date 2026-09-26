@@ -135,6 +135,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:orientation="vertical"
+                android:clickable="false"
+                android:focusable="false"
                 android:visibility="gone">
 
                 <FrameLayout
@@ -361,19 +363,7 @@
                 android:ellipsize="middle" />
         </LinearLayout>
 
-        <!-- ★ Always-visible toggle button — hides/shows ALL controls -->
-        <ImageButton
-            android:id="@+id/btnToggleAllControls"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:src="@drawable/ic_close"
-            android:background="#00000000"
-            android:layout_alignParentTop="true"
-            android:layout_alignParentEnd="true"
-            android:layout_margin="16dp"
-            android:padding="12dp"
-            android:elevation="26dp"
-            app:tint="#FFFFFF" />
+
 
         <!-- Close button (shown together with chrome) -->
         <ImageButton
