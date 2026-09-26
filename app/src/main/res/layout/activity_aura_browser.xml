@@ -143,18 +143,17 @@
                 android:textSize="9sp"
                 android:textStyle="bold" />
         </FrameLayout>
-
         <ImageButton
             android:id="@+id/aura_btn_incognito"
             android:layout_width="0dp"
             android:layout_height="34dp"
             android:layout_weight="1"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:src="@android:drawable/ic_menu_view"
+            android:src="@android:drawable/ic_menu_manage"
             android:contentDescription="New incognito tab"
             android:scaleType="centerInside"
             android:padding="4dp"
-            app:tint="#FF33FF33" />
+            app:tint="#FFAA66FF" />
 
         <ImageButton
             android:id="@+id/aura_btn_downloads"

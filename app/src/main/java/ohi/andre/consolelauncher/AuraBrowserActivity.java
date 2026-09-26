@@ -80,15 +80,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private ImageButton btnDownloads;
     private TextView tabCountView;
 
-    // ── Chrome visibility ────────────────────────────────────────
-    private boolean chromeVisible = true;
-    private int lastScrollY = 0;
-    private long lastChromeToggleTime = 0L;
-    private static final long CHROME_DEBOUNCE_MS = 350;
-    private static final int CHROME_HIDE_THRESHOLD_PX = 120;
-    private int accumulatedScrollDown = 0;
-    private int accumulatedScrollUp = 0;
-    private static final int SCROLL_STEP = 40;
 
     // ── Dark mode ────────────────────────────────────────────────
     private boolean forceDark = false;
@@ -483,7 +474,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         t.webView.setVisibility(View.VISIBLE);
         t.webView.requestFocus();
         etUrl.setText(t.url != null ? t.url : DEFAULT_HOME);
-        showChrome();
+
         updateTabCountBadge();
 
         // Reset refresh/stop icon when switching tabs
@@ -881,9 +872,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     btnRefresh.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
                 }
                 updateTabUrl(view, url);
-                lastScrollY = 0;
-                accumulatedScrollDown = 0;
-                accumulatedScrollUp = 0;
+
             }
 
             @Override
@@ -899,28 +888,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         });
 
-        wv.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
-            if (v != currentTabWebView()) return;
 
-            int delta = scrollY - lastScrollY;
-            lastScrollY = scrollY;
-
-            if (delta > 0) {
-                accumulatedScrollDown += delta;
-                accumulatedScrollUp = 0;
-            } else if (delta < 0) {
-                accumulatedScrollUp += -delta;
-                accumulatedScrollDown = 0;
-            }
-
-            if (accumulatedScrollDown >= SCROLL_STEP
-                    && scrollY > CHROME_HIDE_THRESHOLD_PX
-                    && chromeVisible) {
-                if (canToggleChromeNow()) { hideChrome(); accumulatedScrollDown = 0; }
-            } else if (accumulatedScrollUp >= SCROLL_STEP && !chromeVisible) {
-                if (canToggleChromeNow()) { showChrome(); accumulatedScrollUp = 0; }
-            }
-        });
 
         wv.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -949,51 +917,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  Chrome hide/show
-    // ═════════════════════════════════════════════════════════════
-    private boolean canToggleChromeNow() {
-        long now = System.currentTimeMillis();
-        if (now - lastChromeToggleTime < CHROME_DEBOUNCE_MS) return false;
-        lastChromeToggleTime = now;
-        return true;
-    }
-
-    private void hideChrome() {
-        if (!chromeVisible) return;
-        chromeVisible = false;
-
-        TranslateAnimation up = new TranslateAnimation(0,0,0,-1);
-        up.setDuration(200); up.setFillAfter(true);
-        TranslateAnimation down = new TranslateAnimation(0,0,0,1);
-        down.setDuration(200); down.setFillAfter(true);
-
-        topBar.startAnimation(up);
-        footerBar.startAnimation(down);
-
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            if (!chromeVisible) {
-                topBar.setVisibility(View.GONE);
-                footerBar.setVisibility(View.GONE);
-            }
-        }, 200);
-    }
-
-    private void showChrome() {
-        if (chromeVisible) return;
-        chromeVisible = true;
-
-        topBar.setVisibility(View.VISIBLE);
-        footerBar.setVisibility(View.VISIBLE);
-
-        TranslateAnimation downIn = new TranslateAnimation(0,0,-1,0);
-        downIn.setDuration(200);
-        TranslateAnimation upIn = new TranslateAnimation(0,0,1,0);
-        upIn.setDuration(200);
-
-        topBar.startAnimation(downIn);
-        footerBar.startAnimation(upIn);
-    }
 
     // ═════════════════════════════════════════════════════════════
     //  URL handling
