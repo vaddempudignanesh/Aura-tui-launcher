@@ -107,7 +107,6 @@
         android:layout_above="@+id/bottomBar"
         android:visibility="gone"
         android:padding="8dp" />
-
     <!-- ===== FULLSCREEN OVERLAY ===== -->
     <RelativeLayout
         android:id="@+id/fullscreenOverlay"
@@ -119,13 +118,11 @@
         android:clickable="true"
         android:focusable="true">
 
-        <!-- ViewPager — NO background so SurfaceView video is visible -->
         <androidx.viewpager2.widget.ViewPager2
             android:id="@+id/fullscreenViewPager"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <!-- ===== VIDEO CONTROLS ===== -->
         <FrameLayout
             android:id="@+id/videoControlsOverlay"
             android:layout_width="match_parent"
@@ -140,7 +137,6 @@
                 android:orientation="vertical"
                 android:visibility="gone">
 
-                <!-- Center: play/skip -->
                 <FrameLayout
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
@@ -185,7 +181,6 @@
                     </LinearLayout>
                 </FrameLayout>
 
-                <!-- Bottom: seekbar + title + actions -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -291,7 +286,7 @@
             </LinearLayout>
         </FrameLayout>
 
-        <!-- ===== INFO HEADER ===== -->
+        <!-- Info header: transparent-ish so video shows through -->
         <LinearLayout
             android:id="@+id/fullscreenInfoHeader"
             android:layout_width="match_parent"
@@ -340,7 +335,6 @@
                 android:ellipsize="middle" />
         </LinearLayout>
 
-        <!-- ===== CLOSE BUTTON ===== -->
         <ImageButton
             android:id="@+id/btnCloseFullscreen"
             android:layout_width="48dp"
@@ -354,7 +348,6 @@
             android:elevation="24dp"
             app:tint="#FFFFFF" />
     </RelativeLayout>
-
     <!-- ===== BOTTOM BAR ===== -->
     <LinearLayout
         android:id="@+id/bottomBar"

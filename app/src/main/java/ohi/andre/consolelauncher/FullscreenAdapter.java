@@ -41,13 +41,10 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
     }
 
     public void setTapCallback(TapCallback cb) {
-        Log.d(LOG_TAG, src() + " setTapCallback: " + cb);
         this.tapCallback = cb;
     }
 
     public void setPageTypeCallback(PageTypeCallback cb) {
-        Log.d(LOG_TAG, src() + " setPageTypeCallback: "
-                + (cb != null ? Integer.toHexString(System.identityHashCode(cb)) : "null"));
         this.pageTypeCallback = cb;
     }
 
@@ -82,16 +79,31 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
 
         log("onBind pos=" + boundPosition + " path=" + path);
 
-        try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
+        // ★ Get the current path this video view holds BEFORE we touch it.
+        String previousVideoPath = null;
+        try { previousVideoPath = holder.videoView.getVideoPath(); } catch (Exception ignored) {}
+
+        // Always reset visibility
         holder.videoView.setVisibility(View.GONE);
         holder.imageView.setVisibility(View.GONE);
         holder.progressBar.setVisibility(View.VISIBLE);
-        holder.imageView.setImageDrawable(null);
-        holder.imageView.setTag(path);
 
         if (isVideoPath(path)) {
-            log("  → VIDEO page");
+            log("  → VIDEO page (previous=" + previousVideoPath + ")");
             holder.videoView.setVisibility(View.VISIBLE);
+
+            // ★ Only stop playback if the view is being reused for a different path
+            boolean pathChanged = previousVideoPath == null
+                    || !previousVideoPath.equals(path);
+            if (pathChanged) {
+                log("  path changed → stopping old playback");
+                try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
+            } else {
+                log("  same path → keeping playback state");
+            }
+
+            // Clear old listener before setting new one
+            holder.videoView.setOnPreparedListener(null);
 
             holder.videoView.setOnPreparedListener(mp -> {
                 int adapterPosition = holder.getBindingAdapterPosition();
@@ -109,9 +121,12 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 if (pageTypeCallback != null) {
                     log("  → dispatching onVideoVisible pos=" + boundPosition);
                     pageTypeCallback.onVideoVisible(holder.videoView, boundPosition);
-                } else {
-                    log("  → WARNING: pageTypeCallback is null!");
                 }
+            });
+
+            // Forward taps from the video surface to the activity
+            holder.videoView.setOnTapListener(() -> {
+                if (tapCallback != null) tapCallback.onTap();
             });
 
             holder.videoView.setOnErrorListener((mp, what, extra) -> {
@@ -121,6 +136,7 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 return true;
             });
 
+            // setVideoPath is idempotent now — it skips if path is unchanged
             try {
                 log("  calling videoView.setVideoPath");
                 holder.videoView.setVideoPath(path);
@@ -133,6 +149,18 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
 
         // IMAGE
         log("  → IMAGE page");
+
+        // If this view was previously a video, stop it
+        if (previousVideoPath != null) {
+            log("  recycled video view → stopping");
+            try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
+            holder.videoView.setOnPreparedListener(null);
+            holder.videoView.setOnTapListener(null);
+        }
+
+        holder.imageView.setImageDrawable(null);
+        holder.imageView.setTag(path);
+
         executor.execute(() -> {
             Bitmap bmp = decodeSampled(path);
             holder.itemView.post(() -> {
@@ -160,8 +188,6 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 if (pageTypeCallback != null) {
                     log("  → dispatching onImageVisible pos=" + boundPosition);
                     pageTypeCallback.onImageVisible(boundPosition);
-                } else {
-                    log("  → WARNING (image): pageTypeCallback is null!");
                 }
             });
         });
@@ -197,6 +223,8 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         log("onViewRecycled");
         try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
         holder.videoView.setVisibility(View.GONE);
+        holder.videoView.setOnPreparedListener(null);
+        holder.videoView.setOnTapListener(null);
         holder.imageView.setVisibility(View.GONE);
         holder.imageView.setImageDrawable(null);
         holder.progressBar.setVisibility(View.GONE);

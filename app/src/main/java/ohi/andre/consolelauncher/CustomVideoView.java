@@ -6,6 +6,7 @@ import android.media.MediaPlayer;
 import android.net.Uri;
 import android.util.AttributeSet;
 import android.util.Log;
+import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 
@@ -19,8 +20,6 @@ import java.io.IOException;
  * because TextureView does not composite correctly inside a ViewPager2 on
  * most Android 9-13 devices — the surface is created and MediaPlayer renders
  * into it, but the final composite shows the pager background (black screen).
- *
- * SurfaceView punches through the window compositor and always renders.
  */
 public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callback {
 
@@ -28,6 +27,10 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
     private static final String SRC = "[CustomVideoView]";
 
     private final String id = Integer.toHexString(System.identityHashCode(this));
+
+    public interface OnTapListener { void onTap(); }
+    private OnTapListener tapListener;
+    public void setOnTapListener(OnTapListener l) { this.tapListener = l; }
 
     private MediaPlayer mediaPlayer;
     private String videoPath;
@@ -70,6 +73,19 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
         getHolder().addCallback(this);
         setFocusable(true);
         setFocusableInTouchMode(true);
+        setClickable(true);
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    //  Tap forwarding
+    // ═════════════════════════════════════════════════════════════
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        if (event.getAction() == MotionEvent.ACTION_UP) {
+            if (tapListener != null) tapListener.onTap();
+        }
+        return true;
     }
 
     // ═════════════════════════════════════════════════════════════
@@ -99,8 +115,20 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
     //  Public API
     // ═════════════════════════════════════════════════════════════
 
+    public String getVideoPath() {
+        return videoPath;
+    }
+
     public void setVideoPath(String path) {
         log("setVideoPath: " + path);
+
+        // ★ If the path is the same and we're already prepared, don't reload.
+        // This prevents restarting the video every time the adapter rebinds.
+        if (path != null && path.equals(videoPath) && mediaPlayer != null) {
+            log("  same path & already prepared → skipping reload");
+            return;
+        }
+
         videoPath = path;
         playWhenReady = false;
         mediaGeneration++;
@@ -140,8 +168,7 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
     }
 
     public void pause() {
-        log("pause() called: mediaPlayer=" + (mediaPlayer != null)
-                + " prepared=" + prepared);
+        log("pause() called");
         playWhenReady = false;
         if (mediaPlayer != null && prepared) {
             try {
@@ -224,14 +251,8 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
                 + " surfaceReady=" + surfaceReady
                 + " videoPath=" + videoPath);
 
-        if (!surfaceReady) {
-            log("  surface not ready, waiting");
-            return;
-        }
-        if (videoPath == null || videoPath.isEmpty()) {
-            log("  no videoPath, waiting");
-            return;
-        }
+        if (!surfaceReady) { log("  surface not ready, waiting"); return; }
+        if (videoPath == null || videoPath.isEmpty()) { log("  no videoPath, waiting"); return; }
 
         final int generation = mediaGeneration;
         final String path = videoPath;
@@ -249,9 +270,7 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
             prepared = false;
             log("  MediaPlayer=" + Integer.toHexString(System.identityHashCode(player)));
 
-            log("  setDataSource: " + path);
             player.setDataSource(path);
-
             log("  setDisplay(holder)");
             player.setDisplay(getHolder());
 
@@ -271,23 +290,16 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
 
                 if (preparedListener != null) {
                     log("  calling preparedListener.onPrepared");
-                    try {
-                        preparedListener.onPrepared(mp);
-                    } catch (Exception e) {
-                        logError("  preparedListener threw", e);
-                    }
+                    try { preparedListener.onPrepared(mp); }
+                    catch (Exception e) { logError("  preparedListener threw", e); }
                 } else {
                     logWarn("  no preparedListener installed!");
                 }
 
                 if (playWhenReady && mediaPlayer == mp) {
                     log("  playWhenReady → starting now");
-                    try {
-                        mp.start();
-                        playWhenReady = false;
-                    } catch (IllegalStateException e) {
-                        logWarn("  start in onPrepared failed");
-                    }
+                    try { mp.start(); playWhenReady = false; }
+                    catch (IllegalStateException e) { logWarn("  start in onPrepared failed"); }
                 }
             });
 
@@ -320,22 +332,13 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
 
         } catch (IOException e) {
             logError("prepareAsync IOException: " + e.getMessage(), e);
-            if (generation == mediaGeneration) {
-                prepared = false;
-                releaseMediaPlayer("prepareAsync-IOException");
-            }
+            if (generation == mediaGeneration) { prepared = false; releaseMediaPlayer("prepareAsync-IOException"); }
         } catch (IllegalArgumentException e) {
             logError("prepareAsync IllegalArgumentException: " + e.getMessage(), e);
-            if (generation == mediaGeneration) {
-                prepared = false;
-                releaseMediaPlayer("prepareAsync-IAE");
-            }
+            if (generation == mediaGeneration) { prepared = false; releaseMediaPlayer("prepareAsync-IAE"); }
         } catch (IllegalStateException e) {
             logError("prepareAsync IllegalStateException: " + e.getMessage(), e);
-            if (generation == mediaGeneration) {
-                prepared = false;
-                releaseMediaPlayer("prepareAsync-ISE");
-            }
+            if (generation == mediaGeneration) { prepared = false; releaseMediaPlayer("prepareAsync-ISE"); }
         } catch (Exception e) {
             logError("prepareAsync unexpected: " + e.getMessage(), e);
             prepared = false;

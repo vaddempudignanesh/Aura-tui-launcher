@@ -84,6 +84,7 @@ public class ZoomableImageView extends AppCompatImageView {
 
                     @Override
                     public boolean onSingleTapConfirmed(MotionEvent e) {
+                        log("onSingleTapConfirmed → dispatching");
                         if (onTapListener != null) onTapListener.onTap();
                         return true;
                     }
@@ -197,7 +198,6 @@ public class ZoomableImageView extends AppCompatImageView {
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
-        log("onSizeChanged: " + oldw + "x" + oldh + " → " + w + "x" + h);
         if ((oldw == 0 || oldh == 0) && w > 0 && h > 0) {
             resetToFit();
         }
@@ -225,9 +225,6 @@ public class ZoomableImageView extends AppCompatImageView {
         imageMatrix.postTranslate(dx, dy);
         setImageMatrix(imageMatrix);
         isZoomed = false;
-        log("resetToFit: img=" + imgW + "x" + imgH
-                + " view=" + viewW + "x" + viewH
-                + " scale=" + scale);
     }
 
     @Override
