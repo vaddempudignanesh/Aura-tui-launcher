@@ -45,6 +45,42 @@
                 android:ellipsize="start"
                 android:paddingStart="8dp" />
 
+            <!-- ✅ Copy icon (visible in selection mode, multiple ok) -->
+            <ImageView
+                android:id="@+id/btn_copy"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_copy"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Copy"
+                android:padding="8dp"
+                app:tint="#00FF00"
+                android:visibility="gone" />
+
+            <!-- ✅ Move icon (visible in selection mode, multiple ok) -->
+            <ImageView
+                android:id="@+id/btn_move"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_move"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Move"
+                android:padding="8dp"
+                app:tint="#00FF00"
+                android:visibility="gone" />
+
+            <!-- ✅ Delete icon (mandatory — always visible in selection mode) -->
+            <ImageView
+                android:id="@+id/btn_delete"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_delete"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Delete"
+                android:padding="8dp"
+                app:tint="#00FF00"
+                android:visibility="gone" />
+
             <ImageView
                 android:id="@+id/btn_close_selection"
                 android:layout_width="40dp"
@@ -79,6 +115,7 @@
             android:visibility="gone" />
 
         <!-- File List -->
+        <!-- File List -->
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/recycler_files"
             android:layout_width="match_parent"
@@ -88,6 +125,119 @@
             android:clipToPadding="false"
             android:paddingBottom="80dp" />
 
+        <!-- Empty View -->
+        <TextView
+            android:id="@+id/tv_empty"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="Empty folder"
+            android:textColor="#00FF00"
+            android:textSize="16sp"
+            android:visibility="gone" />
+
+        <!-- Bottom Footer: switches between action bar and progress bar -->
+        <LinearLayout
+            android:id="@+id/footer_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#FF0A0A0A"
+            android:visibility="gone"
+            android:elevation="8dp">
+
+            <!-- Mode 1: Action Buttons (CANCEL / PASTE) -->
+            <LinearLayout
+                android:id="@+id/footer_actions"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btn_footer_cancel"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="CANCEL"
+                    android:textColor="#FF00FF00"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:background="?attr/selectableItemBackground" />
+
+                <View
+                    android:layout_width="1dp"
+                    android:layout_height="match_parent"
+                    android:background="#FF00AA00" />
+
+                <TextView
+                    android:id="@+id/btn_footer_paste"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="PASTE"
+                    android:textColor="#FF00FF00"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:background="?attr/selectableItemBackground" />
+            </LinearLayout>
+
+            <!-- Mode 2: Progress Bar -->
+            <LinearLayout
+                android:id="@+id/footer_progress"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/tv_progress_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Copying…"
+                    android:textColor="#FF00FF00"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:singleLine="true"
+                    android:ellipsize="middle" />
+
+                <TextView
+                    android:id="@+id/tv_progress_stats"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="0 / 0"
+                    android:textColor="#FF00AA00"
+                    android:textSize="11sp"
+                    android:singleLine="true"
+                    android:ellipsize="end" />
+
+                <ProgressBar
+                    android:id="@+id/progress_bar"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="8dp"
+                    android:layout_marginTop="6dp"
+                    android:max="100"
+                    android:progress="0"
+                    android:progressTint="#FF00FF00"
+                    android:progressBackgroundTint="#FF1A1A1A" />
+
+                <TextView
+                    android:id="@+id/tv_progress_path"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text=""
+                    android:textColor="#FF00AA00"
+                    android:textSize="10sp"
+                    android:singleLine="true"
+                    android:ellipsize="start" />
+            </LinearLayout>
+        </LinearLayout>
         <!-- Empty View -->
         <TextView
             android:id="@+id/tv_empty"

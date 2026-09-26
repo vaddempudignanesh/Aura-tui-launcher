@@ -124,4 +124,34 @@
         <item name="android:windowFullscreen">false</item>
         <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="p">shortEdges</item>
     </style>
+
+    <!-- Black popup menu with green text -->
+    <style name="PopupMenu.Black" parent="Widget.AppCompat.PopupMenu">
+        <item name="android:popupBackground">@drawable/popup_bg</item>
+        <item name="android:popupElevation">0dp</item>
+        <item name="android:textColor">#FF00FF00</item>
+        <item name="android:textColorPrimary">#FF00FF00</item>
+        <item name="android:textColorSecondary">#FF00AA00</item>
+        <item name="android:itemBackground">@drawable/popup_item_bg</item>
+        <item name="android:itemTextAppearance">@style/BlackPopupItemText</item>
+    </style>
+
+    <style name="BlackPopupItemText" parent="TextAppearance.AppCompat.Widget.PopupMenu.Large">
+        <item name="android:textColor">#FF00FF00</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <style name="BlackDialog" parent="Theme.AppCompat.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/popup_bg</item>
+        <item name="android:textColorPrimary">#FF00FF00</item>
+        <item name="android:textColor">#FF00FF00</item>
+        <item name="android:background">#FF000000</item>
+        <item name="colorAccent">#FF00FF00</item>
+        <item name="android:colorAccent">#FF00FF00</item>
+        <item name="colorControlActivated">#FF00FF00</item>
+        <item name="android:colorControlActivated">#FF00FF00</item>
+        <item name="colorControlNormal">#FF00AA00</item>
+        <item name="android:colorControlNormal">#FF00AA00</item>
+        <item name="android:alertDialogTheme">@style/BlackDialog</item>
+    </style>
 </resources>
