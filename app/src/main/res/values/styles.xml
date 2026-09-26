@@ -113,4 +113,9 @@
     </style>
 
 
+    <style name="LegacyVideoButton">
+        <item name="android:background">#00000000</item>
+        <item name="android:scaleType">centerInside</item>
+        <item name="android:tint">#FFFFFF</item>
+    </style>
 </resources>

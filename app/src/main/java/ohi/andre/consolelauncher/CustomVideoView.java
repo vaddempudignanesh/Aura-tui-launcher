@@ -1,13 +1,13 @@
 package ohi.andre.consolelauncher;
 
 import android.content.Context;
-import android.graphics.SurfaceTexture;
+import android.graphics.PixelFormat;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.util.AttributeSet;
 import android.util.Log;
-import android.view.Surface;
-import android.view.TextureView;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -15,26 +15,26 @@ import androidx.annotation.Nullable;
 import java.io.IOException;
 
 /**
- * TextureView based video player with unified debug logging.
+ * SurfaceView-based video player. SurfaceView is used instead of TextureView
+ * because TextureView does not composite correctly inside a ViewPager2 on
+ * most Android 9-13 devices — the surface is created and MediaPlayer renders
+ * into it, but the final composite shows the pager background (black screen).
  *
- * Every state transition is logged with the tag "gallery-tui" and the suffix
- * "[CustomVideoView]" so we can grep all media-player logs together.
+ * SurfaceView punches through the window compositor and always renders.
  */
-public class CustomVideoView extends TextureView {
+public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callback {
 
     public static final String LOG_TAG = "gallery-tui";
     private static final String SRC = "[CustomVideoView]";
 
-    // ── Instance identity ──────────────────────────────────────
     private final String id = Integer.toHexString(System.identityHashCode(this));
 
-    // ── MediaPlayer state ──────────────────────────────────────
     private MediaPlayer mediaPlayer;
-    private Surface surface;
     private String videoPath;
 
     private boolean prepared = false;
     private boolean playWhenReady = false;
+    private boolean surfaceReady = false;
 
     private int mediaGeneration = 0;
 
@@ -42,7 +42,6 @@ public class CustomVideoView extends TextureView {
     private MediaPlayer.OnErrorListener errorListener;
     private MediaPlayer.OnCompletionListener completionListener;
 
-    // ── Constructors ───────────────────────────────────────────
     public CustomVideoView(@NonNull Context context) {
         super(context);
         init("ctor1");
@@ -60,74 +59,52 @@ public class CustomVideoView extends TextureView {
         init("ctor3");
     }
 
-    private void log(String msg) {
-        Log.d(LOG_TAG, SRC + " [" + id + "] " + msg);
-    }
-
-    private void logWarn(String msg) {
-        Log.w(LOG_TAG, SRC + " [" + id + "] " + msg);
-    }
-
-    private void logError(String msg, Throwable t) {
-        Log.e(LOG_TAG, SRC + " [" + id + "] " + msg, t);
-    }
+    private void log(String msg) { Log.d(LOG_TAG, SRC + " [" + id + "] " + msg); }
+    private void logWarn(String msg) { Log.w(LOG_TAG, SRC + " [" + id + "] " + msg); }
+    private void logError(String msg, Throwable t) { Log.e(LOG_TAG, SRC + " [" + id + "] " + msg, t); }
 
     private void init(String source) {
         log("init from " + source);
-
-        // TextureView for video must be opaque — some devices refuse to
-        // render video into a non-opaque TextureView surface.
-        setOpaque(true);
-
-        setSurfaceTextureListener(new SurfaceTextureListener() {
-            @Override
-            public void onSurfaceTextureAvailable(
-                    @NonNull SurfaceTexture surfaceTexture,
-                    int width,
-                    int height) {
-                log("onSurfaceTextureAvailable: " + width + "x" + height
-                        + " st=" + Integer.toHexString(System.identityHashCode(surfaceTexture)));
-                releaseSurfaceOnly();
-                surface = new Surface(surfaceTexture);
-                openVideoIfReady("surfaceAvailable");
-            }
-
-            @Override
-            public void onSurfaceTextureSizeChanged(
-                    @NonNull SurfaceTexture surfaceTexture,
-                    int width, int height) {
-                log("onSurfaceTextureSizeChanged: " + width + "x" + height);
-            }
-
-            @Override
-            public boolean onSurfaceTextureDestroyed(
-                    @NonNull SurfaceTexture surfaceTexture) {
-                log("onSurfaceTextureDestroyed");
-                releaseMediaPlayer("surfaceDestroyed");
-                releaseSurfaceOnly();
-                return true;
-            }
-
-            @Override
-            public void onSurfaceTextureUpdated(
-                    @NonNull SurfaceTexture surfaceTexture) {
-                // Too noisy — skip
-            }
-        });
+        setZOrderOnTop(false);
+        getHolder().setFormat(PixelFormat.TRANSLUCENT);
+        getHolder().addCallback(this);
+        setFocusable(true);
+        setFocusableInTouchMode(true);
     }
 
     // ═════════════════════════════════════════════════════════════
-    //  Public API (VideoView-compatible)
+    //  SurfaceHolder.Callback
+    // ═════════════════════════════════════════════════════════════
+
+    @Override
+    public void surfaceCreated(@NonNull SurfaceHolder holder) {
+        log("surfaceCreated");
+        surfaceReady = true;
+        openVideoIfReady("surfaceCreated");
+    }
+
+    @Override
+    public void surfaceChanged(@NonNull SurfaceHolder holder, int format, int width, int height) {
+        log("surfaceChanged: " + width + "x" + height + " format=" + format);
+    }
+
+    @Override
+    public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+        log("surfaceDestroyed");
+        surfaceReady = false;
+        releaseMediaPlayer("surfaceDestroyed");
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    //  Public API
     // ═════════════════════════════════════════════════════════════
 
     public void setVideoPath(String path) {
         log("setVideoPath: " + path);
         videoPath = path;
         playWhenReady = false;
-
         mediaGeneration++;
         log("  mediaGeneration → " + mediaGeneration);
-
         releaseMediaPlayer("setVideoPath");
         openVideoIfReady("setVideoPath");
     }
@@ -136,7 +113,6 @@ public class CustomVideoView extends TextureView {
         log("setVideoURI: " + uri);
         videoPath = uri != null ? uri.toString() : null;
         playWhenReady = false;
-
         mediaGeneration++;
         releaseMediaPlayer("setVideoURI");
         openVideoIfReady("setVideoURI");
@@ -145,7 +121,6 @@ public class CustomVideoView extends TextureView {
     public void start() {
         log("start() called: mediaPlayer=" + (mediaPlayer != null)
                 + " prepared=" + prepared);
-
         if (mediaPlayer != null && prepared) {
             try {
                 if (!mediaPlayer.isPlaying()) {
@@ -168,7 +143,6 @@ public class CustomVideoView extends TextureView {
         log("pause() called: mediaPlayer=" + (mediaPlayer != null)
                 + " prepared=" + prepared);
         playWhenReady = false;
-
         if (mediaPlayer != null && prepared) {
             try {
                 if (mediaPlayer.isPlaying()) {
@@ -221,7 +195,6 @@ public class CustomVideoView extends TextureView {
     public void setOnPreparedListener(MediaPlayer.OnPreparedListener listener) {
         log("setOnPreparedListener: " + listener);
         preparedListener = listener;
-
         if (prepared && mediaPlayer != null && listener != null) {
             log("  already prepared → delivering immediately");
             try {
@@ -248,10 +221,10 @@ public class CustomVideoView extends TextureView {
 
     private void openVideoIfReady(String caller) {
         log("openVideoIfReady (from " + caller + ")"
-                + " surface=" + (surface != null)
+                + " surfaceReady=" + surfaceReady
                 + " videoPath=" + videoPath);
 
-        if (surface == null) {
+        if (!surfaceReady) {
             log("  surface not ready, waiting");
             return;
         }
@@ -264,7 +237,6 @@ public class CustomVideoView extends TextureView {
         final String path = videoPath;
 
         log("  creating MediaPlayer for gen=" + generation);
-
         releaseMediaPlayer("openVideoIfReady-pre");
         if (generation != mediaGeneration) {
             log("  generation changed during release, aborting");
@@ -280,8 +252,8 @@ public class CustomVideoView extends TextureView {
             log("  setDataSource: " + path);
             player.setDataSource(path);
 
-            log("  setSurface");
-            player.setSurface(surface);
+            log("  setDisplay(holder)");
+            player.setDisplay(getHolder());
 
             player.setOnPreparedListener(mp -> {
                 log("★ onPrepared fired for gen=" + generation
@@ -382,6 +354,7 @@ public class CustomVideoView extends TextureView {
             try { player.setOnPreparedListener(null); } catch (Exception ignored) {}
             try { player.setOnCompletionListener(null); } catch (Exception ignored) {}
             try { player.setOnErrorListener(null); } catch (Exception ignored) {}
+            try { player.setDisplay(null); } catch (Exception ignored) {}
             try { player.stop(); } catch (Exception ignored) {}
             try { player.reset(); } catch (Exception ignored) {}
             try { player.release(); } catch (Exception ignored) {}
@@ -389,18 +362,6 @@ public class CustomVideoView extends TextureView {
             log("releaseMediaPlayer (from " + caller + "): no-op (null)");
         }
     }
-
-    private void releaseSurfaceOnly() {
-        if (surface != null) {
-            log("releaseSurfaceOnly");
-            try { surface.release(); } catch (Exception ignored) {}
-            surface = null;
-        }
-    }
-
-    // ═════════════════════════════════════════════════════════════
-    //  Diagnostics
-    // ═════════════════════════════════════════════════════════════
 
     @Override
     protected void onAttachedToWindow() {

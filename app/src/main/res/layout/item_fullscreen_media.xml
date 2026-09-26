@@ -3,17 +3,9 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent"
+    android:background="#000000"
     android:clipChildren="false"
-    android:clipToPadding="false"
-    android:gravity="center">
-
-    <ProgressBar
-        android:id="@+id/fullscreen_progress"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:visibility="visible" />
+    android:clipToPadding="false">
 
     <ohi.andre.consolelauncher.ZoomableImageView
         android:id="@+id/fullscreen_image"
@@ -29,6 +21,12 @@
         android:id="@+id/fullscreen_video"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <ProgressBar
+        android:id="@+id/fullscreen_progress"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
         android:layout_gravity="center"
         android:visibility="gone" />
 

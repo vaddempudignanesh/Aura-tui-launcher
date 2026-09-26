@@ -80,11 +80,8 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         final int boundPosition = position;
         final String path = paths.get(position);
 
-        log("onBind pos=" + boundPosition + " path=" + path
-                + " pageTypeCallback=" + (pageTypeCallback != null
-                ? Integer.toHexString(System.identityHashCode(pageTypeCallback)) : "null"));
+        log("onBind pos=" + boundPosition + " path=" + path);
 
-        // Reset recycled page
         try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
         holder.videoView.setVisibility(View.GONE);
         holder.imageView.setVisibility(View.GONE);
@@ -99,9 +96,7 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
             holder.videoView.setOnPreparedListener(mp -> {
                 int adapterPosition = holder.getBindingAdapterPosition();
                 log("  adapter.onPrepared pos=" + boundPosition
-                        + " currentAdapterPos=" + adapterPosition
-                        + " pageTypeCallback=" + (pageTypeCallback != null
-                        ? Integer.toHexString(System.identityHashCode(pageTypeCallback)) : "null"));
+                        + " currentAdapterPos=" + adapterPosition);
                 if (adapterPosition != boundPosition
                         || boundPosition < 0 || boundPosition >= paths.size()
                         || !path.equals(paths.get(boundPosition))) {
@@ -150,7 +145,6 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 }
 
                 holder.progressBar.setVisibility(View.GONE);
-                // ★ Set visible BEFORE bitmap so layout happens, then resetToFit runs
                 holder.imageView.setVisibility(View.VISIBLE);
 
                 if (bmp != null) {

@@ -3,6 +3,7 @@ package ohi.andre.consolelauncher;
 import android.content.Context;
 import android.graphics.Matrix;
 import android.graphics.PointF;
+import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -19,13 +20,11 @@ public class ZoomableImageView extends AppCompatImageView {
     private final String id = Integer.toHexString(System.identityHashCode(this));
     private void log(String msg) { Log.d(LOG_TAG, "[ZoomableImageView:" + id + "] " + msg); }
 
-    private static final float MIN_SCALE = 1.0f;
     private static final float MAX_SCALE = 5.0f;
     private static final float DOUBLE_TAP_SCALE = 2.5f;
 
     private final Matrix imageMatrix = new Matrix();
     private final float[] matrixValues = new float[9];
-    private final PointF lastTouch = new PointF();
     private final PointF startTouch = new PointF();
 
     private ScaleGestureDetector scaleDetector;
@@ -137,11 +136,8 @@ public class ZoomableImageView extends AppCompatImageView {
         float viewH = getHeight();
         if (viewW <= 0 || viewH <= 0) return;
 
-        // Use drawable intrinsic size; if 0 (e.g., bitmap), fall back to bounds
-        float imgW = d.getIntrinsicWidth() > 0 ? d.getIntrinsicWidth() : d.getBounds().width();
-        float imgH = d.getIntrinsicHeight() > 0 ? d.getIntrinsicHeight() : d.getBounds().height();
-        imgW *= scaleX;
-        imgH *= scaleY;
+        float imgW = getDrawableWidth(d) * scaleX;
+        float imgH = getDrawableHeight(d) * scaleY;
 
         float deltaX = 0f, deltaY = 0f;
 
@@ -161,6 +157,30 @@ public class ZoomableImageView extends AppCompatImageView {
         setImageMatrix(imageMatrix);
     }
 
+    private float getDrawableWidth(Drawable d) {
+        int w = d.getIntrinsicWidth();
+        if (w > 0) return w;
+        w = d.getBounds().width();
+        if (w > 0) return w;
+        if (d instanceof BitmapDrawable) {
+            android.graphics.Bitmap b = ((BitmapDrawable) d).getBitmap();
+            if (b != null) return b.getWidth();
+        }
+        return 0;
+    }
+
+    private float getDrawableHeight(Drawable d) {
+        int h = d.getIntrinsicHeight();
+        if (h > 0) return h;
+        h = d.getBounds().height();
+        if (h > 0) return h;
+        if (d instanceof BitmapDrawable) {
+            android.graphics.Bitmap b = ((BitmapDrawable) d).getBitmap();
+            if (b != null) return b.getHeight();
+        }
+        return 0;
+    }
+
     private void updateZoomState() {
         imageMatrix.getValues(matrixValues);
         float scale = matrixValues[Matrix.MSCALE_X];
@@ -174,7 +194,6 @@ public class ZoomableImageView extends AppCompatImageView {
         post(this::resetToFit);
     }
 
-    /** ★★ FIX: Re-fit when the view is measured/laid out. */
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
@@ -186,33 +205,14 @@ public class ZoomableImageView extends AppCompatImageView {
 
     private void resetToFit() {
         Drawable d = getDrawable();
-        if (d == null || getWidth() == 0 || getHeight() == 0) {
-            log("resetToFit bailed (drawable=" + (d != null)
-                    + " w=" + getWidth() + " h=" + getHeight() + ")");
-            return;
-        }
+        if (d == null || getWidth() == 0 || getHeight() == 0) return;
 
         float viewW = getWidth();
         float viewH = getHeight();
 
-        // Intrinsic size for bitmaps is often -1; use bounds as fallback
-        float imgW = d.getIntrinsicWidth();
-        float imgH = d.getIntrinsicHeight();
-        if (imgW <= 0 || imgH <= 0) {
-            imgW = d.getBounds().width();
-            imgH = d.getBounds().height();
-        }
-        if (imgW <= 0 || imgH <= 0) {
-            // Last resort: use bitmap directly if it's a BitmapDrawable
-            if (d instanceof android.graphics.drawable.BitmapDrawable) {
-                android.graphics.Bitmap bmp = ((android.graphics.drawable.BitmapDrawable) d).getBitmap();
-                if (bmp != null) { imgW = bmp.getWidth(); imgH = bmp.getHeight(); }
-            }
-        }
-        if (imgW <= 0 || imgH <= 0) {
-            log("resetToFit bailed (imgW=" + imgW + " imgH=" + imgH + ")");
-            return;
-        }
+        float imgW = getDrawableWidth(d);
+        float imgH = getDrawableHeight(d);
+        if (imgW <= 0 || imgH <= 0) return;
 
         float scale = Math.min(viewW / imgW, viewH / imgH);
         baseScale = scale;
@@ -237,7 +237,6 @@ public class ZoomableImageView extends AppCompatImageView {
 
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                lastTouch.set(event.getX(), event.getY());
                 startTouch.set(event.getX(), event.getY());
                 if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                 return true;
@@ -268,11 +267,6 @@ public class ZoomableImageView extends AppCompatImageView {
 
     @Override
     public boolean canScrollHorizontally(int direction) { return isZoomed; }
-
-    public void toggleZoom() {
-        if (isZoomed()) { currentScale = baseScale; resetToFit(); }
-        else { currentScale = baseScale * 2.5f; setScaleTo(currentScale, getWidth() / 2f, getHeight() / 2f); updateZoomState(); }
-    }
 
     public boolean isZoomed() {
         imageMatrix.getValues(matrixValues);

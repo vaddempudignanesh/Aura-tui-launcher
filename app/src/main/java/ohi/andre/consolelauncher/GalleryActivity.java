@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Color;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -25,6 +26,7 @@ import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.VideoView;
@@ -37,9 +39,6 @@ import androidx.core.content.FileProvider;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.viewpager2.widget.ViewPager2;
-
-import android.graphics.Color;
-import android.graphics.drawable.GradientDrawable;
 
 import java.io.File;
 import java.text.SimpleDateFormat;
@@ -56,16 +55,10 @@ public class GalleryActivity extends AppCompatActivity {
 
     private static final String LOG_TAG = "gallery-tui";
     private final String idHash = Integer.toHexString(System.identityHashCode(this));
+    private String src() { return "[GalleryActivity:" + idHash + "]"; }
+    private void log(String msg) { Log.d(LOG_TAG, src() + " " + msg); }
 
-    private String src() {
-        return "[GalleryActivity:" + idHash + "]";
-    }
-
-    private void log(String msg) {
-        Log.d(LOG_TAG, src() + " " + msg);
-    }
-
-    // ===================== VIEW DECLARATIONS =====================
+    // ===================== VIEWS =====================
     private RecyclerView recyclerView;
     private RecyclerView albumRecycler;
     private GalleryAdapter adapter;
@@ -83,7 +76,7 @@ public class GalleryActivity extends AppCompatActivity {
     private List<String> albumList = new ArrayList<>();
     private boolean showAlbums = false;
 
-    // Fullscreen viewer (in-activity overlay)
+    // ===== FULLSCREEN OVERLAY =====
     private RelativeLayout fullscreenOverlay;
     private ViewPager2 fullscreenViewPager;
     private FullscreenAdapter fullscreenAdapter;
@@ -91,10 +84,31 @@ public class GalleryActivity extends AppCompatActivity {
     private final List<String> fullscreenMediaPaths = new ArrayList<>();
     private int fullscreenCurrentPosition = 0;
 
-    // ★ Track the currently-visible CustomVideoView AND the page it belongs to
     private CustomVideoView currentFullscreenVideo = null;
     private int currentFullscreenVideoPosition = -1;
     private boolean currentFullscreenPageIsVideo = false;
+
+    // ===== IN-OVERLAY VIDEO CONTROLS =====
+    private LinearLayout videoControlContainer;
+    private ImageButton btnCenterPlayPause;
+    private ImageButton btnSkipForwardOverlay;
+    private ImageButton btnSkipBackwardOverlay;
+    private ImageButton btnFavoriteOverlay;
+    private ImageButton btnInfoOverlay;
+    private ImageButton btnDeleteOverlay;
+    private ImageButton btnRotateOverlay;
+    private TextView videoTimeCurrent;
+    private TextView videoTimeTotal;
+    private TextView videoTitleOverlay;
+    private SeekBar videoSeekBar;
+    private boolean isOverlayVideoPlaying = false;
+    private boolean overlayControlsVisible = true;
+    private Runnable overlayHideControlsRunnable;
+    private Runnable overlayProgressRunnable;
+
+    private static final int OVERLAY_CONTROLS_TIMEOUT = 3000;
+    private static final int SKIP_FORWARD_MS = 15000;
+    private static final int SKIP_BACKWARD_MS = 5000;
 
     private TextView titleView;
     private LinearLayout sortOptions;
@@ -108,11 +122,11 @@ public class GalleryActivity extends AppCompatActivity {
     private enum FilterMode { ALL, IMAGES, VIDEOS, FAVORITES, BIN }
     private FilterMode currentFilter = FilterMode.ALL;
 
-    // Legacy in-gallery video player (unused now that fullscreen handles video)
+    // Legacy (unused) video player
     private RelativeLayout videoPlayerContainer;
     private VideoView videoView;
     private ImageButton btnPlayPause, btnSkipForward, btnSkipBackward;
-    private ImageButton btnCenterPlayPause, btnRotate, btnFavorite, btnDelete, btnInfo, btnCloseVideo;
+    private ImageButton btnRotate, btnFavorite, btnDelete, btnInfo, btnCloseVideo;
     private TextView videoTime;
     private LinearLayout videoCenterControls, videoBottomControls;
     private Handler videoHandler = new Handler(Looper.getMainLooper());
@@ -132,22 +146,16 @@ public class GalleryActivity extends AppCompatActivity {
                     result -> {
                         boolean isGranted = true;
                         for (Map.Entry<String, Boolean> entry : result.entrySet()) {
-                            if (!entry.getValue()) {
-                                isGranted = false;
-                                break;
-                            }
+                            if (!entry.getValue()) { isGranted = false; break; }
                         }
-                        if (isGranted) {
-                            loadMedia();
-                        } else {
-                            Toast.makeText(this, "Permission denied. Cannot load media.", Toast.LENGTH_LONG).show();
+                        if (isGranted) loadMedia();
+                        else {
+                            Toast.makeText(this, "Permission denied.", Toast.LENGTH_LONG).show();
                             finish();
                         }
                     });
 
-    private boolean isActivityAlive() {
-        return !isFinishing() && !isDestroyed();
-    }
+    private boolean isActivityAlive() { return !isFinishing() && !isDestroyed(); }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -164,7 +172,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
         getWindow().setBackgroundDrawableResource(android.R.color.transparent);
 
-        // ===== INIT VIEWS =====
+        // ===== MAIN VIEWS =====
         recyclerView = findViewById(R.id.galleryRecycler);
         albumRecycler = findViewById(R.id.albumRecycler);
         titleView = findViewById(R.id.titleGallery);
@@ -172,14 +180,7 @@ public class GalleryActivity extends AppCompatActivity {
         videoPlayerContainer = findViewById(R.id.videoPlayerContainer);
         videoView = findViewById(R.id.videoView);
         btnPlayPause = findViewById(R.id.btnPlayPause);
-        btnCenterPlayPause = findViewById(R.id.btnCenterPlayPause);
-        btnSkipForward = findViewById(R.id.btnSkipForward);
-        btnSkipBackward = findViewById(R.id.btnSkipBackward);
         btnCloseVideo = findViewById(R.id.btnCloseVideo);
-        btnRotate = findViewById(R.id.btnRotate);
-        btnFavorite = findViewById(R.id.btnFavorite);
-        btnDelete = findViewById(R.id.btnDelete);
-        btnInfo = findViewById(R.id.btnInfo);
         videoTime = findViewById(R.id.videoTime);
         videoCenterControls = findViewById(R.id.videoCenterControls);
         videoBottomControls = findViewById(R.id.videoBottomControls);
@@ -201,11 +202,8 @@ public class GalleryActivity extends AppCompatActivity {
 
         ImageButton btnBack = findViewById(R.id.btnBackGallery);
         btnBack.setOnClickListener(v -> {
-            if (showAlbums || currentAlbum != null) {
-                navigateBackFromAlbum();
-            } else {
-                finish();
-            }
+            if (showAlbums || currentAlbum != null) navigateBackFromAlbum();
+            else finish();
         });
 
         TextView btnHome = findViewById(R.id.btnHome);
@@ -223,29 +221,20 @@ public class GalleryActivity extends AppCompatActivity {
 
         btnHome.setOnClickListener(v -> {
             animateButtonBounce(v);
-            currentFilter = FilterMode.ALL;
-            currentAlbum = null;
-            titleView.setText("Gallery");
-            showAlbums = false;
-            albumRecycler.setVisibility(View.GONE);
-            recyclerView.setVisibility(View.VISIBLE);
-            applyFilter();
-            sortOptions.setVisibility(View.GONE);
-            updateBarsVisibility();
+            currentFilter = FilterMode.ALL; currentAlbum = null;
+            titleView.setText("Gallery"); showAlbums = false;
+            albumRecycler.setVisibility(View.GONE); recyclerView.setVisibility(View.VISIBLE);
+            applyFilter(); sortOptions.setVisibility(View.GONE); updateBarsVisibility();
         });
 
         btnAlbums.setOnClickListener(v -> {
             animateButtonBounce(v);
             if (showAlbums) {
-                showAlbums = false;
-                albumRecycler.setVisibility(View.GONE);
-                recyclerView.setVisibility(View.VISIBLE);
-                applyFilter();
+                showAlbums = false; albumRecycler.setVisibility(View.GONE);
+                recyclerView.setVisibility(View.VISIBLE); applyFilter();
             } else {
-                showAlbums = true;
-                loadAlbums();
-                recyclerView.setVisibility(View.GONE);
-                albumRecycler.setVisibility(View.VISIBLE);
+                showAlbums = true; loadAlbums();
+                recyclerView.setVisibility(View.GONE); albumRecycler.setVisibility(View.VISIBLE);
                 sortOptions.setVisibility(View.GONE);
             }
             updateBarsVisibility();
@@ -266,12 +255,27 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenInfoDetails = findViewById(R.id.fullscreenInfoDetails);
         fullscreenInfoPath = findViewById(R.id.fullscreenInfoPath);
 
+        // In-overlay video controls
+        videoControlContainer = findViewById(R.id.videoControlContainer);
+        btnCenterPlayPause = findViewById(R.id.btnCenterPlayPause);
+        btnSkipForwardOverlay = findViewById(R.id.btnSkipForward);
+        btnSkipBackwardOverlay = findViewById(R.id.btnSkipBackward);
+        btnFavoriteOverlay = findViewById(R.id.btnFavorite);
+        btnInfoOverlay = findViewById(R.id.btnInfo);
+        btnDeleteOverlay = findViewById(R.id.btnDelete);
+        btnRotateOverlay = findViewById(R.id.btnRotate);
+        videoTimeCurrent = findViewById(R.id.videoTimeCurrent);
+        videoTimeTotal = findViewById(R.id.videoTimeTotal);
+        videoTitleOverlay = findViewById(R.id.videoTitle);
+        videoSeekBar = findViewById(R.id.videoSeekBar);
+
         btnCloseFullscreen.setOnClickListener(v -> closeFullscreenViewer());
 
-        // Create adapter with the (mutable) shared list
+        setupOverlayVideoControls();
+
+        // Adapter
         fullscreenAdapter = new FullscreenAdapter(fullscreenMediaPaths, this);
         log("fullscreenAdapter created: " + Integer.toHexString(System.identityHashCode(fullscreenAdapter)));
-
         fullscreenAdapter.setTapCallback(this::toggleFullscreenChrome);
 
         fullscreenAdapter.setPageTypeCallback(new FullscreenAdapter.PageTypeCallback() {
@@ -279,17 +283,17 @@ public class GalleryActivity extends AppCompatActivity {
             public void onImageVisible(int position) {
                 log("★★ onImageVisible pos=" + position
                         + " current=" + fullscreenCurrentPosition);
-
-                // Only act if this image is the page we're actually on.
-                // Images fire for off-screen adjacent pages too.
                 if (position != fullscreenCurrentPosition) return;
 
                 currentFullscreenPageIsVideo = false;
+                isOverlayVideoPlaying = false;
                 if (currentFullscreenVideo != null) {
                     try { currentFullscreenVideo.stopPlayback(); } catch (Exception ignored) {}
                     currentFullscreenVideo = null;
                     currentFullscreenVideoPosition = -1;
                 }
+                if (videoControlContainer != null) videoControlContainer.setVisibility(View.GONE);
+                videoHandler.removeCallbacks(overlayProgressRunnable);
             }
 
             @Override
@@ -298,18 +302,13 @@ public class GalleryActivity extends AppCompatActivity {
                         + " current=" + fullscreenCurrentPosition
                         + " videoView=" + Integer.toHexString(System.identityHashCode(videoView)));
 
-                // The adapter fires this as soon as the MediaPlayer is prepared.
-                // That can happen BEFORE onPageSelected for the same page
-                // (ViewPager2 preloads adjacent pages).
-                //
-                // If the prepared video IS the current page, start it now.
-                // Otherwise defer to onPageSelected, which will start it
-                // when the page actually becomes current.
+                // If this video is for the current page, start it now.
                 if (position == fullscreenCurrentPosition) {
                     log("  video is for the current page — starting now");
                     currentFullscreenPageIsVideo = true;
                     currentFullscreenVideo = videoView;
                     currentFullscreenVideoPosition = position;
+                    isOverlayVideoPlaying = true;
                     try {
                         videoView.start();
                         log("  isPlaying=" + videoView.isPlaying()
@@ -317,6 +316,10 @@ public class GalleryActivity extends AppCompatActivity {
                     } catch (Exception e) {
                         Log.e(LOG_TAG, src() + " videoView.start() threw", e);
                     }
+                    updateOverlayTitle();
+                    updateOverlaySeekBar();
+                    startOverlayProgressUpdate();
+                    showOverlayControlsWithTimeout();
                 } else {
                     log("  video is for off-screen page " + position
                             + " — deferring start to onPageSelected");
@@ -327,46 +330,42 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenViewPager.setAdapter(fullscreenAdapter);
         fullscreenViewPager.setOffscreenPageLimit(1);
 
-        fullscreenViewPager.registerOnPageChangeCallback(
-                new ViewPager2.OnPageChangeCallback() {
-                    @Override
-                    public void onPageSelected(int position) {
-                        log("onPageSelected: " + position
-                                + " (was " + fullscreenCurrentPosition + ")");
+        fullscreenViewPager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
+            @Override
+            public void onPageSelected(int position) {
+                log("onPageSelected: " + position
+                        + " (was " + fullscreenCurrentPosition + ")");
 
-                        // ★ Stop the previous video ONLY if it belongs to a
-                        // different page than the one we're now on.
-                        // Do NOT stop the video that belongs to the current
-                        // page — that's the one we just started.
-                        if (currentFullscreenVideo != null
-                                && currentFullscreenVideoPosition != position) {
-                            log("  stopping video from page "
-                                    + currentFullscreenVideoPosition
-                                    + " (now on " + position + ")");
-                            try { currentFullscreenVideo.stopPlayback(); } catch (Exception ignored) {}
-                            currentFullscreenVideo = null;
-                            currentFullscreenVideoPosition = -1;
-                            currentFullscreenPageIsVideo = false;
-                        }
+                // Stop the previous video ONLY if it belongs to a different page
+                if (currentFullscreenVideo != null
+                        && currentFullscreenVideoPosition != position) {
+                    log("  stopping video from page "
+                            + currentFullscreenVideoPosition
+                            + " (now on " + position + ")");
+                    try { currentFullscreenVideo.stopPlayback(); } catch (Exception ignored) {}
+                    currentFullscreenVideo = null;
+                    currentFullscreenVideoPosition = -1;
+                    currentFullscreenPageIsVideo = false;
+                    isOverlayVideoPlaying = false;
+                    videoHandler.removeCallbacks(overlayProgressRunnable);
+                }
 
-                        // Update the "current page" pointer BEFORE starting
-                        // the new video so any later onVideoVisible callback
-                        // sees the right position.
-                        fullscreenCurrentPosition = position;
-                        fullscreenCurrentIndex = position;
-                        updateFullscreenInfo(position);
+                fullscreenCurrentPosition = position;
+                fullscreenCurrentIndex = position;
+                updateFullscreenInfo(position);
 
-                        // If the new page is a video, find its CustomVideoView
-                        // and start it. This is the authoritative start point.
-                        if (position >= 0 && position < fullscreenMediaPaths.size()) {
-                            String path = fullscreenMediaPaths.get(position);
-                            if (isVideoPath(path)) {
-                                log("  new page is video — searching for its view");
-                                findAndStartVideoForPosition(position);
-                            }
-                        }
+                if (position >= 0 && position < fullscreenMediaPaths.size()) {
+                    String path = fullscreenMediaPaths.get(position);
+                    if (isVideoPath(path)) {
+                        log("  new page is video — searching for its view");
+                        findAndStartVideoForPosition(position);
+                    } else {
+                        if (videoControlContainer != null)
+                            videoControlContainer.setVisibility(View.GONE);
                     }
-                });
+                }
+            }
+        });
 
         btnBinSelected.setOnClickListener(v -> moveSelectedToTrash());
         btnShareSelected.setOnClickListener(v -> shareSelectedItems());
@@ -374,39 +373,24 @@ public class GalleryActivity extends AppCompatActivity {
         btnFavoriteSelected.setOnClickListener(v -> addSelectedToFavorites());
 
         sortImages.setOnClickListener(v -> {
-            currentFilter = FilterMode.IMAGES;
-            currentAlbum = null;
-            titleView.setText("📷 Images");
-            applyFilter();
-            sortOptions.setVisibility(View.GONE);
-            updateBarsVisibility();
+            currentFilter = FilterMode.IMAGES; currentAlbum = null;
+            titleView.setText("📷 Images"); applyFilter();
+            sortOptions.setVisibility(View.GONE); updateBarsVisibility();
         });
-
         sortVideos.setOnClickListener(v -> {
-            currentFilter = FilterMode.VIDEOS;
-            currentAlbum = null;
-            titleView.setText("🎬 Videos");
-            applyFilter();
-            sortOptions.setVisibility(View.GONE);
-            updateBarsVisibility();
+            currentFilter = FilterMode.VIDEOS; currentAlbum = null;
+            titleView.setText("🎬 Videos"); applyFilter();
+            sortOptions.setVisibility(View.GONE); updateBarsVisibility();
         });
-
         sortFavorites.setOnClickListener(v -> {
-            currentFilter = FilterMode.FAVORITES;
-            currentAlbum = null;
-            titleView.setText("⭐ Favorites");
-            applyFilter();
-            sortOptions.setVisibility(View.GONE);
-            updateBarsVisibility();
+            currentFilter = FilterMode.FAVORITES; currentAlbum = null;
+            titleView.setText("⭐ Favorites"); applyFilter();
+            sortOptions.setVisibility(View.GONE); updateBarsVisibility();
         });
-
         sortBin.setOnClickListener(v -> {
-            currentFilter = FilterMode.BIN;
-            currentAlbum = null;
-            titleView.setText("🗑️ Bin");
-            applyFilter();
-            sortOptions.setVisibility(View.GONE);
-            updateBarsVisibility();
+            currentFilter = FilterMode.BIN; currentAlbum = null;
+            titleView.setText("🗑️ Bin"); applyFilter();
+            sortOptions.setVisibility(View.GONE); updateBarsVisibility();
         });
 
         setupVideoControls();
@@ -416,42 +400,196 @@ public class GalleryActivity extends AppCompatActivity {
         if (topNavBar != null) updateTopNavBar();
     }
 
+    // ===================== OVERLAY VIDEO CONTROLS =====================
+
+    private void setupOverlayVideoControls() {
+        if (btnCenterPlayPause != null) {
+            btnCenterPlayPause.setOnClickListener(v -> toggleOverlayPlayPause());
+        }
+        if (btnSkipForwardOverlay != null) {
+            btnSkipForwardOverlay.setOnClickListener(v -> {
+                if (currentFullscreenVideo != null) {
+                    int cur = currentFullscreenVideo.getCurrentPosition();
+                    int dur = currentFullscreenVideo.getDuration();
+                    currentFullscreenVideo.seekTo(Math.min(cur + SKIP_FORWARD_MS, dur));
+                    updateOverlaySeekBar();
+                    showOverlayControlsWithTimeout();
+                }
+            });
+        }
+        if (btnSkipBackwardOverlay != null) {
+            btnSkipBackwardOverlay.setOnClickListener(v -> {
+                if (currentFullscreenVideo != null) {
+                    int cur = currentFullscreenVideo.getCurrentPosition();
+                    currentFullscreenVideo.seekTo(Math.max(cur - SKIP_BACKWARD_MS, 0));
+                    updateOverlaySeekBar();
+                    showOverlayControlsWithTimeout();
+                }
+            });
+        }
+        if (btnRotateOverlay != null) {
+            btnRotateOverlay.setOnClickListener(v -> {
+                int cur = getRequestedOrientation();
+                if (cur == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
+                    setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+                } else {
+                    setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                }
+            });
+        }
+        if (btnFavoriteOverlay != null) {
+            btnFavoriteOverlay.setOnClickListener(v -> {
+                if (fullscreenCurrentPosition >= 0
+                        && fullscreenCurrentPosition < fullscreenMediaPaths.size()) {
+                    String path = fullscreenMediaPaths.get(fullscreenCurrentPosition);
+                    for (MediaItem item : mediaItems) {
+                        if (item.path.equals(path)) {
+                            item.isFavorite = !item.isFavorite;
+                            Toast.makeText(this,
+                                    item.isFavorite ? "⭐ Added to Favorites" : "Removed",
+                                    Toast.LENGTH_SHORT).show();
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+        if (btnInfoOverlay != null) {
+            btnInfoOverlay.setOnClickListener(v -> {
+                if (fullscreenCurrentPosition >= 0
+                        && fullscreenCurrentPosition < fullscreenMediaPaths.size()) {
+                    showFileInfoDialog(fullscreenMediaPaths.get(fullscreenCurrentPosition));
+                }
+            });
+        }
+        if (btnDeleteOverlay != null) {
+            btnDeleteOverlay.setOnClickListener(v -> {
+                if (fullscreenCurrentPosition >= 0
+                        && fullscreenCurrentPosition < fullscreenMediaPaths.size()) {
+                    String path = fullscreenMediaPaths.get(fullscreenCurrentPosition);
+                    for (MediaItem item : mediaItems) {
+                        if (item.path.equals(path)) {
+                            moveToTrash(item);
+                            closeFullscreenViewer();
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+        if (videoSeekBar != null) {
+            videoSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                    if (fromUser && currentFullscreenVideo != null) {
+                        int dur = currentFullscreenVideo.getDuration();
+                        currentFullscreenVideo.seekTo((int) ((progress / 100.0) * dur));
+                        showOverlayControlsWithTimeout();
+                    }
+                }
+                @Override public void onStartTrackingTouch(SeekBar seekBar) { showOverlayControlsWithTimeout(); }
+                @Override public void onStopTrackingTouch(SeekBar seekBar) { showOverlayControlsWithTimeout(); }
+            });
+        }
+    }
+
+    private void toggleOverlayPlayPause() {
+        if (currentFullscreenVideo == null) return;
+        if (isOverlayVideoPlaying) {
+            currentFullscreenVideo.pause();
+            isOverlayVideoPlaying = false;
+            if (btnCenterPlayPause != null)
+                btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_play);
+            videoHandler.removeCallbacks(overlayProgressRunnable);
+            showOverlayControlsWithTimeout();
+        } else {
+            currentFullscreenVideo.start();
+            isOverlayVideoPlaying = true;
+            if (btnCenterPlayPause != null)
+                btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
+            startOverlayProgressUpdate();
+            showOverlayControlsWithTimeout();
+        }
+    }
+
+    private void startOverlayProgressUpdate() {
+        videoHandler.removeCallbacks(overlayProgressRunnable);
+        overlayProgressRunnable = new Runnable() {
+            @Override
+            public void run() {
+                updateOverlaySeekBar();
+                if (isOverlayVideoPlaying) videoHandler.postDelayed(this, 500);
+            }
+        };
+        videoHandler.post(overlayProgressRunnable);
+    }
+
+    private void updateOverlaySeekBar() {
+        if (currentFullscreenVideo == null) return;
+        try {
+            int cur = currentFullscreenVideo.getCurrentPosition();
+            int dur = currentFullscreenVideo.getDuration();
+            if (dur > 0) {
+                if (videoTimeCurrent != null) videoTimeCurrent.setText(formatTime(cur));
+                if (videoTimeTotal != null) videoTimeTotal.setText(formatTime(dur));
+                if (videoSeekBar != null)
+                    videoSeekBar.setProgress((int) ((cur / (float) dur) * 100));
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void showOverlayControlsWithTimeout() {
+        if (videoControlContainer != null)
+            videoControlContainer.setVisibility(View.VISIBLE);
+        overlayControlsVisible = true;
+        videoHandler.removeCallbacks(overlayHideControlsRunnable);
+        overlayHideControlsRunnable = () -> {
+            if (isOverlayVideoPlaying && videoControlContainer != null) {
+                videoControlContainer.setVisibility(View.GONE);
+                overlayControlsVisible = false;
+            }
+        };
+        videoHandler.postDelayed(overlayHideControlsRunnable, OVERLAY_CONTROLS_TIMEOUT);
+    }
+
+    private void updateOverlayTitle() {
+        if (videoTitleOverlay == null) return;
+        if (fullscreenCurrentPosition >= 0
+                && fullscreenCurrentPosition < fullscreenMediaPaths.size()) {
+            File f = new File(fullscreenMediaPaths.get(fullscreenCurrentPosition));
+            videoTitleOverlay.setText(f.getName());
+        }
+    }
+
+    private void toggleFullscreenChrome() {
+        setFullscreenChromeVisible(!fullscreenChromeVisible);
+    }
+
+    private void setFullscreenChromeVisible(boolean visible) {
+        fullscreenChromeVisible = visible;
+        if (fullscreenInfoHeader != null)
+            fullscreenInfoHeader.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (btnCloseFullscreen != null)
+            btnCloseFullscreen.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
     // ===================== VIDEO HELPERS =====================
 
-    /**
-     * Returns true if the given path looks like a video file.
-     * Used by both the adapter-facing code and the page-change logic.
-     */
     private boolean isVideoPath(String path) {
         if (path == null) return false;
         String lower = path.toLowerCase(Locale.ROOT);
-        return lower.endsWith(".mp4")
-                || lower.endsWith(".mkv")
-                || lower.endsWith(".webm")
-                || lower.endsWith(".avi")
-                || lower.endsWith(".mov")
-                || lower.endsWith(".3gp")
-                || lower.endsWith(".m4v")
-                || lower.endsWith(".flv")
-                || lower.endsWith(".wmv");
+        return lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
+                || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
+                || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv");
     }
 
-    /**
-     * Walk the ViewPager2's child RecyclerView, find the CustomVideoView
-     * bound to the given adapter position, and start playback on it.
-     *
-     * Retries a few times if the view isn't laid out yet (ViewPager2 may
-     * still be attaching/measuring the page when onPageSelected fires).
-     */
     private void findAndStartVideoForPosition(int targetPosition) {
         try {
             RecyclerView rv = (RecyclerView) fullscreenViewPager.getChildAt(0);
             if (rv == null) {
-                log("  findAndStartVideo: RecyclerView not ready, retrying");
                 fullscreenViewPager.post(() -> {
-                    if (fullscreenCurrentPosition == targetPosition) {
+                    if (fullscreenCurrentPosition == targetPosition)
                         findAndStartVideoForPosition(targetPosition);
-                    }
                 });
                 return;
             }
@@ -462,11 +600,10 @@ public class GalleryActivity extends AppCompatActivity {
                 if (vh != null && vh.getBindingAdapterPosition() == targetPosition) {
                     CustomVideoView vv = child.findViewById(R.id.fullscreen_video);
                     if (vv != null && vv.getVisibility() == View.VISIBLE) {
-                        // Idempotent: if we already started this exact view
-                        // for this exact position, do nothing.
                         if (currentFullscreenVideo == vv
                                 && currentFullscreenVideoPosition == targetPosition) {
                             log("  findAndStartVideo: already on this video, skipping");
+                            showOverlayControlsWithTimeout();
                             return;
                         }
 
@@ -476,43 +613,45 @@ public class GalleryActivity extends AppCompatActivity {
                         currentFullscreenVideo = vv;
                         currentFullscreenVideoPosition = targetPosition;
                         currentFullscreenPageIsVideo = true;
+                        isOverlayVideoPlaying = true;
                         vv.start();
                         log("  started, isPlaying=" + vv.isPlaying()
                                 + " duration=" + vv.getDuration());
+
+                        if (btnCenterPlayPause != null)
+                            btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
+                        updateOverlayTitle();
+                        updateOverlaySeekBar();
+                        startOverlayProgressUpdate();
+                        showOverlayControlsWithTimeout();
                         return;
                     }
                 }
             }
 
-            // Not found — retry on the next frame. This happens when
-            // ViewPager2 hasn't finished attaching the page yet.
             log("  findAndStartVideo: no visible video view for pos="
                     + targetPosition + " (retrying)");
             fullscreenViewPager.post(() -> {
-                if (fullscreenCurrentPosition == targetPosition) {
+                if (fullscreenCurrentPosition == targetPosition)
                     findAndStartVideoForPosition(targetPosition);
-                }
             });
         } catch (Exception e) {
             Log.e(LOG_TAG, src() + " findAndStartVideo threw", e);
         }
     }
 
-    // ===================== FULLSCREEN OPEN/CLOSE =====================
+    // ===================== OPEN/CLOSE FULLSCREEN =====================
 
     private void openFullscreenViewer(String path) {
         log("openFullscreenViewer: " + path);
 
         fullscreenMediaPaths.clear();
         int currentIndex = 0;
-
         for (int i = 0; i < displayedItems.size(); i++) {
             MediaItem item = displayedItems.get(i);
             if (!item.isTrashed) {
                 fullscreenMediaPaths.add(item.path);
-                if (item.path.equals(path)) {
-                    currentIndex = fullscreenMediaPaths.size() - 1;
-                }
+                if (item.path.equals(path)) currentIndex = fullscreenMediaPaths.size() - 1;
             }
         }
 
@@ -524,14 +663,13 @@ public class GalleryActivity extends AppCompatActivity {
             return;
         }
 
-        // Reset tracking state BEFORE showing the overlay
         fullscreenCurrentPosition = currentIndex;
         fullscreenCurrentIndex = currentIndex;
         currentFullscreenVideo = null;
         currentFullscreenVideoPosition = -1;
         currentFullscreenPageIsVideo = false;
+        isOverlayVideoPlaying = false;
 
-        // Rebind the adapter with the new list
         fullscreenAdapter.notifyDataSetChanged();
         fullscreenViewPager.setCurrentItem(currentIndex, false);
 
@@ -544,29 +682,30 @@ public class GalleryActivity extends AppCompatActivity {
         bottomBar.setVisibility(View.GONE);
         log("  fullscreenOverlay visible");
 
-        // If the initial page is a video, start it directly.
-        // (setCurrentItem(false) may not fire onPageSelected if the
-        //  position is unchanged from the pager's current state.)
         String initialPath = fullscreenMediaPaths.get(currentIndex);
         if (isVideoPath(initialPath)) {
             log("  initial page is video, scheduling start");
-            int finalCurrentIndex = currentIndex;
-            fullscreenViewPager.post(() -> findAndStartVideoForPosition(finalCurrentIndex));
+            int finalIndex = currentIndex;
+            fullscreenViewPager.post(() -> findAndStartVideoForPosition(finalIndex));
+        } else {
+            if (videoControlContainer != null)
+                videoControlContainer.setVisibility(View.GONE);
         }
     }
 
     private void closeFullscreenViewer() {
         log("closeFullscreenViewer");
 
-        // Stop the tracked video
         if (currentFullscreenVideo != null) {
             try { currentFullscreenVideo.stopPlayback(); } catch (Exception ignored) {}
             currentFullscreenVideo = null;
         }
         currentFullscreenVideoPosition = -1;
         currentFullscreenPageIsVideo = false;
+        isOverlayVideoPlaying = false;
+        videoHandler.removeCallbacks(overlayProgressRunnable);
+        videoHandler.removeCallbacks(overlayHideControlsRunnable);
 
-        // Belt-and-braces: walk the pager's children and stop any video
         try {
             RecyclerView rv = (RecyclerView) fullscreenViewPager.getChildAt(0);
             if (rv != null) {
@@ -579,25 +718,14 @@ public class GalleryActivity extends AppCompatActivity {
                 }
             }
         } catch (Exception e) {
-            Log.e(LOG_TAG, src() + " error while stopping videos", e);
+            Log.e(LOG_TAG, src() + " error stopping videos", e);
         }
+
+        if (videoControlContainer != null)
+            videoControlContainer.setVisibility(View.GONE);
 
         fullscreenOverlay.setVisibility(View.GONE);
         bottomBar.setVisibility(View.VISIBLE);
-    }
-
-    private void toggleFullscreenChrome() {
-        setFullscreenChromeVisible(!fullscreenChromeVisible);
-    }
-
-    private void setFullscreenChromeVisible(boolean visible) {
-        fullscreenChromeVisible = visible;
-        if (fullscreenInfoHeader != null) {
-            fullscreenInfoHeader.setVisibility(visible ? View.VISIBLE : View.GONE);
-        }
-        if (btnCloseFullscreen != null) {
-            btnCloseFullscreen.setVisibility(visible ? View.VISIBLE : View.GONE);
-        }
     }
 
     private void updateFullscreenInfo(int position) {
@@ -614,7 +742,23 @@ public class GalleryActivity extends AppCompatActivity {
             String parent = file.getParent();
             fullscreenInfoPath.setText(parent != null ? parent : "");
         }
+        updateOverlayTitle();
     }
+
+    private void showFileInfoDialog(String path) {
+        File file = new File(path);
+        if (!file.exists()) return;
+        StringBuilder info = new StringBuilder();
+        info.append("📄 File: ").append(file.getName()).append("\n");
+        info.append("📏 Size: ").append(formatFileSize(file.length())).append("\n");
+        info.append("📅 Modified: ").append(new SimpleDateFormat("dd/MM/yyyy HH:mm",
+                Locale.getDefault()).format(new Date(file.lastModified()))).append("\n");
+        info.append("🔤 Type: ").append(getFileType(path)).append("\n");
+        info.append("📍 Path: ").append(file.getAbsolutePath());
+        showInfoDialog(info.toString(), "📄 File Info");
+    }
+
+    // ===================== NAV / BARS =====================
 
     private void animateButtonBounce(View button) {
         if (button == null) return;
@@ -649,8 +793,6 @@ public class GalleryActivity extends AppCompatActivity {
             }
         });
     }
-
-    // ===================== BARS VISIBILITY =====================
 
     private void updateBarsVisibility() {
         boolean isBin = currentFilter == FilterMode.BIN;
@@ -693,26 +835,20 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
-    // ===================== NAVIGATION =====================
-
     private void navigateBackFromAlbum() {
         if (currentAlbum != null) {
-            currentAlbum = null;
-            showAlbums = true;
+            currentAlbum = null; showAlbums = true;
             loadAlbums();
             recyclerView.setVisibility(View.GONE);
             albumRecycler.setVisibility(View.VISIBLE);
             titleView.setText("Albums");
-            applyFilter();
-            updateBarsVisibility();
+            applyFilter(); updateBarsVisibility();
         } else if (showAlbums) {
-            showAlbums = false;
-            currentFilter = FilterMode.ALL;
+            showAlbums = false; currentFilter = FilterMode.ALL;
             albumRecycler.setVisibility(View.GONE);
             recyclerView.setVisibility(View.VISIBLE);
             titleView.setText("Gallery");
-            applyFilter();
-            updateBarsVisibility();
+            applyFilter(); updateBarsVisibility();
         }
     }
 
@@ -729,7 +865,6 @@ public class GalleryActivity extends AppCompatActivity {
                     MediaStore.Images.Media.DATE_MODIFIED,
                     MediaStore.Images.Media.BUCKET_DISPLAY_NAME
             };
-
             Cursor imageCursor = null;
             try {
                 imageCursor = getContentResolver().query(
@@ -752,13 +887,9 @@ public class GalleryActivity extends AppCompatActivity {
                     }
                 }
             } catch (SecurityException e) {
-                runOnUiThread(() -> {
-                    if (isActivityAlive()) { applyFilter(); setupRecyclerView(); }
-                });
+                runOnUiThread(() -> { if (isActivityAlive()) { applyFilter(); setupRecyclerView(); } });
                 return;
-            } finally {
-                if (imageCursor != null) imageCursor.close();
-            }
+            } finally { if (imageCursor != null) imageCursor.close(); }
 
             String[] videoProjection = {
                     MediaStore.Video.Media._ID,
@@ -767,7 +898,6 @@ public class GalleryActivity extends AppCompatActivity {
                     MediaStore.Video.Media.DATE_MODIFIED,
                     MediaStore.Video.Media.BUCKET_DISPLAY_NAME
             };
-
             Cursor videoCursor = null;
             try {
                 videoCursor = getContentResolver().query(
@@ -795,20 +925,14 @@ public class GalleryActivity extends AppCompatActivity {
                     finish();
                 });
                 return;
-            } finally {
-                if (videoCursor != null) videoCursor.close();
-            }
+            } finally { if (videoCursor != null) videoCursor.close(); }
 
             Collections.sort(newItems, (a, b) -> Long.compare(b.dateModified, a.dateModified));
 
             mediaItems.clear();
             mediaItems.addAll(newItems);
 
-            runOnUiThread(() -> {
-                applyFilter();
-                setupRecyclerView();
-                showEmptyState();
-            });
+            runOnUiThread(() -> { applyFilter(); setupRecyclerView(); showEmptyState(); });
         });
     }
 
@@ -818,9 +942,8 @@ public class GalleryActivity extends AppCompatActivity {
         List<MediaItem> trashedItems = new ArrayList<>();
         List<File> directories = getStorageDirectoriesProper();
         for (File dir : directories) {
-            if (dir != null && dir.exists()) {
+            if (dir != null && dir.exists())
                 scanDirectoryForTrashedFiles(dir, trashedItems, 0, 6);
-            }
         }
         return trashedItems;
     }
@@ -830,17 +953,16 @@ public class GalleryActivity extends AppCompatActivity {
         List<String> normalizedPaths = new ArrayList<>();
 
         try {
-            StorageManager storageManager = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
-            if (storageManager != null) {
-                List<StorageVolume> volumes = storageManager.getStorageVolumes();
+            StorageManager sm = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+            if (sm != null) {
+                List<StorageVolume> volumes = sm.getStorageVolumes();
                 for (StorageVolume volume : volumes) {
                     try {
-                        File volumeFile = volume.getDirectory();
-                        if (volumeFile != null && volumeFile.exists()) {
-                            String normalizedPath = normalizePath(volumeFile.getAbsolutePath());
-                            if (!normalizedPaths.contains(normalizedPath)) {
-                                directories.add(volumeFile);
-                                normalizedPaths.add(normalizedPath);
+                        File vf = volume.getDirectory();
+                        if (vf != null && vf.exists()) {
+                            String np = normalizePath(vf.getAbsolutePath());
+                            if (!normalizedPaths.contains(np)) {
+                                directories.add(vf); normalizedPaths.add(np);
                             }
                         }
                     } catch (Exception ignored) {}
@@ -853,14 +975,12 @@ public class GalleryActivity extends AppCompatActivity {
                 "/storage/emulated/0", "/mnt/extSdCard", "/mnt/sdcard1",
                 "/mnt/external_sd", "/sdcard1", "/external_sd"
         };
-
         for (String path : commonPaths) {
-            File file = new File(path);
-            if (file.exists() && file.isDirectory()) {
-                String normalizedPath = normalizePath(file.getAbsolutePath());
-                if (!normalizedPaths.contains(normalizedPath)) {
-                    directories.add(file);
-                    normalizedPaths.add(normalizedPath);
+            File f = new File(path);
+            if (f.exists() && f.isDirectory()) {
+                String np = normalizePath(f.getAbsolutePath());
+                if (!normalizedPaths.contains(np)) {
+                    directories.add(f); normalizedPaths.add(np);
                 }
             }
         }
@@ -873,15 +993,14 @@ public class GalleryActivity extends AppCompatActivity {
                     if (child.isDirectory() && !directories.contains(child)) {
                         String path = child.getAbsolutePath().toLowerCase();
                         if (!path.contains("self") && !path.contains("usb")) {
-                            String normalizedPath = normalizePath(child.getAbsolutePath());
+                            String np = normalizePath(child.getAbsolutePath());
                             File dcim = new File(child, "DCIM");
                             File pictures = new File(child, "Pictures");
                             File movies = new File(child, "Movies");
                             File downloads = new File(child, "Download");
                             if ((dcim.exists() || pictures.exists() || movies.exists() || downloads.exists())
-                                    && !normalizedPaths.contains(normalizedPath)) {
-                                directories.add(child);
-                                normalizedPaths.add(normalizedPath);
+                                    && !normalizedPaths.contains(np)) {
+                                directories.add(child); normalizedPaths.add(np);
                             }
                         }
                     }
@@ -898,10 +1017,9 @@ public class GalleryActivity extends AppCompatActivity {
                         while (current != null && current.getParentFile() != null) {
                             String path = current.getAbsolutePath().toLowerCase();
                             if (path.contains("storage") && !path.contains("emulated") && !path.contains("self")) {
-                                String normalizedPath = normalizePath(current.getAbsolutePath());
-                                if (!normalizedPaths.contains(normalizedPath)) {
-                                    directories.add(current);
-                                    normalizedPaths.add(normalizedPath);
+                                String np = normalizePath(current.getAbsolutePath());
+                                if (!normalizedPaths.contains(np)) {
+                                    directories.add(current); normalizedPaths.add(np);
                                 }
                                 break;
                             }
@@ -912,24 +1030,18 @@ public class GalleryActivity extends AppCompatActivity {
             }
         } catch (Exception ignored) {}
 
-        List<File> uniqueDirectories = new ArrayList<>();
-        List<String> uniqueNormalizedPaths = new ArrayList<>();
+        List<File> unique = new ArrayList<>();
+        List<String> uniquePaths = new ArrayList<>();
         for (File dir : directories) {
             try {
-                String canonicalPath = dir.getCanonicalPath();
-                if (!uniqueNormalizedPaths.contains(canonicalPath)) {
-                    uniqueDirectories.add(dir);
-                    uniqueNormalizedPaths.add(canonicalPath);
-                }
+                String cp = dir.getCanonicalPath();
+                if (!uniquePaths.contains(cp)) { unique.add(dir); uniquePaths.add(cp); }
             } catch (Exception e) {
-                String absPath = dir.getAbsolutePath();
-                if (!uniqueNormalizedPaths.contains(absPath)) {
-                    uniqueDirectories.add(dir);
-                    uniqueNormalizedPaths.add(absPath);
-                }
+                String ap = dir.getAbsolutePath();
+                if (!uniquePaths.contains(ap)) { unique.add(dir); uniquePaths.add(ap); }
             }
         }
-        return uniqueDirectories;
+        return unique;
     }
 
     private void scanDirectoryForTrashedFiles(File directory, List<MediaItem> items, int depth, int maxDepth) {
@@ -937,8 +1049,8 @@ public class GalleryActivity extends AppCompatActivity {
 
         try {
             try {
-                String canonicalPath = directory.getCanonicalPath();
-                if (canonicalPath.equals("/storage/emulated/0")
+                String cp = directory.getCanonicalPath();
+                if (cp.equals("/storage/emulated/0")
                         && !directory.getAbsolutePath().equals("/storage/emulated/0")) return;
             } catch (Exception ignored) {}
 
@@ -993,17 +1105,17 @@ public class GalleryActivity extends AppCompatActivity {
         displayedItems.clear();
 
         if (currentFilter == FilterMode.BIN) {
-            List<MediaItem> trashedItems = scanForTrashedFiles();
+            List<MediaItem> trashed = scanForTrashedFiles();
             for (MediaItem item : mediaItems) {
                 if (item.path.contains(".trashed.")) {
                     boolean exists = false;
-                    for (MediaItem existing : trashedItems) {
-                        if (existing.path.equals(item.path)) { exists = true; break; }
+                    for (MediaItem e : trashed) {
+                        if (e.path.equals(item.path)) { exists = true; break; }
                     }
-                    if (!exists) trashedItems.add(item);
+                    if (!exists) trashed.add(item);
                 }
             }
-            displayedItems.addAll(trashedItems);
+            displayedItems.addAll(trashed);
         } else {
             for (MediaItem item : mediaItems) {
                 boolean matchesAlbum = currentAlbum == null
@@ -1035,26 +1147,25 @@ public class GalleryActivity extends AppCompatActivity {
     // ===================== PERMISSIONS =====================
 
     private void checkAndRequestMediaPermissions() {
-        String[] permissionsToRequest;
+        String[] toRequest;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissionsToRequest = new String[]{
+            toRequest = new String[]{
                     Manifest.permission.READ_MEDIA_IMAGES,
                     Manifest.permission.READ_MEDIA_VIDEO
             };
         } else {
-            permissionsToRequest = new String[]{Manifest.permission.READ_EXTERNAL_STORAGE};
+            toRequest = new String[]{Manifest.permission.READ_EXTERNAL_STORAGE};
         }
 
         boolean allGranted = true;
-        for (String permission : permissionsToRequest) {
-            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
-                allGranted = false;
-                break;
+        for (String p : toRequest) {
+            if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+                allGranted = false; break;
             }
         }
 
         if (allGranted) loadMedia();
-        else requestMultiplePermissionsLauncher.launch(permissionsToRequest);
+        else requestMultiplePermissionsLauncher.launch(toRequest);
     }
 
     // ===================== RECYCLER VIEW =====================
@@ -1067,38 +1178,29 @@ public class GalleryActivity extends AppCompatActivity {
             @Override public void onFavoriteToggle(MediaItem item) {
                 if (isActivityAlive()) { item.isFavorite = !item.isFavorite; applyFilter(); }
             }
-
             @Override public void onDelete(MediaItem item) {
                 if (isActivityAlive()) moveToTrash(item);
             }
-
             @Override public void onItemClick(String path) {
                 if (isActivityAlive()) toggleSelection(path);
             }
-
             @Override public boolean isSelectionMode() {
                 return selectionMode && isActivityAlive();
             }
-
             @Override public void onImageClick(String path) {
-                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN) {
+                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN)
                     openFullscreenViewer(path);
-                }
             }
-
             @Override public void onVideoClick(String path) {
-                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN) {
+                if (!selectionMode && isActivityAlive() && currentFilter != FilterMode.BIN)
                     openFullscreenViewer(path);
-                }
             }
-
             @Override public void onRestore(MediaItem item) {
                 if (isActivityAlive()) restoreFromTrash(item);
             }
         });
 
-        GridLayoutManager layoutManager = new GridLayoutManager(this, 3);
-        recyclerView.setLayoutManager(layoutManager);
+        recyclerView.setLayoutManager(new GridLayoutManager(this, 3));
         recyclerView.setAdapter(adapter);
         recyclerView.setHasFixedSize(true);
         recyclerView.setItemViewCacheSize(40);
@@ -1124,9 +1226,9 @@ public class GalleryActivity extends AppCompatActivity {
             while (newFile.exists()) {
                 int dotIndex = cleanName.lastIndexOf(".");
                 if (dotIndex > 0) {
-                    String baseName = cleanName.substring(0, dotIndex);
+                    String base = cleanName.substring(0, dotIndex);
                     String ext = cleanName.substring(dotIndex);
-                    newName = ".trashed." + baseName + "_" + count + ext;
+                    newName = ".trashed." + base + "_" + count + ext;
                 } else {
                     newName = ".trashed." + cleanName + "_" + count;
                 }
@@ -1147,8 +1249,7 @@ public class GalleryActivity extends AppCompatActivity {
 
             for (int i = 0; i < mediaItems.size(); i++) {
                 if (mediaItems.get(i).path.equals(oldPath)) {
-                    mediaItems.set(i, item);
-                    break;
+                    mediaItems.set(i, item); break;
                 }
             }
             applyFilter();
@@ -1158,8 +1259,7 @@ public class GalleryActivity extends AppCompatActivity {
     private void restoreFromTrash(MediaItem item) {
         File file = new File(item.path);
         if (!file.exists()) {
-            Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
-            return;
+            Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show(); return;
         }
 
         String parent = file.getParent();
@@ -1169,15 +1269,15 @@ public class GalleryActivity extends AppCompatActivity {
 
         if (restoredFile.exists()) {
             int count = 1;
-            String baseName = cleanName;
+            String base = cleanName;
             String ext = "";
             int dotIndex = cleanName.lastIndexOf(".");
             if (dotIndex > 0) {
-                baseName = cleanName.substring(0, dotIndex);
+                base = cleanName.substring(0, dotIndex);
                 ext = cleanName.substring(dotIndex);
             }
             while (restoredFile.exists()) {
-                restoredFile = new File(parent, baseName + "_" + count + ext);
+                restoredFile = new File(parent, base + "_" + count + ext);
                 count++;
             }
         }
@@ -1193,8 +1293,7 @@ public class GalleryActivity extends AppCompatActivity {
 
             for (int i = 0; i < mediaItems.size(); i++) {
                 if (mediaItems.get(i).path.equals(oldPath)) {
-                    mediaItems.set(i, item);
-                    break;
+                    mediaItems.set(i, item); break;
                 }
             }
             applyFilter();
@@ -1211,23 +1310,21 @@ public class GalleryActivity extends AppCompatActivity {
                 if (item.path.equals(path)) { moveToTrash(item); break; }
             }
         }
-        clearSelection();
-        applyFilter();
+        clearSelection(); applyFilter();
         Toast.makeText(this, "Moved to Bin", Toast.LENGTH_SHORT).show();
     }
 
     private void restoreSelectedItems() {
         if (selectedItems.isEmpty()) return;
-        List<MediaItem> itemsToRestore = new ArrayList<>();
+        List<MediaItem> toRestore = new ArrayList<>();
         for (String path : selectedItems) {
             for (MediaItem item : mediaItems) {
-                if (item.path.equals(path) && item.isTrashed) { itemsToRestore.add(item); break; }
+                if (item.path.equals(path) && item.isTrashed) { toRestore.add(item); break; }
             }
         }
-        for (MediaItem item : itemsToRestore) restoreFromTrash(item);
-        clearSelection();
-        applyFilter();
-        Toast.makeText(this, "Restored " + itemsToRestore.size() + " items", Toast.LENGTH_SHORT).show();
+        for (MediaItem item : toRestore) restoreFromTrash(item);
+        clearSelection(); applyFilter();
+        Toast.makeText(this, "Restored " + toRestore.size() + " items", Toast.LENGTH_SHORT).show();
     }
 
     private void deletePermanentlySelectedItems() {
@@ -1237,14 +1334,13 @@ public class GalleryActivity extends AppCompatActivity {
                 .setMessage("Are you sure? This cannot be undone.")
                 .setPositiveButton("Delete", (d, w) -> {
                     for (String path : selectedItems) {
-                        File file = new File(path);
-                        if (file.exists()) file.delete();
+                        File f = new File(path);
+                        if (f.exists()) f.delete();
                         for (int i = mediaItems.size() - 1; i >= 0; i--) {
                             if (mediaItems.get(i).path.equals(path)) { mediaItems.remove(i); break; }
                         }
                     }
-                    clearSelection();
-                    applyFilter();
+                    clearSelection(); applyFilter();
                     Toast.makeText(this, "Deleted permanently", Toast.LENGTH_SHORT).show();
                 })
                 .setNegativeButton("Cancel", null)
@@ -1262,9 +1358,7 @@ public class GalleryActivity extends AppCompatActivity {
         if (selectedItems.contains(path)) selectedItems.remove(path);
         else selectedItems.add(path);
         updateSelectionUI();
-        if (adapter != null) {
-            adapter.updateSelectedItems(selectedItems);
-        }
+        if (adapter != null) adapter.updateSelectedItems(selectedItems);
     }
 
     private void updateSelectionUI() {
@@ -1310,11 +1404,11 @@ public class GalleryActivity extends AppCompatActivity {
                 File file = new File(selectedItems.get(0));
                 if (!file.exists()) { Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show(); return; }
                 Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
-                Intent shareIntent = new Intent(Intent.ACTION_SEND);
-                shareIntent.setType(getMimeType(file.getAbsolutePath()));
-                shareIntent.putExtra(Intent.EXTRA_STREAM, uri);
-                shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                startActivity(Intent.createChooser(shareIntent, "Share via"));
+                Intent i = new Intent(Intent.ACTION_SEND);
+                i.setType(getMimeType(file.getAbsolutePath()));
+                i.putExtra(Intent.EXTRA_STREAM, uri);
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(i, "Share via"));
             } else {
                 ArrayList<Uri> uris = new ArrayList<>();
                 for (String path : selectedItems) {
@@ -1324,11 +1418,11 @@ public class GalleryActivity extends AppCompatActivity {
                     }
                 }
                 if (uris.isEmpty()) { Toast.makeText(this, "No valid files", Toast.LENGTH_SHORT).show(); return; }
-                Intent shareIntent = new Intent(Intent.ACTION_SEND_MULTIPLE);
-                shareIntent.setType("*/*");
-                shareIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
-                shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                startActivity(Intent.createChooser(shareIntent, "Share files"));
+                Intent i = new Intent(Intent.ACTION_SEND_MULTIPLE);
+                i.setType("*/*");
+                i.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(i, "Share files"));
             }
         } catch (Exception e) {
             Toast.makeText(this, "Error sharing: " + e.getMessage(), Toast.LENGTH_SHORT).show();
@@ -1363,8 +1457,7 @@ public class GalleryActivity extends AppCompatActivity {
             info.append("📍 Path: ").append(file.getAbsolutePath());
             showInfoDialog(info.toString(), "📄 File Info");
         } else {
-            long totalSize = 0;
-            int imageCount = 0, videoCount = 0;
+            long totalSize = 0; int imageCount = 0, videoCount = 0;
             for (String path : selectedItems) {
                 File file = new File(path);
                 if (file.exists()) {
@@ -1401,7 +1494,7 @@ public class GalleryActivity extends AppCompatActivity {
         dialog.show();
     }
 
-    // ===================== LEGACY VIDEO CONTROLS (unused) =====================
+    // ===================== LEGACY VIDEO (unused) =====================
 
     private void setupVideoControls() {
         if (videoPlayerContainer == null) return;
@@ -1414,15 +1507,7 @@ public class GalleryActivity extends AppCompatActivity {
                 if (event.getAction() == MotionEvent.ACTION_UP) { toggleControlsVisibility(); return true; }
                 return false;
             });
-            videoView.setOnCompletionListener(mp -> {
-                if (btnPlayPause != null) btnPlayPause.setImageResource(android.R.drawable.ic_media_play);
-                if (btnCenterPlayPause != null) btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_play);
-                isPlaying = false;
-                showControls();
-            });
         }
-        if (btnCenterPlayPause != null) btnCenterPlayPause.setOnClickListener(v -> togglePlayPause());
-        if (btnPlayPause != null) btnPlayPause.setOnClickListener(v -> togglePlayPause());
     }
 
     private void toggleControlsVisibility() {
@@ -1445,21 +1530,6 @@ public class GalleryActivity extends AppCompatActivity {
         if (videoBottomControls != null) videoBottomControls.setVisibility(View.GONE);
         if (videoTime != null) videoTime.setVisibility(View.GONE);
         videoHandler.removeCallbacks(hideControlsRunnable);
-    }
-
-    private void togglePlayPause() {
-        if (videoView == null) return;
-        if (isPlaying) {
-            videoView.pause();
-            if (btnPlayPause != null) btnPlayPause.setImageResource(android.R.drawable.ic_media_play);
-            if (btnCenterPlayPause != null) btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_play);
-            isPlaying = false;
-        } else {
-            videoView.start();
-            if (btnPlayPause != null) btnPlayPause.setImageResource(android.R.drawable.ic_media_pause);
-            if (btnCenterPlayPause != null) btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
-            isPlaying = true;
-        }
     }
 
     private String formatTime(int ms) {
@@ -1487,10 +1557,7 @@ public class GalleryActivity extends AppCompatActivity {
                 }
                 cursor.close();
             }
-            runOnUiThread(() -> {
-                albumList = albums;
-                showAlbumGrid();
-            });
+            runOnUiThread(() -> { albumList = albums; showAlbumGrid(); });
         });
     }
 
@@ -1540,8 +1607,7 @@ public class GalleryActivity extends AppCompatActivity {
                 if (item.path.equals(path) && !item.isTrashed) { item.isFavorite = true; break; }
             }
         }
-        clearSelection();
-        applyFilter();
+        clearSelection(); applyFilter();
     }
 
     // ===================== LIFECYCLE =====================
@@ -1549,12 +1615,10 @@ public class GalleryActivity extends AppCompatActivity {
     @Override
     public void onBackPressed() {
         if (fullscreenOverlay != null && fullscreenOverlay.getVisibility() == View.VISIBLE) {
-            closeFullscreenViewer();
-            return;
+            closeFullscreenViewer(); return;
         }
         if (videoPlayerContainer != null && videoPlayerContainer.getVisibility() == View.VISIBLE) {
-            closeVideoInternal();
-            return;
+            closeVideoInternal(); return;
         }
         if (currentAlbum != null || showAlbums) { navigateBackFromAlbum(); return; }
         if (selectionMode) { clearSelection(); return; }
@@ -1584,6 +1648,8 @@ public class GalleryActivity extends AppCompatActivity {
         currentFullscreenVideoPosition = -1;
         videoHandler.removeCallbacks(updateVideoProgress);
         videoHandler.removeCallbacks(hideControlsRunnable);
+        videoHandler.removeCallbacks(overlayProgressRunnable);
+        videoHandler.removeCallbacks(overlayHideControlsRunnable);
         executor.shutdown();
     }
 
