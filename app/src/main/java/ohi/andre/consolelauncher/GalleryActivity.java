@@ -5,6 +5,7 @@ import android.annotation.SuppressLint;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.Cursor;
@@ -19,11 +20,14 @@ import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.provider.MediaStore;
 import android.util.Log;
+import android.view.GestureDetector;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
 import android.widget.SeekBar;
@@ -43,13 +47,17 @@ import androidx.viewpager2.widget.ViewPager2;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class GalleryActivity extends AppCompatActivity {
 
@@ -57,10 +65,18 @@ public class GalleryActivity extends AppCompatActivity {
     private final String idHash = Integer.toHexString(System.identityHashCode(this));
     private String src() { return "[GalleryActivity:" + idHash + "]"; }
     private void log(String msg) { Log.d(LOG_TAG, src() + " " + msg); }
-    // Debounce for post-restore / post-delete media refresh
+
+    // ── Favorites persistence ──
+    private static final String PREFS_NAME = "gallery_prefs";
+    private static final String PREF_FAVORITES = "favorite_paths";
+    private SharedPreferences prefs;
+
+    // ── Media refresh debounce ──
     private final Handler mediaRefreshHandler = new Handler(Looper.getMainLooper());
     private Runnable pendingMediaRefresh;
     private static final long MEDIA_REFRESH_DEBOUNCE_MS = 400L;
+
+    // ── Views ──
     private RecyclerView recyclerView;
     private RecyclerView albumRecycler;
     private GalleryAdapter adapter;
@@ -78,6 +94,7 @@ public class GalleryActivity extends AppCompatActivity {
     private List<String> albumList = new ArrayList<>();
     private boolean showAlbums = false;
 
+    // ── Fullscreen ──
     private RelativeLayout fullscreenOverlay;
     private ViewPager2 fullscreenViewPager;
     private FullscreenAdapter fullscreenAdapter;
@@ -92,6 +109,12 @@ public class GalleryActivity extends AppCompatActivity {
     private ImageButton btnCenterPlayPause;
     private ImageButton btnSkipForwardOverlay;
     private ImageButton btnSkipBackwardOverlay;
+    private LinearLayout fullscreenBottomBar;
+    private View fsBtnBin;
+    private View fsBtnShare;
+    private View fsBtnInfo;
+    private View fsBtnFavorite;
+    private ImageView fsBtnFavoriteIcon;
     private View videoControlsOverlay;
     private ImageButton btnFavoriteOverlay;
     private ImageButton btnInfoOverlay;
@@ -105,7 +128,7 @@ public class GalleryActivity extends AppCompatActivity {
     private boolean overlayControlsVisible = false;
     private Runnable overlayHideControlsRunnable;
     private Runnable overlayProgressRunnable;
-    private android.view.GestureDetector overlayTapDetector;
+    private GestureDetector overlayTapDetector;
     private static final int OVERLAY_CONTROLS_TIMEOUT = 3000;
     private static final int SKIP_FORWARD_MS = 10000;
     private static final int SKIP_BACKWARD_MS = 10000;
@@ -122,6 +145,7 @@ public class GalleryActivity extends AppCompatActivity {
     private enum FilterMode { ALL, IMAGES, VIDEOS, FAVORITES, BIN }
     private FilterMode currentFilter = FilterMode.ALL;
 
+    // ── Legacy video player (unused) ──
     private RelativeLayout videoPlayerContainer;
     private VideoView videoView;
     private ImageButton btnPlayPause, btnCloseVideo;
@@ -159,6 +183,8 @@ public class GalleryActivity extends AppCompatActivity {
         log("========================================================");
         setContentView(R.layout.activity_gallery);
 
+        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             getWindow().setStatusBarColor(Color.TRANSPARENT);
@@ -172,6 +198,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
         getWindow().setBackgroundDrawableResource(android.R.color.transparent);
 
+        // ── Bind main views ──
         recyclerView = findViewById(R.id.galleryRecycler);
         albumRecycler = findViewById(R.id.albumRecycler);
         titleView = findViewById(R.id.titleGallery);
@@ -245,6 +272,7 @@ public class GalleryActivity extends AppCompatActivity {
                     ? View.GONE : View.VISIBLE);
         });
 
+        // ── Bind fullscreen overlay views ──
         fullscreenOverlay = findViewById(R.id.fullscreenOverlay);
         fullscreenViewPager = findViewById(R.id.fullscreenViewPager);
         fullscreenInfoHeader = findViewById(R.id.fullscreenInfoHeader);
@@ -265,39 +293,84 @@ public class GalleryActivity extends AppCompatActivity {
         videoTitleOverlay = findViewById(R.id.videoTitle);
         videoSeekBar = findViewById(R.id.videoSeekBar);
         videoControlsOverlay = findViewById(R.id.videoControlsOverlay);
+        fullscreenBottomBar = findViewById(R.id.fullscreenBottomBar);
+        fsBtnBin = findViewById(R.id.fsBtnBin);
+        fsBtnShare = findViewById(R.id.fsBtnShare);
+        fsBtnInfo = findViewById(R.id.fsBtnInfo);
+        fsBtnFavorite = findViewById(R.id.fsBtnFavorite);
+        fsBtnFavoriteIcon = findViewById(R.id.fsBtnFavoriteIcon);
 
+        // ── Wire bottom action bar buttons ──
+        if (fsBtnBin != null) fsBtnBin.setOnClickListener(v -> {
+            int pos = fullscreenCurrentPosition;
+            if (pos >= 0 && pos < fullscreenMediaPaths.size()) {
+                String path = fullscreenMediaPaths.get(pos);
+                for (MediaItem item : mediaItems) {
+                    if (item.path.equals(path)) {
+                        moveToTrash(item);
+                        break;
+                    }
+                }
+                closeFullscreenViewer();
+                scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
+            }
+        });
 
-// ★ Tap-anywhere on the fullscreen overlay toggles controls, but does NOT
-// consume swipes. We use a GestureDetector so single taps fire onFullscreenTap
-// while horizontal flings/swipes are passed through to the ViewPager2.
-        overlayTapDetector = new android.view.GestureDetector(this,
-                new android.view.GestureDetector.SimpleOnGestureListener() {
+        if (fsBtnShare != null) fsBtnShare.setOnClickListener(v -> {
+            int pos = fullscreenCurrentPosition;
+            if (pos >= 0 && pos < fullscreenMediaPaths.size()) {
+                String path = fullscreenMediaPaths.get(pos);
+                List<String> saved = new ArrayList<>(selectedItems);
+                selectedItems.clear();
+                selectedItems.add(path);
+                shareSelectedItems();
+                selectedItems.clear();
+                selectedItems.addAll(saved);
+            }
+        });
+
+        if (fsBtnInfo != null) fsBtnInfo.setOnClickListener(v -> {
+            int pos = fullscreenCurrentPosition;
+            if (pos >= 0 && pos < fullscreenMediaPaths.size()) {
+                showFileInfoDialog(fullscreenMediaPaths.get(pos));
+            }
+        });
+
+        if (fsBtnFavorite != null) fsBtnFavorite.setOnClickListener(v -> {
+            int pos = fullscreenCurrentPosition;
+            if (pos >= 0 && pos < fullscreenMediaPaths.size()) {
+                String path = fullscreenMediaPaths.get(pos);
+                boolean nowFav = toggleFavoriteForPath(path);
+                updateFullscreenFavoriteIcon(path);
+                Toast.makeText(this,
+                        nowFav ? "⭐ Added to Favorites" : "Removed from Favorites",
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        // ── Tap detector for fullscreen overlay ──
+        overlayTapDetector = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
                     @Override
-                    public boolean onDown(android.view.MotionEvent e) {
-                        // Must return true so the detector receives subsequent events.
-                        // Returning true here does NOT consume the event from the parent
-                        // because we do not set an OnClickListener on the view.
+                    public boolean onDown(MotionEvent e) {
                         return true;
                     }
 
                     @Override
-                    public boolean onSingleTapUp(android.view.MotionEvent e) {
+                    public boolean onSingleTapUp(MotionEvent e) {
                         onFullscreenTap();
                         return true;
                     }
                 });
 
-// Set the detector as the touch listener on the fullscreen overlay.
-// Returning false from onTouch lets the event continue to ViewPager2 for swipes,
-// but we still get onSingleTapUp for taps.
         fullscreenOverlay.setOnTouchListener((v, event) -> {
             overlayTapDetector.onTouchEvent(event);
-            return false;   // ★ IMPORTANT: let ViewPager2 handle swipes
+            return false;
         });
-
 
         setupOverlayVideoControls();
 
+        // ── Fullscreen adapter ──
         fullscreenAdapter = new FullscreenAdapter(fullscreenMediaPaths, this);
         log("fullscreenAdapter created: " + Integer.toHexString(System.identityHashCode(fullscreenAdapter)));
         fullscreenAdapter.setTapCallback(this::onFullscreenTap);
@@ -375,7 +448,6 @@ public class GalleryActivity extends AppCompatActivity {
                 fullscreenCurrentPosition = position;
                 fullscreenCurrentIndex = position;
 
-                // ★ Update the header (name / details / path / video title) for the new page
                 updateFullscreenInfo(position);
 
                 if (position >= 0 && position < fullscreenMediaPaths.size()) {
@@ -423,12 +495,67 @@ public class GalleryActivity extends AppCompatActivity {
         if (topNavBar != null) updateTopNavBar();
     }
 
-    // ===================== TAP TOGGLING (UNIFIED) =====================
+    // ===================== FAVORITES PERSISTENCE =====================
+
+    private Set<String> loadFavoritePaths() {
+        if (prefs == null) return new HashSet<>();
+        String raw = prefs.getString(PREF_FAVORITES, "");
+        Set<String> set = new HashSet<>();
+        if (raw != null && !raw.isEmpty()) {
+            for (String p : raw.split("\n")) {
+                if (!p.isEmpty()) set.add(p);
+            }
+        }
+        return set;
+    }
+
+    private void saveFavoritePaths(Set<String> paths) {
+        if (prefs == null) return;
+        StringBuilder sb = new StringBuilder();
+        for (String p : paths) sb.append(p).append("\n");
+        prefs.edit().putString(PREF_FAVORITES, sb.toString()).apply();
+    }
 
     /**
-     * Single tap → toggle BOTH header AND video controls TOGETHER.
-     * They are always in the same state now.
+     * Toggle favorite state for a path. Returns the new state.
+     * Persists immediately so favorites survive app restarts.
      */
+    private boolean toggleFavoriteForPath(String path) {
+        if (path == null) return false;
+
+        Set<String> favs = loadFavoritePaths();
+        boolean nowFav;
+        if (favs.contains(path)) {
+            favs.remove(path);
+            nowFav = false;
+        } else {
+            favs.add(path);
+            nowFav = true;
+        }
+        saveFavoritePaths(favs);
+
+        for (MediaItem item : mediaItems) {
+            if (item.path.equals(path)) {
+                item.isFavorite = nowFav;
+                break;
+            }
+        }
+        return nowFav;
+    }
+
+    private void updateFullscreenFavoriteIcon(String path) {
+        if (fsBtnFavoriteIcon == null || path == null) return;
+        boolean fav = false;
+        for (MediaItem item : mediaItems) {
+            if (item.path.equals(path)) { fav = item.isFavorite; break; }
+        }
+        fsBtnFavoriteIcon.setImageResource(fav
+                ? R.drawable.ic_star_filled
+                : R.drawable.ic_star_empty);
+    }
+
+    // ===================== TAP TOGGLING (UNIFIED) =====================
+
     private void onFullscreenTap() {
         log("onFullscreenTap — chromeVisible=" + fullscreenChromeVisible
                 + " controlsVisible=" + overlayControlsVisible);
@@ -441,6 +568,7 @@ public class GalleryActivity extends AppCompatActivity {
             hideAllControls();
         }
     }
+
     private void showAllControlsWithTimeout() {
         setFullscreenChromeVisible(true);
         if (currentFullscreenPageIsVideo && videoControlContainer != null) {
@@ -466,15 +594,19 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenChromeVisible = visible;
         if (fullscreenInfoHeader != null)
             fullscreenInfoHeader.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (fullscreenBottomBar != null)
+            fullscreenBottomBar.setVisibility(visible ? View.VISIBLE : View.GONE);
+
+        if (visible && fsBtnFavoriteIcon != null) {
+            int pos = fullscreenCurrentPosition;
+            if (pos >= 0 && pos < fullscreenMediaPaths.size()) {
+                updateFullscreenFavoriteIcon(fullscreenMediaPaths.get(pos));
+            }
+        }
     }
 
-    /**
-     * Robust rename that tries File.renameTo first, then falls back to
-     * java.nio.file.Files.move (API 26+) which uses a lower-level syscall
-     * and succeeds where renameTo fails (external SD cards, FUSE, hidden files).
-     *
-     * Returns true on success, false otherwise. Logs the outcome.
-     */
+    // ===================== RENAME + SCAN + REFRESH =====================
+
     private boolean renameFileRobust(File src, File dst) {
         if (src == null || dst == null) return false;
         if (!src.exists()) {
@@ -482,7 +614,6 @@ public class GalleryActivity extends AppCompatActivity {
             return false;
         }
 
-        // Fast path: File.renameTo (works in same filesystem without FUSE quirks)
         try {
             if (src.renameTo(dst)) {
                 Log.d(LOG_TAG, "renameFileRobust: renameTo OK " + src + " → " + dst);
@@ -492,7 +623,6 @@ public class GalleryActivity extends AppCompatActivity {
             Log.w(LOG_TAG, "renameFileRobust: renameTo threw", e);
         }
 
-        // Slow path: java.nio.file.Files.move (API 26+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
                 java.nio.file.Files.move(
@@ -510,21 +640,14 @@ public class GalleryActivity extends AppCompatActivity {
         return false;
     }
 
-
-    /**
-     * Scan the given paths with MediaScannerConnection and invoke callback
-     * (on the main thread) after ALL of them complete.
-     */
-    private void scanPathsAndThen(java.util.List<String> paths, Runnable callback) {
+    private void scanPathsAndThen(List<String> paths, Runnable callback) {
         if (paths == null || paths.isEmpty()) {
             if (callback != null) mediaRefreshHandler.post(callback);
             return;
         }
 
-        final java.util.concurrent.atomic.AtomicInteger remaining =
-                new java.util.concurrent.atomic.AtomicInteger(paths.size());
-        final java.util.List<String> toScan = new java.util.ArrayList<>(paths);
-
+        final AtomicInteger remaining = new AtomicInteger(paths.size());
+        final List<String> toScan = new ArrayList<>(paths);
         final MediaScannerConnection[] connHolder = new MediaScannerConnection[1];
 
         connHolder[0] = new MediaScannerConnection(this,
@@ -536,19 +659,15 @@ public class GalleryActivity extends AppCompatActivity {
                                 connHolder[0].scanFile(p, null);
                             } catch (Exception e) {
                                 Log.e(LOG_TAG, "scanFile threw: " + p, e);
-                                if (remaining.decrementAndGet() == 0) {
-                                    finish();
-                                }
+                                if (remaining.decrementAndGet() == 0) finish();
                             }
                         }
                     }
 
                     @Override
-                    public void onScanCompleted(String path, android.net.Uri uri) {
+                    public void onScanCompleted(String path, Uri uri) {
                         Log.d(LOG_TAG, "scan completed: " + path + " → " + uri);
-                        if (remaining.decrementAndGet() == 0) {
-                            finish();
-                        }
+                        if (remaining.decrementAndGet() == 0) finish();
                     }
 
                     private void finish() {
@@ -559,13 +678,6 @@ public class GalleryActivity extends AppCompatActivity {
         connHolder[0].connect();
     }
 
-    /**
-     * Schedule a MediaStore re-scan and rebuild the in-memory media list.
-     * Debounced so a bulk restore/delete triggers exactly one refresh.
-     *
-     * @param delayMs milliseconds to wait before refreshing (allows the async
-     *                MediaScanner to finish indexing new paths)
-     */
     private void scheduleMediaRefresh(long delayMs) {
         if (!isActivityAlive()) return;
 
@@ -575,14 +687,15 @@ public class GalleryActivity extends AppCompatActivity {
 
         pendingMediaRefresh = () -> {
             log("scheduleMediaRefresh: running loadMedia()");
-            // loadMedia() already runs on the executor and rebuilds mediaItems
-            // then calls applyFilter() + setupRecyclerView() on the UI thread.
             loadMedia();
             pendingMediaRefresh = null;
         };
 
         mediaRefreshHandler.postDelayed(pendingMediaRefresh, delayMs);
     }
+
+    // ===================== OVERLAY VIDEO CONTROLS =====================
+
     private void setupOverlayVideoControls() {
         if (btnCenterPlayPause != null)
             btnCenterPlayPause.setOnClickListener(v -> toggleOverlayPlayPause());
@@ -616,15 +729,11 @@ public class GalleryActivity extends AppCompatActivity {
                 if (fullscreenCurrentPosition >= 0
                         && fullscreenCurrentPosition < fullscreenMediaPaths.size()) {
                     String path = fullscreenMediaPaths.get(fullscreenCurrentPosition);
-                    for (MediaItem item : mediaItems) {
-                        if (item.path.equals(path)) {
-                            item.isFavorite = !item.isFavorite;
-                            Toast.makeText(this,
-                                    item.isFavorite ? "⭐ Added" : "Removed",
-                                    Toast.LENGTH_SHORT).show();
-                            break;
-                        }
-                    }
+                    boolean nowFav = toggleFavoriteForPath(path);
+                    updateFullscreenFavoriteIcon(path);
+                    Toast.makeText(this,
+                            nowFav ? "⭐ Added" : "Removed",
+                            Toast.LENGTH_SHORT).show();
                 }
             });
 
@@ -652,14 +761,13 @@ public class GalleryActivity extends AppCompatActivity {
             });
 
         if (videoSeekBar != null) {
-            videoSeekBar.setMax(1000);   // fine-grained
+            videoSeekBar.setMax(1000);
             videoSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override
                 public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                     if (fromUser && currentFullscreenVideo != null) {
                         int dur = currentFullscreenVideo.getDuration();
                         if (dur > 0) {
-                            // Map [0..1000] → [0..dur] ms
                             int targetMs = (int) ((progress / 1000.0) * dur);
                             currentFullscreenVideo.seekTo(targetMs);
                             if (videoTimeCurrent != null)
@@ -758,12 +866,11 @@ public class GalleryActivity extends AppCompatActivity {
                 if (vh != null && vh.getBindingAdapterPosition() == targetPosition) {
                     CustomVideoView vv = child.findViewById(R.id.fullscreen_video);
                     if (vv != null && vv.getVisibility() == View.VISIBLE) {
-                        // ★ Set fit mode based on orientation
                         boolean landscape = getResources().getConfiguration().orientation
                                 == Configuration.ORIENTATION_LANDSCAPE;
                         vv.setFit(landscape
-                                ? CustomVideoView.Fit.LARGER    // fill screen in landscape
-                                : CustomVideoView.Fit.SMALLER); // letterbox in portrait
+                                ? CustomVideoView.Fit.LARGER
+                                : CustomVideoView.Fit.SMALLER);
 
                         if (currentFullscreenVideo == vv
                                 && currentFullscreenVideoPosition == targetPosition) {
@@ -772,7 +879,7 @@ public class GalleryActivity extends AppCompatActivity {
                             showAllControlsWithTimeout();
                             return;
                         }
-                        // ... rest of the code unchanged
+
                         currentFullscreenVideo = vv;
                         currentFullscreenVideoPosition = targetPosition;
                         currentFullscreenPageIsVideo = true;
@@ -861,7 +968,7 @@ public class GalleryActivity extends AppCompatActivity {
         decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
     }
 
-
+    // ===================== FULLSCREEN OPEN/CLOSE =====================
 
     private void openFullscreenViewer(String path) {
         log("openFullscreenViewer: " + path);
@@ -960,6 +1067,7 @@ public class GalleryActivity extends AppCompatActivity {
             fullscreenInfoPath.setText(parent != null ? parent : "");
         }
         updateOverlayTitle();
+        updateFullscreenFavoriteIcon(path);
     }
 
     private void showFileInfoDialog(String path) {
@@ -1146,6 +1254,12 @@ public class GalleryActivity extends AppCompatActivity {
 
             mediaItems.clear();
             mediaItems.addAll(newItems);
+
+            // ★ Apply persisted favorites
+            Set<String> favs = loadFavoritePaths();
+            for (MediaItem item : mediaItems) {
+                item.isFavorite = favs.contains(item.path);
+            }
 
             runOnUiThread(() -> { applyFilter(); setupRecyclerView(); showEmptyState(); });
         });
@@ -1391,7 +1505,10 @@ public class GalleryActivity extends AppCompatActivity {
 
         adapter = new GalleryAdapter(this, displayedItems, selectedItems, new GalleryAdapter.OnItemClickListener() {
             @Override public void onFavoriteToggle(MediaItem item) {
-                if (isActivityAlive()) { item.isFavorite = !item.isFavorite; applyFilter(); }
+                if (isActivityAlive()) {
+                    toggleFavoriteForPath(item.path);
+                    applyFilter();
+                }
             }
             @Override public void onDelete(MediaItem item) {
                 if (isActivityAlive()) moveToTrash(item);
@@ -1437,7 +1554,6 @@ public class GalleryActivity extends AppCompatActivity {
         String cleanName = cleanFileName(name);
         File trashedFile = new File(parent, ".trashed." + cleanName);
 
-        // If the trashed name already exists, append _1, _2, ...
         if (trashedFile.exists()) {
             int count = 1;
             String baseName = cleanName;
@@ -1489,7 +1605,6 @@ public class GalleryActivity extends AppCompatActivity {
 
         File restoredFile = new File(parent, cleanName);
 
-        // If the clean name is taken, try _1, _2, ...
         if (restoredFile.exists()) {
             int count = 1;
             String baseName = cleanName;
@@ -1516,7 +1631,6 @@ public class GalleryActivity extends AppCompatActivity {
         item.isTrashed = false;
         item.name = restoredFile.getName();
 
-// Update the in-memory list entry (may be absent after a rescan).
         for (int i = 0; i < mediaItems.size(); i++) {
             if (mediaItems.get(i).path.equals(oldPath)) {
                 mediaItems.set(i, item);
@@ -1524,9 +1638,8 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-// Ask MediaScanner to index the new name and notify on completion.
         scanPathsAndThen(
-                java.util.Arrays.asList(restoredFile.getAbsolutePath(), oldPath),
+                Arrays.asList(restoredFile.getAbsolutePath(), oldPath),
                 () -> {
                     log("restoreFromTrash: scanner finished → refreshing list");
                     scheduleMediaRefresh(0L);
@@ -1538,7 +1651,6 @@ public class GalleryActivity extends AppCompatActivity {
     private void moveSelectedToTrash() {
         if (selectedItems.isEmpty()) return;
 
-        // Work off the actual paths from the current view, not from mediaItems.
         List<String> paths = new ArrayList<>(selectedItems);
 
         int moved = 0;
@@ -1557,18 +1669,17 @@ public class GalleryActivity extends AppCompatActivity {
                 item.type = MediaItem.TYPE_VIDEO;
             }
 
-            // Only attempt if it's not already trashed
             if (!f.getName().startsWith(".trashed.")) {
                 moveToTrash(item);
                 moved++;
             } else {
-                // Already trashed, count as moved
                 moved++;
             }
         }
 
         clearSelection();
         applyFilter();
+        scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
         Toast.makeText(this, "Moved " + moved + " item(s) to Bin"
                         + (failed > 0 ? " (" + failed + " failed)" : ""),
                 Toast.LENGTH_SHORT).show();
@@ -1577,8 +1688,6 @@ public class GalleryActivity extends AppCompatActivity {
     private void restoreSelectedItems() {
         if (selectedItems.isEmpty()) return;
 
-        // Work off the selected PATHS directly. The bin adapter put these in
-        // selectedItems, and they are the actual ".trashed.*" paths on disk.
         List<String> paths = new ArrayList<>(selectedItems);
 
         int restored = 0;
@@ -1592,11 +1701,9 @@ public class GalleryActivity extends AppCompatActivity {
                 continue;
             }
 
-            // Build a temp MediaItem from the path.
             MediaItem item = new MediaItem(path, file.getName(),
                     MediaItem.TYPE_IMAGE, 0, true, "");
 
-            // Figure out the real type from the extension.
             String lower = path.toLowerCase(Locale.ROOT);
             if (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
                     || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
@@ -1614,7 +1721,6 @@ public class GalleryActivity extends AppCompatActivity {
         clearSelection();
         applyFilter();
 
-// Refresh MediaStore once for the whole batch.
         if (restored > 0) {
             scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
         }
@@ -1651,12 +1757,11 @@ public class GalleryActivity extends AppCompatActivity {
                                 Log.e(LOG_TAG, "delete failed: " + path, e);
                             }
                         } else {
-                            ok = true; // already gone
+                            ok = true;
                         }
 
                         if (ok) {
                             deleted++;
-                            // Remove from mediaItems if present
                             for (int i = mediaItems.size() - 1; i >= 0; i--) {
                                 if (mediaItems.get(i).path.equals(path)) {
                                     mediaItems.remove(i);
@@ -1912,12 +2017,19 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void addSelectedToFavorites() {
         if (selectedItems.isEmpty()) return;
+        Set<String> favs = loadFavoritePaths();
         for (String path : selectedItems) {
+            File f = new File(path);
+            if (!f.exists()) continue;
+            favs.add(path);
             for (MediaItem item : mediaItems) {
-                if (item.path.equals(path) && !item.isTrashed) { item.isFavorite = true; break; }
+                if (item.path.equals(path)) { item.isFavorite = true; break; }
             }
         }
-        clearSelection(); applyFilter();
+        saveFavoritePaths(favs);
+        clearSelection();
+        applyFilter();
+        Toast.makeText(this, "Added to Favorites", Toast.LENGTH_SHORT).show();
     }
 
     // ===================== LIFECYCLE =====================
