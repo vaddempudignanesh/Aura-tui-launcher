@@ -15,7 +15,6 @@
         android:layout_gravity="center"
         android:visibility="visible" />
 
-    <!-- Custom zoomable ImageView - using full package path -->
     <ohi.andre.consolelauncher.ZoomableImageView
         android:id="@+id/fullscreen_image"
         android:layout_width="match_parent"
@@ -23,7 +22,8 @@
         android:scaleType="fitCenter"
         android:visibility="gone"
         android:clickable="true"
-        android:focusable="true" />
+        android:focusable="true"
+        android:focusableInTouchMode="true" />
 
     <ohi.andre.consolelauncher.CustomVideoView
         android:id="@+id/fullscreen_video"

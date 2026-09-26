@@ -30,6 +30,7 @@ public class FullscreenViewerActivity extends AppCompatActivity {
     private List<String> mediaPaths = new ArrayList<>();
     private int currentPosition = 0;
     private VideoView currentVideoView = null;
+    private boolean isZoomed = false;
 
     private View videoControlContainer;
     private ImageButton btnCenterPlayPause, btnSkipForward, btnSkipBackward;
@@ -51,7 +52,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
     private RelativeLayout rootLayout;
 
     // Zoom state
-    private boolean isZoomed = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -108,6 +108,7 @@ public class FullscreenViewerActivity extends AppCompatActivity {
 
         adapter = new FullscreenAdapter(mediaPaths, this);
         viewPager.setAdapter(adapter);
+        setupViewPagerTouchHandling();
         viewPager.setCurrentItem(currentPosition, false);
         viewPager.setOffscreenPageLimit(ViewPager2.OFFSCREEN_PAGE_LIMIT_DEFAULT);
         viewPager.setUserInputEnabled(true);
@@ -137,7 +138,6 @@ public class FullscreenViewerActivity extends AppCompatActivity {
                 isVideoPrepared = false;
                 isZoomed = false;
                 isVideoPlaying = false;
-                isZoomed = false;
                 updateTitle();
                 showControls();
                 // Reset play button
@@ -184,10 +184,12 @@ public class FullscreenViewerActivity extends AppCompatActivity {
         if (adapter == null) return;
 
         try {
-            // Get current view holder from ViewPager
+            // Get the current page's RecyclerView
             View currentView = viewPager.getChildAt(0);
             if (currentView instanceof androidx.recyclerview.widget.RecyclerView) {
                 androidx.recyclerview.widget.RecyclerView recyclerView = (androidx.recyclerview.widget.RecyclerView) currentView;
+
+                // Find the visible ViewHolder
                 for (int i = 0; i < recyclerView.getChildCount(); i++) {
                     View child = recyclerView.getChildAt(i);
                     if (child != null) {
@@ -197,7 +199,7 @@ public class FullscreenViewerActivity extends AppCompatActivity {
                                 holder.imageView.getVisibility() == View.VISIBLE) {
                             holder.imageView.toggleZoom();
                             isZoomed = holder.imageView.isZoomed();
-                            Toast.makeText(this, isZoomed ? "Zoomed In" : "Zoomed Out", Toast.LENGTH_SHORT).show();
+                            Toast.makeText(this, isZoomed ? "🔍 Zoomed In" : "🔍 Zoomed Out", Toast.LENGTH_SHORT).show();
                             break;
                         }
                     }
@@ -234,6 +236,21 @@ public class FullscreenViewerActivity extends AppCompatActivity {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
         }
+    }
+
+    // Add this method to prevent ViewPager from intercepting touch when zoomed
+    private void setupViewPagerTouchHandling() {
+        viewPager.setUserInputEnabled(true);
+
+        // Override touch handling for zoom
+        viewPager.setOnTouchListener((v, event) -> {
+            if (event.getPointerCount() > 1) {
+                // Multi-touch - don't let ViewPager handle it
+                return false;
+            }
+            // Let ViewPager handle single touches
+            return false;
+        });
     }
 
     private void setupSystemUiVisibilityListener() {

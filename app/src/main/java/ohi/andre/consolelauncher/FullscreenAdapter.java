@@ -182,7 +182,7 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 holder.imageView.post(() -> {
                     if (finalBitmap != null) {
                         holder.imageView.setImageBitmap(finalBitmap);
-                        holder.imageView.resetZoom();
+                        holder.imageView.resetZoom(); // Reset zoom when new image loads
                     }
                     holder.progressBar.setVisibility(View.GONE);
                 });

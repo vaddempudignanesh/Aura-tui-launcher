@@ -7,7 +7,6 @@ import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
-import android.widget.ImageView;
 import androidx.appcompat.widget.AppCompatImageView;
 
 public class ZoomableImageView extends AppCompatImageView {
@@ -23,12 +22,11 @@ public class ZoomableImageView extends AppCompatImageView {
     private int mode = NONE;
 
     private ScaleGestureDetector scaleDetector;
-    private float maxScale = 4.0f;
-    private float minScale = 1.0f;
+    private float maxScale = 5.0f;
+    private float minScale = 0.8f;
     private float currentScale = 1.0f;
 
     private boolean isZoomed = false;
-    private boolean isDragging = false;
 
     public ZoomableImageView(Context context) {
         super(context);
@@ -51,6 +49,15 @@ public class ZoomableImageView extends AppCompatImageView {
         setOnTouchListener(new TouchListener());
         setClickable(true);
         setFocusable(true);
+        // Request to handle touch events exclusively
+        setFocusableInTouchMode(true);
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        // Request parent to not intercept touch events
+        getParent().requestDisallowInterceptTouchEvent(true);
+        return super.onTouchEvent(event);
     }
 
     public void resetZoom() {
@@ -65,13 +72,11 @@ public class ZoomableImageView extends AppCompatImageView {
         if (getDrawable() == null) return;
 
         if (isZoomed) {
-            // Zoom out
             matrix.reset();
             setImageMatrix(matrix);
             currentScale = 1.0f;
             isZoomed = false;
         } else {
-            // Zoom in (center of image)
             float cx = getWidth() / 2f;
             float cy = getHeight() / 2f;
             matrix.postScale(2f, 2f, cx, cy);
@@ -89,10 +94,14 @@ public class ZoomableImageView extends AppCompatImageView {
     private class TouchListener implements OnTouchListener {
         @Override
         public boolean onTouch(View v, MotionEvent event) {
-            // Don't handle touch if image is not loaded
             if (getDrawable() == null) return false;
 
-            // Pass touch events to scale detector
+            // Request parent to not intercept touch events during zoom/drag
+            if (event.getPointerCount() > 1) {
+                getParent().requestDisallowInterceptTouchEvent(true);
+            }
+
+            // Handle scale first
             scaleDetector.onTouchEvent(event);
 
             switch (event.getAction() & MotionEvent.ACTION_MASK) {
@@ -100,7 +109,6 @@ public class ZoomableImageView extends AppCompatImageView {
                     savedMatrix.set(matrix);
                     startPoint.set(event.getX(), event.getY());
                     mode = DRAG;
-                    isDragging = false;
                     break;
 
                 case MotionEvent.ACTION_POINTER_DOWN:
@@ -109,14 +117,15 @@ public class ZoomableImageView extends AppCompatImageView {
                         savedMatrix.set(matrix);
                         midPoint(midPoint, event);
                         mode = ZOOM;
-                        isDragging = false;
+                        getParent().requestDisallowInterceptTouchEvent(true);
                     }
                     break;
 
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_POINTER_UP:
                     mode = NONE;
-                    isDragging = false;
+                    // Allow parent to intercept after zoom/drag ends
+                    getParent().requestDisallowInterceptTouchEvent(false);
                     break;
 
                 case MotionEvent.ACTION_MOVE:
@@ -125,7 +134,7 @@ public class ZoomableImageView extends AppCompatImageView {
                         float dx = event.getX() - startPoint.x;
                         float dy = event.getY() - startPoint.y;
                         matrix.postTranslate(dx, dy);
-                        isDragging = true;
+                        getParent().requestDisallowInterceptTouchEvent(true);
                     } else if (mode == ZOOM) {
                         float newDist = spacing(event);
                         if (newDist > 10f) {
@@ -142,7 +151,7 @@ public class ZoomableImageView extends AppCompatImageView {
                             matrix.postScale(scale, scale, midPoint.x, midPoint.y);
                             currentScale *= scale;
                             isZoomed = currentScale > 1.05f;
-                            isDragging = true;
+                            getParent().requestDisallowInterceptTouchEvent(true);
                         }
                     }
                     break;
