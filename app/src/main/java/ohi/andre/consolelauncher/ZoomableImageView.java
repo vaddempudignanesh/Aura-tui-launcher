@@ -240,32 +240,48 @@ public class ZoomableImageView extends AppCompatImageView {
             case MotionEvent.ACTION_DOWN:
                 lastTouch.set(event.getX(), event.getY());
                 startTouch.set(event.getX(), event.getY());
-                // If zoomed in, block parent from stealing events
-                if (isZoomed && getParent() != null) {
+                // Always block parent on DOWN — we'll release later if we don't consume
+                if (getParent() != null) {
                     getParent().requestDisallowInterceptTouchEvent(true);
                 }
-                break;
+                return true;
+
+            case MotionEvent.ACTION_POINTER_DOWN:
+                // Second finger touched → definitely a pinch. Keep blocking parent.
+                if (getParent() != null) {
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                }
+                return true;
 
             case MotionEvent.ACTION_MOVE:
-                // If we've moved horizontally enough and are NOT zoomed in,
-                // release to parent so ViewPager2 can page.
-                if (!isZoomed && getParent() != null) {
+                // If we're zoomed in, pan ourselves (gestureDetector already did it in onScroll).
+                // If we're NOT zoomed in AND only one finger, let the parent pager swipe.
+                if (!isZoomed && event.getPointerCount() == 1) {
                     float dx = Math.abs(event.getX() - startTouch.x);
                     float dy = Math.abs(event.getY() - startTouch.y);
-                    if (dx > dy) {
-                        getParent().requestDisallowInterceptTouchEvent(false);
+                    // Only release to parent if the gesture is clearly horizontal
+                    // and we haven't zoomed in. Give a small threshold.
+                    if (dx > 24 && dx > dy) {
+                        if (getParent() != null) {
+                            getParent().requestDisallowInterceptTouchEvent(false);
+                        }
+                    }
+                } else {
+                    // Zoomed or multi-touch → keep blocking parent
+                    if (getParent() != null) {
+                        getParent().requestDisallowInterceptTouchEvent(true);
                     }
                 }
-                break;
+                return true;
 
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 if (getParent() != null) {
                     getParent().requestDisallowInterceptTouchEvent(false);
                 }
-                break;
+                return true;
         }
-        return true;
+        return super.onTouchEvent(event);
     }
 
     // Required for gestures to work with parent scroll containers

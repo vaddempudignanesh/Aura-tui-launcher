@@ -136,7 +136,6 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 } else {
                     holder.imageView.setImageResource(android.R.drawable.ic_menu_gallery);
                 }
-                applyScaleMode(holder.imageView);
 
                 // Wire the tap callback on the zoomable image
                 holder.imageView.setOnTapListener(() -> {
@@ -146,15 +145,9 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         });
     }
 
-    private void applyScaleMode(ZoomableImageView iv) {
-        switch (scaleMode) {
-            case SCALE_FILL:       iv.setScaleType(ImageView.ScaleType.CENTER_CROP); break;
-            case SCALE_FIT:        iv.setScaleType(ImageView.ScaleType.FIT_CENTER); break;
-            case SCALE_CENTER:     iv.setScaleType(ImageView.ScaleType.CENTER); break;
-            case SCALE_FIT_WIDTH:  iv.setScaleType(ImageView.ScaleType.FIT_CENTER); break;
-            case SCALE_FIT_HEIGHT: iv.setScaleType(ImageView.ScaleType.FIT_CENTER); break;
-        }
-    }
+
+
+
 
     private static boolean isVideoPath(String path) {
         String lower = path.toLowerCase();
@@ -181,6 +174,7 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
             return null;
         }
     }
+
 
     @Override
     public void onViewRecycled(@NonNull ViewHolder holder) {

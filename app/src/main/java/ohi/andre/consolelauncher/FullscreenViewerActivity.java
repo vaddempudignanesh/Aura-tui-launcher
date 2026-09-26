@@ -123,9 +123,7 @@ public class FullscreenViewerActivity extends AppCompatActivity {
         vpParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
         vpParams.height = ViewGroup.LayoutParams.MATCH_PARENT;
         viewPager.setLayoutParams(vpParams);
-
         setupVideoControls();
-        setupZoomControls();
 
         viewPager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
             @Override
@@ -156,27 +154,7 @@ public class FullscreenViewerActivity extends AppCompatActivity {
         updateScaleButtonIcon();
     }
 
-    private void setupZoomControls() {
-        // Add double-tap to zoom on the root layout
-        rootLayout.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_UP) {
-                // Check if it's a double tap
-                long currentTime = System.currentTimeMillis();
-                if (currentTime - lastTapTime < 300) {
-                    // Double tap detected - toggle zoom
-                    toggleZoom();
-                    lastTapTime = 0;
-                    return true;
-                }
-                lastTapTime = currentTime;
 
-                // Toggle controls on single tap
-                toggleControlsVisibility();
-                return true;
-            }
-            return false;
-        });
-    }
 
     private long lastTapTime = 0;
 
@@ -243,14 +221,7 @@ public class FullscreenViewerActivity extends AppCompatActivity {
         viewPager.setUserInputEnabled(true);
 
         // Override touch handling for zoom
-        viewPager.setOnTouchListener((v, event) -> {
-            if (event.getPointerCount() > 1) {
-                // Multi-touch - don't let ViewPager handle it
-                return false;
-            }
-            // Let ViewPager handle single touches
-            return false;
-        });
+
     }
 
     private void setupSystemUiVisibilityListener() {
