@@ -433,4 +433,8 @@
 
     <string name="help_username">Change the username and device name: username [new_user] [new_device]</string>
     <string name="help_bbman">-install -> download and setup BusyBox\n-remove -> uninstall BusyBox</string>
+
+    <string name="help_browser">browser [url] — opens AuraBrowser, a lightweight WebView browser</string>
+    <string name="output_openingbrowser">Opening AuraBrowser → %1$s</string>
+    <string name="browser_label">AuraBrowser</string>
 </resources>

@@ -284,6 +284,14 @@
             android:exported="false"
             android:screenOrientation="portrait"/>
 
+        <activity
+            android:name=".AuraBrowserActivity"
+            android:label="@string/browser_label"
+            android:theme="@style/Theme.Transparent"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation"
+            android:windowSoftInputMode="adjustResize" />
+
 
         <activity
             android:name=".tuils.stuff.FakeLauncherActivity"

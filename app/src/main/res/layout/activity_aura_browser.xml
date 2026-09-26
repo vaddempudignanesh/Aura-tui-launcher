@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#FF000000">
+
+    <!-- Toolbar row: back / forward / reload / home / URL / go -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="4dp"
+        android:background="#FF0A0A0A">
+
+        <Button
+            android:id="@+id/aura_btn_back"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:text="◀"
+            android:textColor="#FF33FF33"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/aura_btn_forward"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:text="▶"
+            android:textColor="#FF33FF33"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/aura_btn_reload"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:text="⟳"
+            android:textColor="#FF33FF33"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/aura_btn_home"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:text="⌂"
+            android:textColor="#FF33FF33"
+            android:textSize="16sp" />
+
+        <EditText
+            android:id="@+id/aura_et_url"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="#FF111111"
+            android:hint="search or url"
+            android:imeOptions="actionGo"
+            android:inputType="textUri"
+            android:maxLines="1"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:textColor="#FF33FF33"
+            android:textColorHint="#FF1A7A1A"
+            android:textSize="13sp"
+            android:fontFamily="monospace" />
+
+        <Button
+            android:id="@+id/aura_btn_go"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="48dp"
+            android:layout_height="40dp"
+            android:text="GO"
+            android:textColor="#FF33FF33"
+            android:textSize="12sp"
+            android:fontFamily="monospace" />
+    </LinearLayout>
+
+    <!-- Thin progress bar -->
+    <ProgressBar
+        android:id="@+id/aura_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:max="100"
+        android:progressTint="#FF33FF33"
+        android:visibility="gone" />
+
+    <!-- The browser surface -->
+    <WebView
+        android:id="@+id/aura_webview"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#FF000000" />
+
+</LinearLayout>
