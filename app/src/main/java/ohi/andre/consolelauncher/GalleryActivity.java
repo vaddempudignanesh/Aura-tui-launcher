@@ -161,6 +161,12 @@ public class GalleryActivity extends AppCompatActivity {
             getWindow().setStatusBarColor(Color.TRANSPARENT);
             getWindow().setNavigationBarColor(Color.TRANSPARENT);
         }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            getWindow().getAttributes().layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(getWindow().getAttributes());
+        }
         getWindow().setBackgroundDrawableResource(android.R.color.transparent);
 
         recyclerView = findViewById(R.id.galleryRecycler);
@@ -259,6 +265,19 @@ public class GalleryActivity extends AppCompatActivity {
 
         btnCloseFullscreen.setOnClickListener(v -> closeFullscreenViewer());
 
+        // Toggle-all-controls button
+        ImageButton btnToggleAll = findViewById(R.id.btnToggleAllControls);
+        if (btnToggleAll != null) {
+            btnToggleAll.setOnClickListener(v -> {
+                log("btnToggleAllControls clicked");
+                if (fullscreenChromeVisible || overlayControlsVisible) {
+                    hideAllControls();
+                } else {
+                    showAllControlsWithTimeout();
+                }
+            });
+        }
+
         setupOverlayVideoControls();
 
         fullscreenAdapter = new FullscreenAdapter(fullscreenMediaPaths, this);
@@ -336,6 +355,10 @@ public class GalleryActivity extends AppCompatActivity {
                 }
 
                 fullscreenCurrentPosition = position;
+                // Reset any pan/zoom applied by the previous video
+                if (currentFullscreenVideo != null) {
+                    try { currentFullscreenVideo.resetTransform(); } catch (Exception ignored) {}
+                }
                 fullscreenCurrentIndex = position;
                 updateFullscreenInfo(position);
 
@@ -402,26 +425,19 @@ public class GalleryActivity extends AppCompatActivity {
             hideAllControls();
         }
     }
-
-    /** Show BOTH header + controls together, then auto-hide after timeout. */
     private void showAllControlsWithTimeout() {
         setFullscreenChromeVisible(true);
-
         if (currentFullscreenPageIsVideo && videoControlContainer != null) {
             videoControlContainer.setVisibility(View.VISIBLE);
             overlayControlsVisible = true;
         }
-
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
         overlayHideControlsRunnable = () -> {
-            if (isOverlayVideoPlaying) {
-                hideAllControls();
-            }
+            if (isOverlayVideoPlaying) hideAllControls();
         };
         videoHandler.postDelayed(overlayHideControlsRunnable, OVERLAY_CONTROLS_TIMEOUT);
     }
 
-    /** Hide BOTH header + controls together. */
     private void hideAllControls() {
         setFullscreenChromeVisible(false);
         if (videoControlContainer != null)
@@ -615,28 +631,27 @@ public class GalleryActivity extends AppCompatActivity {
                 if (vh != null && vh.getBindingAdapterPosition() == targetPosition) {
                     CustomVideoView vv = child.findViewById(R.id.fullscreen_video);
                     if (vv != null && vv.getVisibility() == View.VISIBLE) {
+                        // ★ Set fit mode based on orientation
+                        boolean landscape = getResources().getConfiguration().orientation
+                                == Configuration.ORIENTATION_LANDSCAPE;
+                        vv.setFit(landscape
+                                ? CustomVideoView.Fit.LARGER    // fill screen in landscape
+                                : CustomVideoView.Fit.SMALLER); // letterbox in portrait
+
                         if (currentFullscreenVideo == vv
                                 && currentFullscreenVideoPosition == targetPosition) {
-                            log("  already on this view — resuming");
                             vv.start();
                             isOverlayVideoPlaying = true;
                             showAllControlsWithTimeout();
                             return;
                         }
-
-                        log("  starting vv=" + Integer.toHexString(System.identityHashCode(vv))
-                                + " at pos=" + targetPosition);
+                        // ... rest of the code unchanged
                         currentFullscreenVideo = vv;
                         currentFullscreenVideoPosition = targetPosition;
                         currentFullscreenPageIsVideo = true;
                         isOverlayVideoPlaying = true;
-
                         vv.setOnTapListener(this::onFullscreenTap);
-
                         vv.start();
-                        log("  started, isPlaying=" + vv.isPlaying()
-                                + " duration=" + vv.getDuration());
-
                         if (btnCenterPlayPause != null)
                             btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
                         updateOverlayTitle();
@@ -648,7 +663,6 @@ public class GalleryActivity extends AppCompatActivity {
                 }
             }
 
-            log("  no visible video view for pos=" + targetPosition + " (retrying)");
             fullscreenViewPager.post(() -> {
                 if (fullscreenCurrentPosition == targetPosition)
                     findAndStartVideoForPosition(targetPosition);
@@ -678,16 +692,28 @@ public class GalleryActivity extends AppCompatActivity {
 
         if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE) {
             enterImmersiveLandscape();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                getWindow().getAttributes().layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                getWindow().setAttributes(getWindow().getAttributes());
+            }
+            if (currentFullscreenVideo != null)
+                currentFullscreenVideo.setFit(CustomVideoView.Fit.LARGER);
         } else {
             exitImmersiveLandscape();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                getWindow().getAttributes().layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+                getWindow().setAttributes(getWindow().getAttributes());
+            }
+            if (currentFullscreenVideo != null)
+                currentFullscreenVideo.setFit(CustomVideoView.Fit.SMALLER);
         }
 
-        // Re-fit the current video to the new dimensions
         if (currentFullscreenVideo != null) {
             fullscreenViewPager.post(() -> {
-                if (currentFullscreenVideo != null) {
+                if (currentFullscreenVideo != null)
                     currentFullscreenVideo.requestLayout();
-                }
             });
         }
     }
@@ -708,7 +734,7 @@ public class GalleryActivity extends AppCompatActivity {
         decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
     }
 
-    // ===================== OPEN/CLOSE FULLSCREEN =====================
+
 
     private void openFullscreenViewer(String path) {
         log("openFullscreenViewer: " + path);
@@ -742,6 +768,19 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenViewPager.setCurrentItem(currentIndex, false);
 
         fullscreenOverlay.setVisibility(View.VISIBLE);
+        // Reset transform for all pages
+        fullscreenViewPager.post(() -> {
+            RecyclerView rv = (RecyclerView) fullscreenViewPager.getChildAt(0);
+            if (rv != null) {
+                for (int i = 0; i < rv.getChildCount(); i++) {
+                    View child = rv.getChildAt(i);
+                    if (child != null) {
+                        CustomVideoView vv = child.findViewById(R.id.fullscreen_video);
+                        if (vv != null) vv.resetTransform();
+                    }
+                }
+            }
+        });
         fullscreenOverlay.bringToFront();
 
         hideAllControls();

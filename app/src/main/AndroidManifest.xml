@@ -271,13 +271,13 @@
             android:theme="@style/Theme.Transparent"
             android:exported="false"
             android:screenOrientation="portrait"/>
-
         <activity
             android:name=".GalleryActivity"
-            android:theme="@style/Theme.Transparent"
-            android:exported="false"
-            android:screenOrientation="portrait"
-            android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation" />
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode"
+            android:exported="true"
+            android:theme="@style/AppTheme">
+            <!-- existing intent filters -->
+        </activity>
 
         <activity
             android:name=".ImageViewerActivity"
