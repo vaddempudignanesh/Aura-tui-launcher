@@ -7,17 +7,28 @@
     android:background="#FF000000">
 
     <!-- ═══════════════════════════════════════════════════════
-         TOP BAR — address bar + GO only (no 3-dot menu anymore)
+         TOP BAR — dark mode | address | star bookmark
          ═══════════════════════════════════════════════════════ -->
     <LinearLayout
         android:id="@+id/aura_top_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:paddingHorizontal="6dp"
+        android:paddingHorizontal="4dp"
         android:paddingVertical="4dp"
         android:background="#FF0A0A0A"
         android:gravity="center_vertical">
+
+        <ImageButton
+            android:id="@+id/aura_btn_darkmode"
+            android:layout_width="36dp"
+            android:layout_height="38dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@android:drawable/ic_menu_day"
+            android:contentDescription="Toggle dark mode"
+            android:scaleType="centerInside"
+            android:padding="4dp"
+            app:tint="#FF33FF33" />
 
         <EditText
             android:id="@+id/aura_et_url"
@@ -37,15 +48,16 @@
             android:fontFamily="monospace"
             android:selectAllOnFocus="true" />
 
-        <Button
-            android:id="@+id/aura_btn_go"
-            style="?android:attr/borderlessButtonStyle"
-            android:layout_width="48dp"
+        <ImageButton
+            android:id="@+id/aura_btn_bookmark"
+            android:layout_width="36dp"
             android:layout_height="38dp"
-            android:text="GO"
-            android:textColor="#FF33FF33"
-            android:textSize="12sp"
-            android:fontFamily="monospace" />
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@android:drawable/btn_star_big_off"
+            android:contentDescription="Bookmark this page"
+            android:scaleType="centerInside"
+            android:padding="4dp"
+            app:tint="#FF33FF33" />
     </LinearLayout>
 
     <!-- Thin progress bar -->
@@ -58,9 +70,7 @@
         android:progressTint="#FF33FF33"
         android:visibility="gone" />
 
-    <!-- ═══════════════════════════════════════════════════════
-         WebView container — we add/remove WebViews here dynamically
-         ═══════════════════════════════════════════════════════ -->
+    <!-- WebView container -->
     <FrameLayout
         android:id="@+id/aura_web_container"
         android:layout_width="match_parent"
@@ -68,10 +78,7 @@
         android:layout_weight="1"
         android:background="#FF000000" />
 
-    <!-- ═══════════════════════════════════════════════════════
-         FOOTER — skinny icons, no text labels
-         Back | Forward | Tabs[count] | Incognito | Downloads
-         ═══════════════════════════════════════════════════════ -->
+    <!-- Footer -->
     <LinearLayout
         android:id="@+id/aura_footer_bar"
         android:layout_width="match_parent"
@@ -107,7 +114,6 @@
             android:padding="4dp"
             app:tint="#FF33FF33" />
 
-        <!-- Tabs button: icon + count badge overlaid -->
         <FrameLayout
             android:id="@+id/aura_btn_tabs_container"
             android:layout_width="0dp"

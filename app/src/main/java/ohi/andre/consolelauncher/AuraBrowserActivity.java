@@ -1,18 +1,25 @@
 package ohi.andre.consolelauncher;
 
 import android.annotation.SuppressLint;
+import android.app.Dialog;
 import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.GestureDetector;
+import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.animation.Animation;
@@ -30,13 +37,16 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.webkit.WebSettingsCompat;
+import androidx.webkit.WebViewFeature;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,12 +56,7 @@ import ohi.andre.consolelauncher.managers.xml.options.Theme;
 import ohi.andre.consolelauncher.managers.xml.options.Ui;
 
 /**
- * AuraBrowser v3 — real multi-tab, incognito tabs, smooth chrome hide/show.
- *
- *  - Multi-tab: each tab is its own WebView in a FrameLayout container.
- *  - Incognito tabs: tagged tabs; disallow 3rd-party cookies + cache.
- *  - Chrome auto-hide: debounced, direction-aware, no flicker.
- *  - Footer: Back | Forward | Tabs[count] | Incognito | Downloads
+ * AuraBrowser v4 — tab preview sheet, swipe tabs, bookmark star, forced dark mode.
  */
 public class AuraBrowserActivity extends AppCompatActivity {
 
@@ -65,7 +70,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private FrameLayout webContainer;
     private EditText etUrl;
     private ProgressBar progressBar;
-    private Button btnGo;
+    private ImageButton btnDarkMode;
+    private ImageButton btnBookmark;
     private ImageButton btnBack;
     private ImageButton btnForward;
     private FrameLayout btnTabsContainer;
@@ -78,10 +84,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private int lastScrollY = 0;
     private long lastChromeToggleTime = 0L;
     private static final long CHROME_DEBOUNCE_MS = 350;
-    private static final int CHROME_HIDE_THRESHOLD_PX = 120; // must scroll past this to hide
+    private static final int CHROME_HIDE_THRESHOLD_PX = 120;
     private int accumulatedScrollDown = 0;
     private int accumulatedScrollUp = 0;
-    private static final int SCROLL_STEP = 40;   // px per direction before toggling
+    private static final int SCROLL_STEP = 40;
+
+    // ── Dark mode ────────────────────────────────────────────────
+    private boolean forceDark = false;
 
     // ── Tabs ─────────────────────────────────────────────────────
     private static class Tab {
@@ -97,7 +106,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     private final List<Tab> tabs = new ArrayList<>();
     private int currentTabIndex = -1;
-    private int freshTabCount = 0; // used to name "Tab 1", "Tab 2"
 
     // ── Lifecycle ────────────────────────────────────────────────
     @SuppressLint("SetJavaScriptEnabled")
@@ -124,29 +132,23 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         setContentView(R.layout.activity_aura_browser);
 
-        topBar          = findViewById(R.id.aura_top_bar);
-        footerBar       = findViewById(R.id.aura_footer_bar);
-        webContainer    = findViewById(R.id.aura_web_container);
-        etUrl           = findViewById(R.id.aura_et_url);
-        progressBar     = findViewById(R.id.aura_progress);
-        btnGo           = findViewById(R.id.aura_btn_go);
-        btnBack         = findViewById(R.id.aura_btn_back);
-        btnForward      = findViewById(R.id.aura_btn_forward);
-        btnTabsContainer= findViewById(R.id.aura_btn_tabs_container);
-        btnIncognito    = findViewById(R.id.aura_btn_incognito);
-        btnDownloads    = findViewById(R.id.aura_btn_downloads);
-        tabCountView    = findViewById(R.id.aura_tab_count);
+        topBar           = findViewById(R.id.aura_top_bar);
+        footerBar        = findViewById(R.id.aura_footer_bar);
+        webContainer     = findViewById(R.id.aura_web_container);
+        etUrl            = findViewById(R.id.aura_et_url);
+        progressBar      = findViewById(R.id.aura_progress);
+        btnDarkMode      = findViewById(R.id.aura_btn_darkmode);
+        btnBookmark      = findViewById(R.id.aura_btn_bookmark);
+        btnBack          = findViewById(R.id.aura_btn_back);
+        btnForward       = findViewById(R.id.aura_btn_forward);
+        btnTabsContainer = findViewById(R.id.aura_btn_tabs_container);
+        btnIncognito     = findViewById(R.id.aura_btn_incognito);
+        btnDownloads     = findViewById(R.id.aura_btn_downloads);
+        tabCountView     = findViewById(R.id.aura_tab_count);
 
-        // ── Address bar select-all on tap ────────────────────────
-        etUrl.setOnClickListener(v -> {
-            etUrl.selectAll();
-            etUrl.requestFocus();
-        });
-        etUrl.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus) etUrl.selectAll();
-        });
-
-        btnGo.setOnClickListener(v -> loadFromBar());
+        // Address bar select-all
+        etUrl.setOnClickListener(v -> { etUrl.selectAll(); etUrl.requestFocus(); });
+        etUrl.setOnFocusChangeListener((v, hasFocus) -> { if (hasFocus) etUrl.selectAll(); });
         etUrl.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_GO
                     || actionId == EditorInfo.IME_ACTION_DONE
@@ -157,7 +159,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
             return false;
         });
 
-        // ── Footer actions ───────────────────────────────────────
+        // Dark mode toggle
+        btnDarkMode.setOnClickListener(v -> toggleForceDark());
+
+        // Bookmark star
+        btnBookmark.setOnClickListener(v -> addBookmark());
+
+        // Footer
         btnBack.setOnClickListener(v -> {
             Tab t = currentTab();
             if (t != null && t.webView.canGoBack()) t.webView.goBack();
@@ -166,16 +174,239 @@ public class AuraBrowserActivity extends AppCompatActivity {
             Tab t = currentTab();
             if (t != null && t.webView.canGoForward()) t.webView.goForward();
         });
-        btnTabsContainer.setOnClickListener(v -> showTabsDialog());
+        btnTabsContainer.setOnClickListener(v -> showTabSheet());
         btnIncognito.setOnClickListener(v -> newTab(null, true));
         btnDownloads.setOnClickListener(v -> openDownloads());
 
-        // ── Initial tab ──────────────────────────────────────────
+        // Initial tab
         Intent intent = getIntent();
         boolean startIncognito = intent != null && intent.getBooleanExtra(EXTRA_INCOGNITO, false);
         String startUrl = intent != null ? intent.getStringExtra(EXTRA_URL) : null;
-
         newTab(startUrl, startIncognito);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Dark mode
+    // ─────────────────────────────────────────────────────────────
+    private void toggleForceDark() {
+        forceDark = !forceDark;
+        applyForceDarkToAllTabs();
+        btnDarkMode.setImageResource(forceDark
+                ? android.R.drawable.ic_menu_day     // "light is available"
+                : android.R.drawable.ic_menu_day);   // keep same icon; toggling via tint
+        // Tint feedback
+        int tint = forceDark ? 0xFFFFAA00 : 0xFF33FF33;
+        btnDarkMode.setColorFilter(tint);
+    }
+
+    private void applyForceDarkToAllTabs() {
+        for (Tab t : tabs) {
+            applyForceDark(t.webView);
+        }
+    }
+
+    @SuppressLint("RequiresFeature")
+    private void applyForceDark(WebView wv) {
+        if (wv == null) return;
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                WebSettingsCompat.setForceDark(wv.getSettings(),
+                        forceDark ? WebSettingsCompat.FORCE_DARK_ON
+                                : WebSettingsCompat.FORCE_DARK_OFF);
+            } else if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+                WebSettingsCompat.setForceDarkStrategy(wv.getSettings(),
+                        WebSettingsCompat.DARK_STRATEGY_WEB_THEME_DARKENING_ONLY);
+            }
+            // Reload so changes take effect
+            wv.reload();
+        } catch (Exception ignored) {}
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Bookmark
+    // ─────────────────────────────────────────────────────────────
+    private void addBookmark() {
+        Tab t = currentTab();
+        if (t == null) return;
+        String url = t.webView.getUrl();
+        String title = t.webView.getTitle();
+        if (url == null) return;
+
+        getSharedPreferences("aura_bookmarks", MODE_PRIVATE)
+                .edit()
+                .putString(url, title != null ? title : url)
+                .apply();
+
+        Toast.makeText(this, "⭐ Bookmarked", Toast.LENGTH_SHORT).show();
+        // Visual feedback
+        btnBookmark.setColorFilter(0xFFFFAA00);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Tab sheet (custom dark dialog above footer)
+    // ─────────────────────────────────────────────────────────────
+    private void showTabSheet() {
+        if (tabs.isEmpty()) return;
+
+        // Build the dialog
+        final Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setCancelable(true);
+
+        // Root: vertical scrollable card
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(0xFF0A0A0A);
+        int pad = dp(8);
+        root.setPadding(pad, pad, pad, pad);
+
+        // Title row
+        TextView title = new TextView(this);
+        title.setText("Tabs");
+        title.setTextColor(0xFF33FF33);
+        title.setTextSize(14);
+        title.setPadding(dp(6), dp(4), dp(6), dp(6));
+        root.addView(title);
+
+        // Scrollable list of tabs
+        ScrollView scroll = new ScrollView(this);
+        scroll.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(280)));
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(list);
+
+        for (int i = 0; i < tabs.size(); i++) {
+            final int idx = i;
+            Tab t = tabs.get(i);
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(dp(8), dp(10), dp(8), dp(10));
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rowLp.setMargins(0, dp(2), 0, dp(2));
+            row.setLayoutParams(rowLp);
+
+            // Highlight current tab
+            boolean isCurrent = (i == currentTabIndex);
+            row.setBackgroundColor(isCurrent ? 0xFF1A3A1A : 0xFF111111);
+
+            // Incognito / normal indicator
+            ImageView icon = new ImageView(this);
+            icon.setImageResource(t.incognito
+                    ? android.R.drawable.ic_menu_view
+                    : android.R.drawable.ic_menu_compass);
+            icon.setColorFilter(t.incognito ? 0xFFAA66FF : 0xFF33FF33);
+            LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(20), dp(20));
+            iconLp.setMarginEnd(dp(8));
+            icon.setLayoutParams(iconLp);
+            row.addView(icon);
+
+            // Title text
+            TextView tv = new TextView(this);
+            String tt = t.webView.getTitle();
+            if (tt == null || tt.isEmpty()) tt = t.url != null ? t.url : "New Tab";
+            if (tt.length() > 45) tt = tt.substring(0, 45) + "…";
+            tv.setText(tt);
+            tv.setTextColor(0xFFEEEEEE);
+            tv.setTextSize(13);
+            tv.setMaxLines(1);
+            tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            tv.setLayoutParams(new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            row.addView(tv);
+
+            // Close button
+            ImageButton close = new ImageButton(this);
+            close.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
+            close.setColorFilter(0xFFFF6666);
+            close.setBackground(null);
+            close.setPadding(dp(2), dp(2), dp(2), dp(2));
+            close.setLayoutParams(new LinearLayout.LayoutParams(dp(28), dp(28)));
+            close.setOnClickListener(v -> {
+                dialog.dismiss();
+                closeTab(idx);
+            });
+            row.addView(close);
+
+            // Tap to select
+            row.setOnClickListener(v -> {
+                switchToTab(idx);
+                dialog.dismiss();
+            });
+
+            // Swipe left/right → switch tab based on finger direction
+            final GestureDetector gd = new GestureDetector(this,
+                    new GestureDetector.SimpleOnGestureListener() {
+                        @Override
+                        public boolean onFling(MotionEvent e1, MotionEvent e2,
+                                               float vx, float vy) {
+                            if (e1 == null || e2 == null) return false;
+                            float dx = e2.getX() - e1.getX();
+                            float dy = e2.getY() - e1.getY();
+                            if (Math.abs(dx) < Math.abs(dy)) return false;  // vertical, ignore
+                            if (Math.abs(dx) < 60) return false;            // too small
+
+                            if (dx > 0) {
+                                // swipe right → previous tab
+                                if (idx > 0) switchToTab(idx - 1);
+                            } else {
+                                // swipe left → next tab
+                                if (idx < tabs.size() - 1) switchToTab(idx + 1);
+                            }
+                            dialog.dismiss();
+                            return true;
+                        }
+                    });
+            row.setOnTouchListener((v, ev) -> gd.onTouchEvent(ev));
+
+            list.addView(row);
+        }
+
+        root.addView(scroll);
+
+        // "+ New Tab" button below list
+        TextView plus = new TextView(this);
+        plus.setText("+   New Tab");
+        plus.setTextColor(0xFF33FF33);
+        plus.setTextSize(14);
+        plus.setGravity(Gravity.CENTER);
+        plus.setPadding(dp(8), dp(12), dp(8), dp(12));
+        LinearLayout.LayoutParams plusLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        plusLp.setMargins(0, dp(6), 0, 0);
+        plus.setLayoutParams(plusLp);
+        plus.setBackgroundColor(0xFF111111);
+        plus.setOnClickListener(v -> {
+            newTab(null, false);
+            dialog.dismiss();
+        });
+        root.addView(plus);
+
+        dialog.setContentView(root);
+
+        // Position: attached above footer, full width
+        Window w = dialog.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.setLayout(
+                    (int) (getResources().getDisplayMetrics().widthPixels * 0.95),
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            w.setGravity(Gravity.BOTTOM);
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams lp = w.getAttributes();
+            lp.dimAmount = 0.5f;
+            lp.y = footerBar.getHeight() + dp(4); // sit above footer
+            w.setAttributes(lp);
+        }
+
+        dialog.show();
+    }
+
+    private int dp(int v) {
+        return (int) (v * getResources().getDisplayMetrics().density);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -202,43 +433,30 @@ public class AuraBrowserActivity extends AppCompatActivity {
         Tab tab = new Tab(wv, incognito, normalized);
         tabs.add(tab);
 
-        // Attach to container but keep hidden until selected
         webContainer.addView(wv);
         wv.setVisibility(View.GONE);
 
-        // Load URL
+        // Apply current dark mode preference before load
+        applyForceDark(wv);
+
         wv.loadUrl(normalized);
-
-        // Switch to it
         switchToTab(tabs.size() - 1);
-
-        freshTabCount++;
         updateTabCountBadge();
     }
 
     private void switchToTab(int index) {
         if (index < 0 || index >= tabs.size()) return;
 
-        // Hide current
         Tab old = currentTab();
-        if (old != null) {
-            old.webView.setVisibility(View.GONE);
-        }
+        if (old != null) old.webView.setVisibility(View.GONE);
 
-        // Show new
         currentTabIndex = index;
         Tab t = tabs.get(index);
         t.webView.setVisibility(View.VISIBLE);
         t.webView.requestFocus();
-
-        // Update URL bar
         etUrl.setText(t.url != null ? t.url : DEFAULT_HOME);
-
-        // Reset chrome state (show on tab change)
         showChrome();
-
         updateTabCountBadge();
-        invalidateOptionsMenu();
     }
 
     private void closeTab(int index) {
@@ -255,49 +473,15 @@ public class AuraBrowserActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
         tabs.remove(index);
 
-        if (tabs.isEmpty()) {
-            finish();
-            return;
-        }
+        if (tabs.isEmpty()) { finish(); return; }
 
         if (currentTabIndex >= tabs.size()) currentTabIndex = tabs.size() - 1;
         switchToTab(currentTabIndex);
+        updateTabCountBadge();
     }
 
     private void updateTabCountBadge() {
         tabCountView.setText(String.valueOf(tabs.size()));
-    }
-
-    private void showTabsDialog() {
-        if (tabs.isEmpty()) return;
-
-        final String[] labels = new String[tabs.size() + 1];
-        for (int i = 0; i < tabs.size(); i++) {
-            Tab t = tabs.get(i);
-            String prefix = t.incognito ? "🕶️ " : "🌐 ";
-            String title = t.webView.getTitle();
-            if (title == null || title.isEmpty()) title = t.url != null ? t.url : "New Tab";
-            if (title.length() > 45) title = title.substring(0, 45) + "…";
-            labels[i] = prefix + title;
-        }
-        labels[tabs.size()] = "➕  New Tab";
-        final int newTabRow = tabs.size();
-
-        new AlertDialog.Builder(this)
-                .setTitle("Tabs (" + tabs.size() + ")")
-                .setItems(labels, (d, which) -> {
-                    if (which == newTabRow) {
-                        newTab(null, false);
-                    } else {
-                        switchToTab(which);
-                    }
-                })
-                .setNeutralButton("New Incognito", (d, w) -> newTab(null, true))
-                .setNegativeButton("Close", null)
-                .setPositiveButton("Close Current", (d, w) -> {
-                    if (currentTabIndex >= 0) closeTab(currentTabIndex);
-                })
-                .show();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -314,7 +498,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  WebView configuration (per-tab, so incognito can differ)
+    //  WebView configuration
     // ─────────────────────────────────────────────────────────────
     @SuppressLint("SetJavaScriptEnabled")
     private void configureWebViewFor(WebView wv, boolean incognito) {
@@ -368,7 +552,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     etUrl.setText(url);
                 }
                 updateTabUrl(view, url);
-                // Reset scroll-tracking state per page
                 lastScrollY = 0;
                 accumulatedScrollDown = 0;
                 accumulatedScrollUp = 0;
@@ -384,14 +567,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         });
 
-        // Smooth, debounced chrome hide/show
         wv.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
             if (v != currentTabWebView()) return;
 
             int delta = scrollY - lastScrollY;
             lastScrollY = scrollY;
 
-            // Accumulate deltas by direction, reset the opposite
             if (delta > 0) {
                 accumulatedScrollDown += delta;
                 accumulatedScrollUp = 0;
@@ -400,21 +581,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 accumulatedScrollDown = 0;
             }
 
-            // Hide only when scrolled DOWN enough + we're past top threshold
             if (accumulatedScrollDown >= SCROLL_STEP
                     && scrollY > CHROME_HIDE_THRESHOLD_PX
                     && chromeVisible) {
-                if (canToggleChromeNow()) {
-                    hideChrome();
-                    accumulatedScrollDown = 0;
-                }
-            }
-            // Show only when scrolled UP enough
-            else if (accumulatedScrollUp >= SCROLL_STEP && !chromeVisible) {
-                if (canToggleChromeNow()) {
-                    showChrome();
-                    accumulatedScrollUp = 0;
-                }
+                if (canToggleChromeNow()) { hideChrome(); accumulatedScrollDown = 0; }
+            } else if (accumulatedScrollUp >= SCROLL_STEP && !chromeVisible) {
+                if (canToggleChromeNow()) { showChrome(); accumulatedScrollUp = 0; }
             }
         });
 
@@ -425,11 +597,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     progressBar.setProgress(newProgress);
                     progressBar.setVisibility(newProgress < 100 ? View.VISIBLE : View.GONE);
                 }
-            }
-
-            @Override
-            public void onReceivedTitle(WebView view, String title) {
-                super.onReceivedTitle(view, title);
             }
         });
 
@@ -463,15 +630,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     private void updateTabUrl(WebView wv, String url) {
         for (Tab t : tabs) {
-            if (t.webView == wv) {
-                t.url = url;
-                return;
-            }
+            if (t.webView == wv) { t.url = url; return; }
         }
     }
 
     // ─────────────────────────────────────────────────────────────
-    //  Chrome hide/show — debounced, no flicker
+    //  Chrome hide/show
     // ─────────────────────────────────────────────────────────────
     private boolean canToggleChromeNow() {
         long now = System.currentTimeMillis();
@@ -484,26 +648,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (!chromeVisible) return;
         chromeVisible = false;
 
-        TranslateAnimation up = new TranslateAnimation(
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, -1f);
-        up.setDuration(200);
-        up.setFillAfter(true);
-
-        TranslateAnimation down = new TranslateAnimation(
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, 1f);
-        down.setDuration(200);
-        down.setFillAfter(true);
+        TranslateAnimation up = new TranslateAnimation(0,0,0,-1);
+        up.setDuration(200); up.setFillAfter(true);
+        TranslateAnimation down = new TranslateAnimation(0,0,0,1);
+        down.setDuration(200); down.setFillAfter(true);
 
         topBar.startAnimation(up);
         footerBar.startAnimation(down);
 
-        // Use post() so the animation plays before removal
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             if (!chromeVisible) {
                 topBar.setVisibility(View.GONE);
@@ -519,18 +671,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         topBar.setVisibility(View.VISIBLE);
         footerBar.setVisibility(View.VISIBLE);
 
-        TranslateAnimation downIn = new TranslateAnimation(
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, -1f,
-                Animation.RELATIVE_TO_SELF, 0f);
+        TranslateAnimation downIn = new TranslateAnimation(0,0,-1,0);
         downIn.setDuration(200);
-
-        TranslateAnimation upIn = new TranslateAnimation(
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, 0f,
-                Animation.RELATIVE_TO_SELF, 1f,
-                Animation.RELATIVE_TO_SELF, 0f);
+        TranslateAnimation upIn = new TranslateAnimation(0,0,1,0);
         upIn.setDuration(200);
 
         topBar.startAnimation(downIn);
@@ -563,9 +706,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 || u.startsWith("file://") || u.startsWith("content://")) {
             return u;
         }
-        if (u.contains(".") && !u.contains(" ")) {
-            return "https://" + u;
-        }
+        if (u.contains(".") && !u.contains(" ")) return "https://" + u;
         return "https://www.google.com/search?q=" + Uri.encode(u);
     }
 
