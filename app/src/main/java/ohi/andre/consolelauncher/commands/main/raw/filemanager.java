@@ -11,7 +11,7 @@ import ohi.andre.consolelauncher.commands.main.MainPack;
 public class filemanager implements CommandAbstraction {
 
     @Override
-    public String exec(ExecutePack pack) {
+    public String exec(ExecutePack pack) throws Exception {
         MainPack mainPack = (MainPack) pack;
         Intent intent = new Intent(mainPack.context, FileManagerActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);

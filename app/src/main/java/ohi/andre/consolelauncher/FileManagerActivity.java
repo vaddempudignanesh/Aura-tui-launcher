@@ -10,6 +10,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.view.Menu;
 import android.view.View;
 import android.webkit.MimeTypeMap;
 import android.widget.EditText;
@@ -50,6 +51,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private RecyclerView recyclerFiles;
     private RecyclerView recyclerStorage;
     private View drawerPanel;
+    private ImageView btnMore;
+
+    // Remove: btnSelectAll
     private TextView tvPath;
     private TextView tvEmpty;
     private TextView tvSelectionInfo;
@@ -90,7 +94,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         tvEmpty = findViewById(R.id.tv_empty);
         tvSelectionInfo = findViewById(R.id.tv_selection_info);
         btnMenu = findViewById(R.id.btn_menu);
-        btnSelectAll = findViewById(R.id.btn_select_all);
+        btnMore = findViewById(R.id.btn_more);
         btnCloseSelection = findViewById(R.id.btn_close_selection);
         drawerPanel = findViewById(R.id.drawer_panel);
     }
@@ -113,10 +117,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private void setupListeners() {
         btnMenu.setOnClickListener(v -> drawerLayout.openDrawer(drawerPanel));
 
-        btnSelectAll.setOnClickListener(v -> {
-            adapter.selectAll();
-            updateSelectionUI();
-        });
+        btnMore.setOnClickListener(v -> showActionsMenu(v));
 
         btnCloseSelection.setOnClickListener(v -> {
             adapter.setSelectionMode(false);
@@ -219,7 +220,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         boolean selectionMode = adapter.isSelectionMode();
         int count = adapter.getSelectedFiles().size();
 
-        btnSelectAll.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
+        // 3-dot menu visible whenever selection mode is active
+        btnMore.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
         btnCloseSelection.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
         tvSelectionInfo.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
 
@@ -445,6 +447,182 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 Toast.makeText(this, "Pasted", Toast.LENGTH_SHORT).show();
             });
         });
+    }
+
+    private void showActionsMenu(View anchor) {
+        List<File> selected = new ArrayList<>(adapter.getSelectedFiles());
+        boolean hasSelection = !selected.isEmpty();
+        boolean singleFile = selected.size() == 1;
+        boolean allFiles = selected.size() > 1;
+
+        // Check if any selected item is a zip file
+        boolean hasZip = false;
+        for (File f : selected) {
+            if (f.getName().toLowerCase().endsWith(".zip")) {
+                hasZip = true;
+                break;
+            }
+        }
+
+        // Check if all selected items are files (not dirs) — zip only works on files
+        boolean canZip = hasSelection;
+        for (File f : selected) {
+            if (f.isDirectory()) {
+                // dirs can be zipped too, so this stays true
+            }
+        }
+
+        androidx.appcompat.widget.PopupMenu popup =
+                new androidx.appcompat.widget.PopupMenu(this, anchor);
+        Menu menu = popup.getMenu();
+        popup.getMenuInflater().inflate(R.menu.menu_file_actions, menu);
+
+        // Show/hide items based on selection state
+        menu.findItem(R.id.action_copy).setVisible(hasSelection);
+        menu.findItem(R.id.action_cut).setVisible(hasSelection);
+        menu.findItem(R.id.action_rename).setVisible(singleFile);
+        menu.findItem(R.id.action_delete).setVisible(hasSelection);
+        menu.findItem(R.id.action_extract).setVisible(singleFile && hasZip);
+        menu.findItem(R.id.action_zip).setVisible(canZip);
+        menu.findItem(R.id.action_share).setVisible(hasSelection && allFiles);
+        menu.findItem(R.id.action_info).setVisible(singleFile);
+        menu.findItem(R.id.action_select_all).setVisible(true);
+        menu.findItem(R.id.action_paste).setVisible(!clipboard.isEmpty());
+
+        popup.setOnMenuItemClickListener(item -> {
+            int id = item.getItemId();
+            if (id == R.id.action_copy) {
+                doCopy(selected);
+                return true;
+            } else if (id == R.id.action_cut) {
+                doCut(selected);
+                return true;
+            } else if (id == R.id.action_rename) {
+                showRenameDialog(selected.get(0));
+                return true;
+            } else if (id == R.id.action_delete) {
+                confirmDelete(selected);
+                return true;
+            } else if (id == R.id.action_extract) {
+                extractZip(selected.get(0));
+                return true;
+            } else if (id == R.id.action_zip) {
+                zipFiles(selected);
+                return true;
+            } else if (id == R.id.action_share) {
+                shareFiles(selected);
+                return true;
+            } else if (id == R.id.action_info) {
+                showFileInfo(selected.get(0));
+                return true;
+            } else if (id == R.id.action_select_all) {
+                adapter.selectAll();
+                updateSelectionUI();
+                return true;
+            } else if (id == R.id.action_paste) {
+                pasteFiles();
+                return true;
+            }
+            return false;
+        });
+
+        popup.show();
+    }
+
+
+    private void doCopy(List<File> selected) {
+        clipboard.clear();
+        clipboard.addAll(selected);
+        isCutOperation = false;
+        adapter.setSelectionMode(false);
+        updateSelectionUI();
+        Toast.makeText(this, "Copied " + selected.size() + " item(s)", Toast.LENGTH_SHORT).show();
+        showPasteOption();
+    }
+
+    private void doCut(List<File> selected) {
+        clipboard.clear();
+        clipboard.addAll(selected);
+        isCutOperation = true;
+        adapter.setSelectionMode(false);
+        updateSelectionUI();
+        Toast.makeText(this, "Cut " + selected.size() + " item(s)", Toast.LENGTH_SHORT).show();
+        showPasteOption();
+    }
+
+    private void shareFiles(List<File> selected) {
+        if (selected.isEmpty()) return;
+
+        ArrayList<Uri> uris = new ArrayList<>();
+        String mimeType = "*/*";
+
+        for (File f : selected) {
+            if (f.isFile()) {
+                try {
+                    Uri uri = FileProvider.getUriForFile(this,
+                            getPackageName() + ".fileprovider", f);
+                    uris.add(uri);
+                    mimeType = getMimeType(f);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        if (uris.isEmpty()) {
+            Toast.makeText(this, "Cannot share folders", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Intent intent;
+        if (uris.size() == 1) {
+            intent = new Intent(Intent.ACTION_SEND);
+            intent.putExtra(Intent.EXTRA_STREAM, uris.get(0));
+        } else {
+            intent = new Intent(Intent.ACTION_SEND_MULTIPLE);
+            intent.putExtra(Intent.EXTRA_STREAM, uris);
+        }
+        intent.setType(mimeType);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        try {
+            startActivity(Intent.createChooser(intent, "Share via"));
+        } catch (Exception e) {
+            Toast.makeText(this, "No app to share", Toast.LENGTH_SHORT).show();
+        }
+
+        adapter.setSelectionMode(false);
+        updateSelectionUI();
+    }
+
+    private void showFileInfo(File file) {
+        String info = "Name: " + file.getName() + "\n"
+                + "Path: " + file.getAbsolutePath() + "\n"
+                + "Type: " + (file.isDirectory() ? "Folder" : "File") + "\n"
+                + "Size: " + (file.isDirectory()
+                ? getFolderSize(file) + " bytes"
+                : FileManagerAdapter.formatSize(file.length())) + "\n"
+                + "Modified: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm",
+                java.util.Locale.getDefault()).format(file.lastModified()) + "\n"
+                + "Readable: " + file.canRead() + "\n"
+                + "Writable: " + file.canWrite();
+
+        new AlertDialog.Builder(this)
+                .setTitle("Properties")
+                .setMessage(info)
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    private long getFolderSize(File dir) {
+        long size = 0;
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                size += f.isDirectory() ? getFolderSize(f) : f.length();
+            }
+        }
+        return size;
     }
 
     private void copyRecursive(File src, File dest) throws IOException {

@@ -46,17 +46,6 @@
                 android:paddingStart="8dp" />
 
             <ImageView
-                android:id="@+id/btn_select_all"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:src="@drawable/ic_check"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Select All"
-                android:padding="8dp"
-                app:tint="#00FF00"
-                android:visibility="gone" />
-
-            <ImageView
                 android:id="@+id/btn_close_selection"
                 android:layout_width="40dp"
                 android:layout_height="40dp"
@@ -66,8 +55,18 @@
                 android:padding="8dp"
                 app:tint="#00FF00"
                 android:visibility="gone" />
-        </LinearLayout>
 
+            <ImageView
+                android:id="@+id/btn_more"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_more_vert"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="More"
+                android:padding="8dp"
+                app:tint="#00FF00"
+                android:visibility="gone" />
+        </LinearLayout>
         <!-- Selection Info Bar -->
         <TextView
             android:id="@+id/tv_selection_info"
