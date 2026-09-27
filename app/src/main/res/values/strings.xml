@@ -438,4 +438,5 @@
     <string name="output_openingbrowser">Opening AuraBrowser → %1$s</string>
     <string name="browser_label">AuraBrowser</string>
     <string name="help_filemanager">Opens the file manager</string>
+    <string name="help_mplayer">Opens the built-in music player. It asks for audio permission on first launch, then lists every audio file on the device.</string>
 </resources>
