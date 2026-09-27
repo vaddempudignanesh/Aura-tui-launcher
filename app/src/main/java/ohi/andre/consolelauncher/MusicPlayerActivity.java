@@ -55,6 +55,10 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 public class MusicPlayerActivity extends AppCompatActivity {
 
@@ -63,6 +67,20 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private static final int GREEN    = 0xFF00FF00;
     private static final int DIM      = 0xFF00AA00;
     private static final int NOW_PLAY = 0xFFFFFF00;
+
+    public static final String ACTION_CTRL         = "ohi.andre.consolelauncher.MUSIC_CTRL";
+    public static final String EXTRA_CMD           = "cmd";
+    public static final String CMD_PLAY            = "play";
+    public static final String CMD_PAUSE           = "pause";
+    public static final String CMD_TOGGLE          = "toggle";
+    public static final String CMD_NEXT            = "next";
+    public static final String CMD_PREV            = "prev";
+    public static final String CMD_OPEN_PLAYLIST   = "open_playlist";
+    public static final String CMD_START_LAST      = "start_last";
+
+    /** Last track the user played, so the home screen "play" button can resume. */
+    private static long lastPlayedId = -1;
+    private static String lastPlayedTitle = "";
 
     // ---------- View states ----------
     private static final int VIEW_LIBRARY  = 0;
@@ -116,7 +134,6 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private ImageView    btnSearch;
     private ImageView    btnSort;
     private Button       btnAdd;
-
     // Bottom bar
     private LinearLayout bottomBar;
     private TextView     tvNowPlaying;
@@ -150,12 +167,19 @@ public class MusicPlayerActivity extends AppCompatActivity {
     // Lifecycle
     // ============================================================
 
+    private boolean pendingStartLast = false;
+
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
         buildUi();
-
+        LocalBroadcastManager.getInstance(this)
+                .registerReceiver(ctrlReceiver,
+                        new IntentFilter(ACTION_CTRL));
+        boolean startHidden = getIntent() != null
+                && getIntent().getBooleanExtra("start_hidden", false);
+        if (startHidden) pendingStartLast = true;
         if (hasAudioPermission()) loadTracks();
         else requestAudioPermission();
     }
@@ -165,6 +189,9 @@ public class MusicPlayerActivity extends AppCompatActivity {
         super.onDestroy();
         ui.removeCallbacksAndMessages(null);
         io.shutdownNow();
+        try {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(ctrlReceiver);
+        } catch (Exception ignored) { }
         if (isFinishing()) releasePlayer();
     }
 
@@ -611,6 +638,12 @@ public class MusicPlayerActivity extends AppCompatActivity {
                 }
                 refreshList();
                 updateToolbar();
+                if (pendingStartLast) {
+                    pendingStartLast = false;
+                    int idx = indexOfLastPlayed();
+                    if (idx >= 0) playTrack(idx);
+                    else if (!visibleTracks.isEmpty()) playTrack(0);
+                }
             });
         });
     }
@@ -703,6 +736,10 @@ public class MusicPlayerActivity extends AppCompatActivity {
         popup.show();
     }
 
+    /** Public getters used by the home-screen widget. */
+    public static long getLastPlayedId() { return lastPlayedId; }
+    public static String getLastPlayedTitle() { return lastPlayedTitle; }
+
     // ============================================================
     // Playback
     // ============================================================
@@ -711,6 +748,10 @@ public class MusicPlayerActivity extends AppCompatActivity {
         if (index < 0 || index >= visibleTracks.size()) return;
         Track t = visibleTracks.get(index);
         playingIndex = index;
+        lastPlayedId = t.id;
+        lastPlayedTitle = t.title;
+        LocalBroadcastManager.getInstance(this)
+                .sendBroadcast(new Intent("ohi.andre.consolelauncher.MUSIC_TRACK_CHANGED"));
 
         releasePlayer();
         try {
@@ -786,6 +827,56 @@ public class MusicPlayerActivity extends AppCompatActivity {
         try {
             stopService(new Intent(this, MusicPlaybackService.class));
         } catch (Exception ignored) { }
+    }
+
+    private BroadcastReceiver ctrlReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            String cmd = intent.getStringExtra(EXTRA_CMD);
+            if (cmd == null) return;
+            switch (cmd) {
+                case CMD_PLAY:
+                    if (player != null && !player.isPlaying() && isPaused) {
+                        togglePlayPause();
+                    } else if (player == null) {
+                        // Resume last or start first
+                        int idx = indexOfLastPlayed();
+                        if (idx >= 0) playTrack(idx);
+                        else if (!visibleTracks.isEmpty()) playTrack(0);
+                    }
+                    break;
+                case CMD_PAUSE:
+                    if (player != null && player.isPlaying()) togglePlayPause();
+                    break;
+                case CMD_TOGGLE:
+                    togglePlayPause();
+                    break;
+                case CMD_NEXT:
+                    playNext();
+                    break;
+                case CMD_PREV:
+                    playPrevious();
+                    break;
+                case CMD_OPEN_PLAYLIST:
+                    viewState = VIEW_PLAYLIST;
+                    refreshList();
+                    updateToolbar();
+                    break;
+                case CMD_START_LAST:
+                    int idx = indexOfLastPlayed();
+                    if (idx >= 0) playTrack(idx);
+                    else if (!visibleTracks.isEmpty()) playTrack(0);
+                    break;
+            }
+        }
+    };
+
+    private int indexOfLastPlayed() {
+        if (lastPlayedId < 0) return -1;
+        for (int i = 0; i < visibleTracks.size(); i++) {
+            if (visibleTracks.get(i).id == lastPlayedId) return i;
+        }
+        return -1;
     }
     // ============================================================
     // Row actions

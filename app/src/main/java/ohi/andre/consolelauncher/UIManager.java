@@ -82,6 +82,10 @@ import ohi.andre.consolelauncher.tuils.interfaces.OnBatteryUpdate;
 import ohi.andre.consolelauncher.tuils.interfaces.OnRedirectionListener;
 import ohi.andre.consolelauncher.tuils.interfaces.OnTextChanged;
 import ohi.andre.consolelauncher.tuils.stuff.PolicyReceiver;
+import android.widget.RelativeLayout;
+import android.widget.TextView;
+import android.graphics.Typeface;
+import android.content.Intent;
 
 public class UIManager implements OnTouchListener {
 
@@ -96,6 +100,8 @@ public class UIManager implements OnTouchListener {
     public static String ACTION_WEATHER_DELAY = BuildConfig.APPLICATION_ID + "ui_weather_delay";
     public static String ACTION_WEATHER_MANUAL_UPDATE = BuildConfig.APPLICATION_ID + "ui_weather_update";
 
+
+    private TextView musicNameView;
     public static String FILE_NAME = "fileName";
     public static String PREFS_NAME = "ui";
 
@@ -786,6 +792,7 @@ public class UIManager implements OnTouchListener {
         filter.addAction(ACTION_WEATHER_GOT_LOCATION);
         filter.addAction(ACTION_WEATHER_DELAY);
         filter.addAction(ACTION_WEATHER_MANUAL_UPDATE);
+        filter.addAction("ohi.andre.consolelauncher.MUSIC_TRACK_CHANGED");
 
         receiver = new BroadcastReceiver() {
             @Override
@@ -880,6 +887,11 @@ public class UIManager implements OnTouchListener {
                     }
                     weatherRunnable = new WeatherRunnable();
                     handler.post(weatherRunnable);
+                } else if(action.equals("ohi.andre.consolelauncher.MUSIC_TRACK_CHANGED")) {
+                    if (musicNameView != null) {
+                        String t = MusicPlayerActivity.getLastPlayedTitle();
+                        musicNameView.setText(t == null || t.isEmpty() ? "Music Player" : t);
+                    }
                 }
             }
         };
@@ -1132,6 +1144,12 @@ public class UIManager implements OnTouchListener {
                 if(count != labelIndexes[Label.notes.ordinal()]) {
                     labelViews[count].setVerticalScrollBarEnabled(false);
                 }
+                if(count == labelIndexes[Label.unlock.ordinal()]) {
+                    labelViews[count].setSingleLine(false);
+                    labelViews[count].setMaxLines(Integer.MAX_VALUE);
+                    labelViews[count].setHorizontallyScrolling(false);
+                    labelViews[count].setEllipsize(null);
+                }
 
                 applyBgRect(labelViews[count], bgRectColors[count], bgColors[count], margins[0], strokeWidth, cornerRadius);
                 applyShadow(labelViews[count], outlineColors[count], shadowXOffset, shadowYOffset, shadowRadius);
@@ -1283,6 +1301,17 @@ public class UIManager implements OnTouchListener {
 
         final boolean inputBottom = XMLPrefsManager.getBoolean(Ui.input_bottom);
         int layoutId = inputBottom ? R.layout.input_down_layout : R.layout.input_up_layout;
+
+        // Insert the music row BEFORE the input area so it's always on-screen.
+        View musicRow = buildMusicControlRow();
+        LinearLayout.LayoutParams musicLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        int dp6 = Math.round(6 * mContext.getResources().getDisplayMetrics().density);
+        int dp4 = Math.round(4 * mContext.getResources().getDisplayMetrics().density);
+        musicLp.leftMargin = musicLp.rightMargin = dp6;
+        musicLp.topMargin = musicLp.bottomMargin = dp4;
+        rootView.addView(musicRow, musicLp);
 
         LayoutInflater inflater = (LayoutInflater) mContext.getSystemService(Context.LAYOUT_INFLATER_SERVICE);
         View inputOutputView = inflater.inflate(layoutId, null);
@@ -1482,6 +1511,79 @@ public class UIManager implements OnTouchListener {
         imm.hideSoftInputFromWindow(mTerminalAdapter.getInputWindowToken(), 0);
     }
 
+    private View buildMusicControlRow() {
+        int icon = Math.round(32 * mContext.getResources().getDisplayMetrics().density);
+        LinearLayout row = new LinearLayout(mContext);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackgroundColor(0xFF000000);
+
+        ImageView prev = new ImageView(mContext);
+        prev.setImageResource(R.drawable.ic_skip_back);
+        prev.setColorFilter(0xFF00FF00);
+        prev.setOnClickListener(v -> sendMusicCmd(MusicPlayerActivity.CMD_PREV));
+        row.addView(prev, new LinearLayout.LayoutParams(icon, icon));
+
+        ImageView play = new ImageView(mContext);
+        play.setImageResource(R.drawable.ic_play_circle);
+        play.setColorFilter(0xFF00FF00);
+        play.setOnClickListener(v -> {
+            sendMusicCmd(MusicPlayerActivity.CMD_START_LAST);
+            Intent i = new Intent(mContext, MusicPlayerActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_NO_ANIMATION
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            i.putExtra("start_hidden", true);
+            mContext.startActivity(i);
+        });
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(icon, icon);
+        plp.leftMargin = plp.rightMargin = (int) (icon * 0.4f);
+        row.addView(play, plp);
+
+        ImageView next = new ImageView(mContext);
+        next.setImageResource(R.drawable.ic_skip_forward);
+        next.setColorFilter(0xFF00FF00);
+        next.setOnClickListener(v -> sendMusicCmd(MusicPlayerActivity.CMD_NEXT));
+        row.addView(next, new LinearLayout.LayoutParams(icon, icon));
+
+        ImageView mode = new ImageView(mContext);
+        mode.setImageResource(R.drawable.ic_more_vert);
+        mode.setColorFilter(0xFF00FF00);
+        mode.setOnClickListener(v -> {
+            sendMusicCmd(MusicPlayerActivity.CMD_OPEN_PLAYLIST);
+            Intent i = new Intent(mContext, MusicPlayerActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            mContext.startActivity(i);
+        });
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(icon, icon);
+        mlp.leftMargin = (int) (icon * 0.8f);
+        row.addView(mode, mlp);
+
+        TextView name = new TextView(mContext);
+        name.setTextColor(0xFF00FF00);
+        name.setTextSize(12);
+        name.setTypeface(Tuils.getTypeface(mContext));
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.MARQUEE);
+        name.setMarqueeRepeatLimit(-1);
+        name.setSelected(true);
+        String title = MusicPlayerActivity.getLastPlayedTitle();
+        name.setText(title == null || title.isEmpty() ? "Music Player" : title);
+        musicNameView = name;
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        nlp.leftMargin = (int) (icon * 0.5f);
+        row.addView(name, nlp);
+
+        return row;
+    }
+
+    private void sendMusicCmd(String cmd) {
+        Intent i = new Intent(MusicPlayerActivity.ACTION_CTRL);
+        i.putExtra(MusicPlayerActivity.EXTRA_CMD, cmd);
+        LocalBroadcastManager.getInstance(mContext.getApplicationContext())
+                .sendBroadcast(i);
+    }
     public void onStart(boolean openKeyboardOnStart) {
         if(openKeyboardOnStart) openKeyboard();
     }
