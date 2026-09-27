@@ -1,23 +1,32 @@
 package ohi.andre.consolelauncher;
 
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.text.InputType;
 import android.view.ContextThemeWrapper;
+import android.view.Gravity;
 import android.view.Menu;
 import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.MimeTypeMap;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.PopupMenu;
@@ -28,11 +37,13 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -58,8 +69,14 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private static final int SORT_SIZE_BIG   = 4;
     private static final int SORT_SIZE_SMALL = 5;
 
+    // Install request code
+    private static final int REQUEST_INSTALL_PACKAGES = 12345;
+
     private int currentSortMode = SORT_NAME_ASC;
     private List<File> currentFileList = new ArrayList<>();
+
+    // Pending APK for install after permission
+    private File pendingApkInstall = null;
 
     // Views
     private DrawerLayout drawerLayout;
@@ -100,7 +117,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    // Size cache: File -> bytes. Populated lazily during size-sort or on load.
     private final java.util.Map<String, Long> sizeCache = new java.util.HashMap<>();
 
     // ==================== Lifecycle ====================
@@ -123,6 +139,27 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     protected void onDestroy() {
         super.onDestroy();
         executor.shutdownNow();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_INSTALL_PACKAGES) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    && getPackageManager().canRequestPackageInstalls()) {
+                // Permission granted, retry install
+                if (pendingApkInstall != null) {
+                    File apk = pendingApkInstall;
+                    pendingApkInstall = null;
+                    launchApkInstaller(apk);
+                }
+            } else {
+                Toast.makeText(this,
+                        "Please enable 'Install unknown apps' for this launcher",
+                        Toast.LENGTH_LONG).show();
+                pendingApkInstall = null;
+            }
+        }
     }
 
     // ==================== Setup ====================
@@ -297,15 +334,12 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     }
 
     private void applySortAndRefresh() {
-        // Snapshot current list to avoid race conditions with directory loads
         final List<File> snapshot = new ArrayList<>(currentFileList);
         final int sortModeSnapshot = currentSortMode;
 
-        // Disable interaction while we sort — takes ~100ms typically, barely noticeable
         recyclerFiles.setEnabled(false);
 
         executor.execute(() -> {
-            // Precompute sizes only when size sort is selected
             if (sortModeSnapshot == SORT_SIZE_BIG || sortModeSnapshot == SORT_SIZE_SMALL) {
                 precomputeSizes(snapshot);
             }
@@ -313,23 +347,17 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             Collections.sort(snapshot, buildComparator());
 
             mainHandler.post(() -> {
-                // Make sure we're still on the same directory
-                if (currentFileList == snapshot || currentFileList.equals(snapshot) || true) {
-                    currentFileList = snapshot;
-                    adapter.setFiles(snapshot);
-                }
+                currentFileList = snapshot;
+                adapter.setFiles(snapshot);
                 recyclerFiles.setEnabled(true);
             });
         });
     }
 
-
-
     private Comparator<File> buildComparator() {
         return new Comparator<File>() {
             @Override
             public int compare(File a, File b) {
-                // Directories always first
                 if (a.isDirectory() && !b.isDirectory()) return -1;
                 if (!a.isDirectory() && b.isDirectory()) return 1;
 
@@ -363,10 +391,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         };
     }
 
-    /**
-     * Precomputes sizes for the given files and stores them in sizeCache.
-     * Only called when a size-based sort is active. Runs on the executor thread.
-     */
     private void precomputeSizes(List<File> files) {
         for (File f : files) {
             String key = f.getAbsolutePath();
@@ -376,10 +400,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    /**
-     * One-time recursive size computation. Only called from precomputeSizes,
-     * never from a comparator.
-     */
     private long computeSizeRecursive(File f) {
         if (f.isFile()) return f.length();
         long total = 0;
@@ -407,7 +427,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             List<File> fileList = new ArrayList<>();
             if (files != null) fileList.addAll(Arrays.asList(files));
 
-            // Only do the expensive size precomputation when size-sort is selected
             if (sortModeSnapshot == SORT_SIZE_BIG || sortModeSnapshot == SORT_SIZE_SMALL) {
                 precomputeSizes(fileList);
             }
@@ -468,8 +487,11 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             adapter.toggleSelection(file);
             updateSelectionUI();
         } else {
-            if (file.isDirectory()) loadDirectory(file);
-            else openFile(file);
+            if (file.isDirectory()) {
+                loadDirectory(file);
+            } else {
+                openFile(file);
+            }
         }
     }
 
@@ -483,31 +505,762 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     // ==================== File Opening ====================
 
     private void openFile(File file) {
+        if (!file.exists()) {
+            Toast.makeText(this, "File no longer exists", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (!file.canRead()) {
+            Toast.makeText(this, "Cannot read file - permission denied", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String fileName = file.getName().toLowerCase(Locale.US);
         String mimeType = getMimeType(file);
+
+        // APK -> installer
+        if (fileName.endsWith(".apk")) {
+            requestInstallApk(file);
+            return;
+        }
+
+        // ZIP -> options
+        if (fileName.endsWith(".zip")) {
+            showZipFileOptions(file);
+            return;
+        }
+
+        // Unknown / no-app files -> open as text editor
+        // We try to open with system first, and if no app found, fall back to editor
+        tryOpenWithDefaultApp(file, mimeType);
+    }
+
+    // ==================== APK INSTALL (FIXED) ====================
+
+    /**
+     * Request install permission if needed, then launch installer.
+     * FIX: Uses correct flags, checks canRequestPackageInstalls(), and
+     *      provides clear feedback when package installer is not available.
+     */
+    private void requestInstallApk(File apkFile) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PackageManager pm = getPackageManager();
+            if (!pm.canRequestPackageInstalls()) {
+                // Need user to grant "Install unknown apps" permission
+                pendingApkInstall = apkFile;
+                Toast.makeText(this,
+                        "Enable 'Install unknown apps' to install APKs",
+                        Toast.LENGTH_LONG).show();
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:" + getPackageName()));
+                    startActivityForResult(intent, REQUEST_INSTALL_PACKAGES);
+                } catch (Exception e) {
+                    // Fallback to app details page
+                    try {
+                        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:" + getPackageName()));
+                        startActivityForResult(intent, REQUEST_INSTALL_PACKAGES);
+                    } catch (Exception e2) {
+                        Toast.makeText(this,
+                                "Cannot open settings. Install manually from a file manager.",
+                                Toast.LENGTH_LONG).show();
+                    }
+                }
+                return;
+            }
+        }
+
+        launchApkInstaller(apkFile);
+    }
+
+    /**
+     * Actually launches the package installer.
+     * FIX: Uses FLAG_ACTIVITY_NEW_TASK + FLAG_GRANT_READ_URI_PERMISSION,
+     *      checks with MATCH_DEFAULT_ONLY, and shows clear error if no installer.
+     */
+    private void launchApkInstaller(File apkFile) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+            Uri apkUri;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                apkUri = FileProvider.getUriForFile(
+                        this,
+                        getPackageName() + ".fileprovider",
+                        apkFile
+                );
+            } else {
+                apkUri = Uri.fromFile(apkFile);
+            }
+
+            intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+
+            // Grant read permission to all apps that might receive this intent
+            List<ResolveInfo> resInfoList = getPackageManager()
+                    .queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
+            for (ResolveInfo resolveInfo : resInfoList) {
+                String packageName = resolveInfo.activityInfo.packageName;
+                grantUriPermission(packageName, apkUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            }
+
+            if (resInfoList.isEmpty()) {
+                // No installer found - very unusual, but possible on custom ROMs
+                showNoInstallerDialog(apkFile);
+                return;
+            }
+
+            startActivity(intent);
+
+        } catch (ActivityNotFoundException e) {
+            showNoInstallerDialog(apkFile);
+        } catch (Exception e) {
+            Toast.makeText(this, "Failed to open installer: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /**
+     * Shows dialog when no package installer exists on device.
+     */
+    private void showNoInstallerDialog(File apkFile) {
+        blackDialogBuilder()
+                .setTitle("No Package Installer")
+                .setMessage("This device has no package installer app available.\n\n"
+                        + "APK: " + apkFile.getName() + "\n\n"
+                        + "You can share the file or open it with another app.")
+                .setPositiveButton("Share", (d, w) -> shareFile(apkFile))
+                .setNeutralButton("Open with...", (d, w) ->
+                        openWithChooser(apkFile, "application/vnd.android.package-archive"))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    // ==================== ZIP Options ====================
+
+    private void showZipFileOptions(File zipFile) {
+        blackDialogBuilder()
+                .setTitle(zipFile.getName())
+                .setItems(new CharSequence[]{"Extract here", "Open with...", "Cancel"}, (dialog, which) -> {
+                    switch (which) {
+                        case 0:
+                            startExtract(zipFile);
+                            break;
+                        case 1:
+                            tryOpenWithDefaultApp(zipFile, "application/zip");
+                            break;
+                        case 2:
+                            dialog.dismiss();
+                            break;
+                    }
+                })
+                .show();
+    }
+
+    // ==================== Open With Default App ====================
+
+    private void tryOpenWithDefaultApp(File file, String mimeType) {
         Intent intent = new Intent(Intent.ACTION_VIEW);
+        Uri fileUri;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
-            intent.setDataAndType(uri, mimeType);
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            try {
+                fileUri = FileProvider.getUriForFile(
+                        this,
+                        getPackageName() + ".fileprovider",
+                        file
+                );
+            } catch (Exception e) {
+                fileUri = Uri.fromFile(file);
+            }
         } else {
-            intent.setDataAndType(Uri.fromFile(file), mimeType);
+            fileUri = Uri.fromFile(file);
+        }
+
+        intent.setDataAndType(fileUri, mimeType);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        PackageManager pm = getPackageManager();
+        List<ResolveInfo> activities = pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
+
+        if (activities.isEmpty()) {
+            // FALLBACK: Open as text editor for ANY unknown file
+            showUnknownFileDialog(file, mimeType);
+            return;
         }
 
         try {
-            startActivity(intent);
-        } catch (Exception ignored) { }
+            if (activities.size() == 1) {
+                startActivity(intent);
+            } else {
+                Intent chooser = Intent.createChooser(intent, "Open with");
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(chooser);
+            }
+        } catch (ActivityNotFoundException e) {
+            showUnknownFileDialog(file, mimeType);
+        } catch (Exception e) {
+            Toast.makeText(this, "Failed to open file: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * For unknown file types (no app can open them), we show a dialog
+     * offering to open in our built-in TEXT EDITOR.
+     * This includes .properties, .config, .ini, and any other unknown extension.
+     */
+    private void showUnknownFileDialog(File file, String mimeType) {
+        String fileName = file.getName();
+        String fileSize = FileManagerAdapter.formatSize(file.length());
+        boolean isText = isTextBasedFile(file);
+
+        StringBuilder message = new StringBuilder();
+        message.append("No app found to open this file.\n\n");
+        message.append("File: ").append(fileName).append("\n");
+        message.append("Size: ").append(fileSize).append("\n");
+        message.append("Type: ").append(getReadableType(mimeType)).append("\n\n");
+        message.append("You can open it in the built-in text editor or choose another action.");
+
+        List<String> options = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+
+        // PRIMARY option: open in text editor
+        options.add("📝  Open in Text Editor" + (isText ? " (recommended)" : ""));
+        actions.add(() -> openTextEditor(file));
+
+        options.add("👁  View as Text (read-only)");
+        actions.add(() -> openAsText(file));
+
+        options.add("📤  Share file");
+        actions.add(() -> shareFile(file));
+
+        options.add("🔍  Open with... (system chooser)");
+        actions.add(() -> openWithChooser(file, mimeType));
+
+        options.add("ℹ  Show file info");
+        actions.add(() -> showFileInfo(file));
+
+        options.add("✖  Cancel");
+        actions.add(() -> { });
+
+        String[] optionArray = options.toArray(new String[0]);
+
+        blackDialogBuilder()
+                .setTitle("Unknown File Type")
+                .setMessage(message.toString())
+                .setItems(optionArray, (dialog, which) -> {
+                    if (which >= 0 && which < actions.size()) {
+                        actions.get(which).run();
+                    }
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    /**
+     * Full in-app TEXT EDITOR with save support.
+     * Black background, green text, monospace font, save button.
+     */
+    private void openTextEditor(File file) {
+        executor.execute(() -> {
+            try {
+                // Read file content (max 5MB for editing)
+                long maxEditSize = 5 * 1024 * 1024;
+                long fileSize = file.length();
+                boolean tooBig = fileSize > maxEditSize;
+
+                if (tooBig) {
+                    mainHandler.post(() -> blackDialogBuilder()
+                            .setTitle("File Too Large")
+                            .setMessage("This file is " + FileManagerAdapter.formatSize(fileSize)
+                                    + ".\n\nThe text editor supports files up to 5 MB.\n"
+                                    + "Use 'View as Text' instead.")
+                            .setPositiveButton("View as Text", (d, w) -> openAsText(file))
+                            .setNegativeButton("Cancel", null)
+                            .show());
+                    return;
+                }
+
+                // Read content
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(new FileInputStream(file), "UTF-8"))) {
+                    char[] buf = new char[8192];
+                    int read;
+                    while ((read = reader.read(buf)) > 0) {
+                        sb.append(buf, 0, read);
+                    }
+                }
+
+                final String content = sb.toString();
+
+                mainHandler.post(() -> showEditorDialog(file, content));
+
+            } catch (Exception e) {
+                mainHandler.post(() ->
+                        Toast.makeText(this, "Failed to read file: " + e.getMessage(),
+                                Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+
+    /**
+     * Builds and shows the text editor UI inside an AlertDialog.
+     */
+    private void showEditorDialog(File file, String content) {
+        // Root container
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(0xFF000000);
+        root.setPadding(0, 0, 0, 0);
+
+        // Info bar (filename + size)
+        TextView infoBar = new TextView(this);
+        infoBar.setText(file.getName() + "  •  " + FileManagerAdapter.formatSize(file.length()));
+        infoBar.setTextColor(0xFF00AA00);
+        infoBar.setBackgroundColor(0xFF001100);
+        infoBar.setPadding(24, 16, 24, 16);
+        infoBar.setTextSize(11);
+        infoBar.setTypeface(android.graphics.Typeface.MONOSPACE);
+        root.addView(infoBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // EditText
+        EditText editor = new EditText(this);
+        editor.setText(content);
+        editor.setTextColor(0xFF00FF00);
+        editor.setHintTextColor(0xFF006600);
+        editor.setHint("Empty file...");
+        editor.setBackgroundColor(0xFF000000);
+        editor.setPadding(24, 24, 24, 24);
+        editor.setTextSize(13);
+        editor.setTypeface(android.graphics.Typeface.MONOSPACE);
+        editor.setGravity(Gravity.TOP | Gravity.START);
+        editor.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        editor.setHorizontallyScrolling(true);
+        editor.setVerticalScrollBarEnabled(true);
+        editor.setHorizontalScrollBarEnabled(true);
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setBackgroundColor(0xFF000000);
+        scrollView.addView(editor, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        root.addView(scrollView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // Button bar
+        LinearLayout buttonBar = new LinearLayout(this);
+        buttonBar.setOrientation(LinearLayout.HORIZONTAL);
+        buttonBar.setBackgroundColor(0xFF001100);
+        buttonBar.setPadding(8, 8, 8, 8);
+
+        Button btnSave = createEditorButton("SAVE", 0xFF00FF00);
+        Button btnSaveAs = createEditorButton("SAVE AS", 0xFF00FF00);
+        Button btnWrap = createEditorButton("WRAP", 0xFF00FF00);
+        Button btnClose = createEditorButton("CLOSE", 0xFFFF5555);
+
+        buttonBar.addView(btnSave, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        buttonBar.addView(btnSaveAs, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        buttonBar.addView(btnWrap, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        buttonBar.addView(btnClose, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        root.addView(buttonBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // Build the dialog
+        AlertDialog dialog = blackDialogBuilder()
+                .setView(root)
+                .create();
+
+        // Track original content to detect changes
+        final String[] original = { content };
+        final boolean[] wrapEnabled = { false };
+
+        // Save button
+        btnSave.setOnClickListener(v -> {
+            String newContent = editor.getText().toString();
+            saveFile(file, newContent, dialog, original);
+        });
+
+        // Save As button
+        btnSaveAs.setOnClickListener(v -> {
+            String newContent = editor.getText().toString();
+            showSaveAsDialog(file, newContent);
+        });
+
+        // Wrap toggle
+        btnWrap.setOnClickListener(v -> {
+            wrapEnabled[0] = !wrapEnabled[0];
+            if (wrapEnabled[0]) {
+                editor.setHorizontallyScrolling(false);
+                editor.setInputType(InputType.TYPE_CLASS_TEXT
+                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                        | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+                btnWrap.setTextColor(0xFFFFFF00);
+                btnWrap.setText("WRAP ON");
+            } else {
+                editor.setHorizontallyScrolling(true);
+                btnWrap.setTextColor(0xFF00FF00);
+                btnWrap.setText("WRAP");
+            }
+        });
+
+        // Close button
+        btnClose.setOnClickListener(v -> {
+            String currentContent = editor.getText().toString();
+            if (!currentContent.equals(original[0])) {
+                blackDialogBuilder()
+                        .setTitle("Unsaved Changes")
+                        .setMessage("You have unsaved changes. Save before closing?")
+                        .setPositiveButton("Save", (d, w) -> {
+                            saveFile(file, currentContent, dialog, original);
+                        })
+                        .setNeutralButton("Discard", (d, w) -> dialog.dismiss())
+                        .setNegativeButton("Cancel", null)
+                        .show();
+            } else {
+                dialog.dismiss();
+            }
+        });
+
+        dialog.show();
+
+        // Make dialog window fill most of the screen
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT);
+            dialog.getWindow().setBackgroundDrawableResource(android.R.color.black);
+        }
+    }
+
+    private Button createEditorButton(String text, int color) {
+        Button btn = new Button(this);
+        btn.setText(text);
+        btn.setTextColor(color);
+        btn.setBackgroundColor(0xFF001100);
+        btn.setTextSize(11);
+        btn.setTypeface(android.graphics.Typeface.MONOSPACE);
+        btn.setPadding(8, 8, 8, 8);
+        return btn;
+    }
+
+    /**
+     * Save content to file. Shows toast on success/failure.
+     */
+    private void saveFile(File file, String content, AlertDialog dialog, String[] original) {
+        executor.execute(() -> {
+            try {
+                try (FileOutputStream fos = new FileOutputStream(file)) {
+                    fos.write(content.getBytes("UTF-8"));
+                    fos.flush();
+                }
+                mainHandler.post(() -> {
+                    original[0] = content;
+                    Toast.makeText(this, "Saved: " + file.getName(), Toast.LENGTH_SHORT).show();
+                });
+            } catch (Exception e) {
+                mainHandler.post(() ->
+                        Toast.makeText(this, "Save failed: " + e.getMessage(),
+                                Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    /**
+     * Show Save As dialog to save content to a new file.
+     */
+    private void showSaveAsDialog(File originalFile, String content) {
+        EditText input = new EditText(this);
+        input.setText(originalFile.getName());
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        input.setTextColor(0xFF00FF00);
+        input.setHintTextColor(0xFF00AA00);
+        input.setBackgroundColor(0xFF1A1A1A);
+        input.setPadding(24, 24, 24, 24);
+
+        blackDialogBuilder()
+                .setTitle("Save As")
+                .setMessage("Saving in: " + originalFile.getParent())
+                .setView(input)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    String newName = input.getText().toString().trim();
+                    if (newName.isEmpty()) return;
+
+                    File newFile = new File(originalFile.getParent(), newName);
+                    if (newFile.exists()) {
+                        blackDialogBuilder()
+                                .setTitle("File Exists")
+                                .setMessage(newName + " already exists. Overwrite?")
+                                .setPositiveButton("Overwrite", (d, w) -> {
+                                    writeFile(newFile, content);
+                                })
+                                .setNegativeButton("Cancel", null)
+                                .show();
+                    } else {
+                        writeFile(newFile, content);
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void writeFile(File file, String content) {
+        executor.execute(() -> {
+            try {
+                try (FileOutputStream fos = new FileOutputStream(file)) {
+                    fos.write(content.getBytes("UTF-8"));
+                    fos.flush();
+                }
+                mainHandler.post(() -> {
+                    Toast.makeText(this, "Saved: " + file.getName(), Toast.LENGTH_SHORT).show();
+                    loadDirectory(currentDir);
+                });
+            } catch (Exception e) {
+                mainHandler.post(() ->
+                        Toast.makeText(this, "Save failed: " + e.getMessage(),
+                                Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    /**
+     * Read-only text viewer (kept for very large files).
+     */
+    private void openAsText(File file) {
+        executor.execute(() -> {
+            try {
+                long maxSize = 1024 * 1024; // 1MB for viewer
+                long fileSize = file.length();
+                boolean truncated = fileSize > maxSize;
+
+                byte[] buffer = new byte[(int) Math.min(fileSize, maxSize)];
+                try (FileInputStream fis = new FileInputStream(file)) {
+                    int read = 0;
+                    int total = 0;
+                    while (total < buffer.length
+                            && (read = fis.read(buffer, total, buffer.length - total)) > 0) {
+                        total += read;
+                    }
+                    if (total < buffer.length) {
+                        byte[] smaller = new byte[total];
+                        System.arraycopy(buffer, 0, smaller, 0, total);
+                        buffer = smaller;
+                    }
+                }
+
+                String content = new String(buffer, "UTF-8");
+                if (truncated) {
+                    content += "\n\n... [File truncated - showing first 1MB of "
+                            + FileManagerAdapter.formatSize(fileSize) + "]";
+                }
+
+                final String finalContent = content;
+                final boolean finalTruncated = truncated;
+
+                mainHandler.post(() -> {
+                    ScrollView scrollView = new ScrollView(this);
+                    TextView textView = new TextView(this);
+                    textView.setText(finalContent);
+                    textView.setTextColor(0xFF00FF00);
+                    textView.setBackgroundColor(0xFF000000);
+                    textView.setPadding(32, 32, 32, 32);
+                    textView.setTextSize(12);
+                    textView.setTypeface(android.graphics.Typeface.MONOSPACE);
+                    textView.setTextIsSelectable(true);
+                    scrollView.addView(textView);
+
+                    blackDialogBuilder()
+                            .setTitle(file.getName() + (finalTruncated ? " (truncated)" : ""))
+                            .setView(scrollView)
+                            .setPositiveButton("Close", null)
+                            .setNeutralButton("Edit", (d, w) -> openTextEditor(file))
+                            .setNegativeButton("Share", (d, w) -> shareFile(file))
+                            .show();
+                });
+
+            } catch (Exception e) {
+                mainHandler.post(() ->
+                        Toast.makeText(this, "Failed to read file: " + e.getMessage(),
+                                Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+
+    private void shareFile(File file) {
+        try {
+            Uri uri = FileProvider.getUriForFile(
+                    this,
+                    getPackageName() + ".fileprovider",
+                    file
+            );
+
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType(getMimeType(file));
+            intent.putExtra(Intent.EXTRA_STREAM, uri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+            startActivity(Intent.createChooser(intent, "Share via"));
+
+        } catch (Exception e) {
+            Toast.makeText(this, "Failed to share: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
     }
 
     private String getMimeType(File file) {
         String name = file.getName();
         int dot = name.lastIndexOf('.');
-        if (dot > 0) {
-            String ext = name.substring(dot + 1).toLowerCase();
+
+        if (dot > 0 && dot < name.length() - 1) {
+            String ext = name.substring(dot + 1).toLowerCase(Locale.US);
+
+            switch (ext) {
+                case "apk": return "application/vnd.android.package-archive";
+                case "zip": return "application/zip";
+                case "rar": return "application/x-rar-compressed";
+                case "7z": return "application/x-7z-compressed";
+                case "tar": return "application/x-tar";
+                case "gz": return "application/gzip";
+                case "pdf": return "application/pdf";
+                case "txt": return "text/plain";
+                case "log": return "text/plain";
+                case "md": return "text/markdown";
+                case "json": return "application/json";
+                case "xml": return "application/xml";
+                case "properties": return "text/plain";
+                case "config": return "text/plain";
+                case "cfg": return "text/plain";
+                case "conf": return "text/plain";
+                case "ini": return "text/plain";
+                case "yml": return "text/yaml";
+                case "yaml": return "text/yaml";
+                case "sh": return "text/x-shellscript";
+                case "bat": return "text/plain";
+                case "gradle": return "text/plain";
+                case "pro": return "text/plain";
+                case "html":
+                case "htm": return "text/html";
+                case "css": return "text/css";
+                case "js": return "application/javascript";
+                case "jpg":
+                case "jpeg": return "image/jpeg";
+                case "png": return "image/png";
+                case "gif": return "image/gif";
+                case "webp": return "image/webp";
+                case "bmp": return "image/bmp";
+                case "svg": return "image/svg+xml";
+                case "mp3": return "audio/mpeg";
+                case "wav": return "audio/wav";
+                case "ogg": return "audio/ogg";
+                case "flac": return "audio/flac";
+                case "m4a": return "audio/mp4";
+                case "mp4": return "video/mp4";
+                case "mkv": return "video/x-matroska";
+                case "avi": return "video/x-msvideo";
+                case "mov": return "video/quicktime";
+                case "webm": return "video/webm";
+                case "3gp": return "video/3gpp";
+                case "doc": return "application/msword";
+                case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+                case "xls": return "application/vnd.ms-excel";
+                case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+                case "ppt": return "application/vnd.ms-powerpoint";
+                case "pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+                case "epub": return "application/epub+zip";
+                case "mobi": return "application/x-mobipocket-ebook";
+            }
+
             String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
             if (mime != null) return mime;
         }
+
         return "*/*";
+    }
+
+    private String getReadableType(String mimeType) {
+        if (mimeType == null) return "Unknown";
+
+        if (mimeType.startsWith("text/")) return "Text file";
+        if (mimeType.startsWith("image/")) return "Image";
+        if (mimeType.startsWith("video/")) return "Video";
+        if (mimeType.startsWith("audio/")) return "Audio";
+        if (mimeType.equals("application/pdf")) return "PDF Document";
+        if (mimeType.equals("application/zip")) return "ZIP Archive";
+        if (mimeType.contains("android.package-archive")) return "Android Package";
+        if (mimeType.contains("msword") || mimeType.contains("wordprocessing")) return "Word Document";
+        if (mimeType.contains("excel") || mimeType.contains("spreadsheet")) return "Excel Spreadsheet";
+        if (mimeType.contains("powerpoint") || mimeType.contains("presentation")) return "PowerPoint Presentation";
+
+        int slashIndex = mimeType.indexOf('/');
+        if (slashIndex > 0 && slashIndex < mimeType.length() - 1) {
+            String subtype = mimeType.substring(slashIndex + 1);
+            return subtype.toUpperCase(Locale.US) + " file";
+        }
+
+        return mimeType;
+    }
+
+    private boolean isTextBasedFile(File file) {
+        String name = file.getName().toLowerCase(Locale.US);
+        String[] textExtensions = {
+                ".txt", ".log", ".md", ".json", ".xml", ".html", ".htm",
+                ".css", ".js", ".java", ".kt", ".py", ".c", ".cpp", ".h",
+                ".csv", ".tsv", ".ini", ".cfg", ".conf", ".properties",
+                ".gradle", ".pro", ".sh", ".bat", ".yml", ".yaml", ".sql",
+                ".config", ".env", ".gitignore", ".editorconfig", ".toml",
+                ".lock", ".list", ".rc", ".text", ".me", ".readme"
+        };
+
+        for (String ext : textExtensions) {
+            if (name.endsWith(ext)) return true;
+        }
+        return false;
+    }
+
+    private void openWithChooser(File file, String mimeType) {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        Uri fileUri;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                fileUri = FileProvider.getUriForFile(
+                        this,
+                        getPackageName() + ".fileprovider",
+                        file
+                );
+            } catch (Exception e) {
+                fileUri = Uri.fromFile(file);
+            }
+        } else {
+            fileUri = Uri.fromFile(file);
+        }
+
+        intent.setDataAndType(fileUri, mimeType);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        Intent chooser = Intent.createChooser(intent, "Open with");
+        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        try {
+            startActivity(chooser);
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, "No apps available", Toast.LENGTH_SHORT).show();
+        }
     }
 
     // ==================== Actions Menu ====================
@@ -713,7 +1466,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         for (File f : targets) {
             Long cached = sizeCache.get(f.getAbsolutePath());
             totalBytes += cached != null ? cached : computeSizeRecursive(f);
-            totalFiles += countFiles(f);  // countFiles is cheap (no data reads)
+            totalFiles += countFiles(f);
         }
         final long finalTotal = Math.max(totalBytes, 1);
         final int finalFileTotal = Math.max(totalFiles, 1);
@@ -763,7 +1516,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Extract with Progress ====================
+    // ==================== Extract ====================
 
     private void startExtract(File zipFile) {
         long totalBytes = Math.max(zipFile.length(), 1);
@@ -816,7 +1569,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    // ==================== Zip with Progress ====================
+    // ==================== Zip ====================
 
     private void startZip(List<File> files) {
         final List<File> targets = new ArrayList<>(files);
@@ -981,7 +1734,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-    // ==================== Share ====================
+    // ==================== Share Multiple ====================
 
     private void shareFiles(List<File> selected) {
         if (selected.isEmpty()) return;
@@ -1026,7 +1779,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private void showFileInfo(File file) {
         String info = "Name: " + file.getName() + "\n"
                 + "Path: " + file.getAbsolutePath() + "\n"
-                + "Type: " + (file.isDirectory() ? "Folder" : "File") + "\n"
+                + "Type: " + (file.isDirectory() ? "Folder" : getReadableType(getMimeType(file))) + "\n"
                 + "Size: " + (file.isDirectory()
                 ? getFolderSize(file) + " bytes"
                 : FileManagerAdapter.formatSize(file.length())) + "\n"
