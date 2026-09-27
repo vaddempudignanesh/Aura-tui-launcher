@@ -71,7 +71,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private static final int SORT_OLDEST = 1;
     private static final int SORT_AZ     = 2;
     private static final int SORT_ZA     = 3;
-    private int sortMode = SORT_AZ;
+    private int sortMode = SORT_LATEST;
 
     // ---------- Permission ----------
     private static final int REQ_AUDIO = 3001;
@@ -809,11 +809,11 @@ public class MusicPlayerActivity extends AppCompatActivity {
             dots.setImageResource(R.drawable.ic_more_vert);
             dots.setColorFilter(GREEN);
             dots.setPadding(dp(6), dp(6), dp(6), dp(6));
-            // Force right-alignment independent of text length.
+            // In a LinearLayout, gravity does nothing. The weighted middle
+            // column with width=0 is what pushes this child to the right.
+            // We just give it a fixed size and a small right margin.
             LinearLayout.LayoutParams dotsLp =
                     new LinearLayout.LayoutParams(dp(36), dp(36));
-            dotsLp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
-            // Push it hard to the right with a small right margin.
             dotsLp.rightMargin = dp(4);
             row.addView(dots, dotsLp);
 
