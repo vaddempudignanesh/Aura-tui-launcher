@@ -121,8 +121,10 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private LinearLayout bottomBar;
     private TextView     tvNowPlaying;
     private ImageView    btnPrev;
+    private ImageView    btnPlayPause;
     private ImageView    btnNext;
     private SeekBar      seekBar;
+    private boolean      isPaused = false;
 
     // ---------- Player ----------
     private MediaPlayer player;
@@ -330,6 +332,15 @@ public class MusicPlayerActivity extends AppCompatActivity {
         btnPrev.setOnClickListener(v -> playPrevious());
         navRow.addView(btnPrev, new LinearLayout.LayoutParams(dp(36), dp(36)));
 
+        btnPlayPause = new ImageView(this);
+        btnPlayPause.setImageResource(R.drawable.ic_pause);   // see note below
+        btnPlayPause.setColorFilter(GREEN);
+        btnPlayPause.setOnClickListener(v -> togglePlayPause());
+        LinearLayout.LayoutParams ppLp =
+                new LinearLayout.LayoutParams(dp(36), dp(36));
+        ppLp.leftMargin = dp(4);
+        navRow.addView(btnPlayPause, ppLp);
+
         tvNowPlaying = new TextView(this);
         tvNowPlaying.setTextColor(GREEN);
         tvNowPlaying.setTextSize(12);
@@ -380,7 +391,24 @@ public class MusicPlayerActivity extends AppCompatActivity {
 
         setContentView(root);
     }
-
+    private void togglePlayPause() {
+        if (player == null) return;
+        try {
+            if (player.isPlaying()) {
+                player.pause();
+                isPaused = true;
+                btnPlayPause.setImageResource(R.drawable.ic_play_circle);
+                btnPlayPause.setColorFilter(NOW_PLAY);
+                ui.removeCallbacks(progressTick);
+            } else {
+                player.start();
+                isPaused = false;
+                btnPlayPause.setImageResource(R.drawable.ic_pause); // or ic_play_circle
+                btnPlayPause.setColorFilter(GREEN);
+                ui.post(progressTick);
+            }
+        } catch (Exception ignored) { }
+    }
     private void toggleSearch() {
         if (searchOpen) closeSearch();
         else openSearch();
@@ -694,6 +722,11 @@ public class MusicPlayerActivity extends AppCompatActivity {
             player.setDataSource(this, t.contentUri);
             player.setOnPreparedListener(mp -> {
                 mp.start();
+                isPaused = false;
+                if (btnPlayPause != null) {
+                    btnPlayPause.setImageResource(R.drawable.ic_pause); // or ic_play_circle
+                    btnPlayPause.setColorFilter(GREEN);
+                }
                 bottomBar.setVisibility(View.VISIBLE);
                 tvNowPlaying.setText("\u25B6  " + t.title
                         + (t.artist.isEmpty() ? "" : "  \u2013 " + t.artist));
@@ -709,6 +742,18 @@ public class MusicPlayerActivity extends AppCompatActivity {
                 return true;
             });
             player.prepareAsync();
+
+            // Start the foreground service so playback survives screen lock
+            // and app-switching. The service shows a low-priority notification
+            // (mandatory for any foreground service on modern Android).
+            try {
+                Intent svc = new Intent(this, MusicPlaybackService.class);
+                if (Build.VERSION.SDK_INT >= 26) {
+                    startForegroundService(svc);
+                } else {
+                    startService(svc);
+                }
+            } catch (Exception ignored) { }
         } catch (Exception e) {
             FileLog.e("MusicPlayer: play failed", e);
             Toast.makeText(this, "Cannot play: " + e.getMessage(),
@@ -732,13 +777,16 @@ public class MusicPlayerActivity extends AppCompatActivity {
 
     private void releasePlayer() {
         ui.removeCallbacks(progressTick);
+        isPaused = false;
         if (player != null) {
             try { player.stop(); } catch (Exception ignored) { }
             try { player.release(); } catch (Exception ignored) { }
             player = null;
         }
+        try {
+            stopService(new Intent(this, MusicPlaybackService.class));
+        } catch (Exception ignored) { }
     }
-
     // ============================================================
     // Row actions
     // ============================================================
