@@ -2,6 +2,7 @@ package ohi.andre.consolelauncher;
 
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -121,7 +122,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final java.util.Map<String, Long> sizeCache = new java.util.HashMap<>();
 
-// ==================== Lifecycle ====================
+    // ==================== Lifecycle ====================
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -263,7 +264,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-// ==================== Incoming File Handling ====================
+    // ==================== Incoming File Handling ====================
 
     private boolean handleIncomingIntent(Intent intent) {
         if (intent == null) return false;
@@ -438,10 +439,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-/**
- * Shows a scrollable, searchable, selectable TextView dialog
- * containing the extracted document text.
- */
+    /**
+     * Shows a scrollable, searchable, selectable TextView dialog
+     * containing the extracted document text.
+     */
     /**
      * Shows a scrollable, searchable, selectable TextView dialog
      * containing the extracted document text.
@@ -876,13 +877,13 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         storageAdapter.setItems(items);
     }
 
-// ==================== Dialogs ====================
+    // ==================== Dialogs ====================
 
     private AlertDialog.Builder blackDialogBuilder() {
         return new AlertDialog.Builder(new ContextThemeWrapper(this, R.style.BlackDialog));
     }
 
-// ==================== Sort ====================
+    // ==================== Sort ====================
 
     private void showSortMenu(View anchor) {
         ContextThemeWrapper wrapper = new ContextThemeWrapper(this, R.style.PopupMenu_Black);
@@ -988,7 +989,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         return total;
     }
 
-// ==================== Directory Loading ====================
+    // ==================== Directory Loading ====================
 
     private void loadDirectory(File dir) {
         FileLog.i("loadDirectory: " + (dir == null ? "null" : dir.getAbsolutePath()));
@@ -1025,7 +1026,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-// ==================== UI Updates ====================
+    // ==================== UI Updates ====================
 
     private void updateSelectionUI() {
         boolean selectionMode = adapter.isSelectionMode();
@@ -1085,7 +1086,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateSelectionUI();
     }
 
-// ==================== UNIVERSAL FILE OPENING ====================
+    // ==================== UNIVERSAL FILE OPENING ====================
 
     /**
      * MASTER ROUTER. Given a File + optional MIME type, decides how to open it.
@@ -1300,7 +1301,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-// ==================== APK INSTALL ====================
+    // ==================== APK INSTALL ====================
 
     private void requestInstallApk(File apkFile) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1392,7 +1393,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-// ==================== ZIP Options ====================
+    // ==================== ZIP Options ====================
 
     private void showZipFileOptions(File zipFile) {
         blackDialogBuilder()
@@ -1413,7 +1414,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-// ==================== Open With Default App ====================
+    // ==================== Open With Default App ====================
 
     private void tryOpenWithDefaultApp(File file, String mimeType) {
         FileLog.i("tryOpenWithDefaultApp: file=" + file.getAbsolutePath()
@@ -1534,7 +1535,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-// ==================== Text Editor ====================
+    // ==================== Text Editor ====================
 
     private void openTextEditor(File file) {
         executor.execute(() -> {
@@ -1593,7 +1594,35 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        EditText editor = new EditText(this);
+        /*
+         * ============================================================
+         * ROBUST TEXT EDITOR / WRAP ENGINE
+         * ============================================================
+         *
+         * The old implementation tried to make MATCH_PARENT work inside
+         * HorizontalScrollView. That is not sufficient because HSV can
+         * measure its child with an effectively unbounded width. The result
+         * is that TextView/EditText keeps the width of the longest line and
+         * simply slides horizontally even when wrapping is supposed to be on.
+         *
+         * This implementation deliberately controls the editor's measured
+         * width:
+         *
+         * WRAP ON:
+         *   - editor width is EXACTLY the available viewport width
+         *   - horizontallyScrolling=false
+         *   - line breaking is therefore forced by Layout
+         *   - horizontal scrolling is disabled at every layer
+         *
+         * WRAP OFF:
+         *   - editor is allowed to use its natural/unbounded width
+         *   - horizontallyScrolling=true
+         *   - HorizontalScrollView handles long lines
+         *
+         * No text is manually inserted with line breaks. The actual text
+         * stored in the editor remains unchanged when wrapping is toggled.
+         */
+        final EditText editor = new EditText(this);
         editor.setText(content);
         editor.setTextColor(0xFF00FF00);
         editor.setHintTextColor(0xFF006600);
@@ -1606,39 +1635,41 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         editor.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        // Start in no-wrap mode (original formatting preserved, horizontal scroll).
-        editor.setHorizontallyScrolling(true);
         editor.setSingleLine(false);
         editor.setMaxLines(Integer.MAX_VALUE);
         editor.setVerticalScrollBarEnabled(true);
         editor.setHorizontalScrollBarEnabled(false);
+        editor.setIncludeFontPadding(true);
 
-        // HSV wrapper enables horizontal scroll when wrap is OFF, and (with
-        // fillViewport=true) constrains editor width to viewport when wrap is ON
-        // so text actually wraps.
-        final android.widget.HorizontalScrollView editorHScroll =
-                new android.widget.HorizontalScrollView(this);
+        final WrapAwareHorizontalScrollView editorHScroll =
+                new WrapAwareHorizontalScrollView(this);
         editorHScroll.setBackgroundColor(0xFF000000);
-        editorHScroll.setFillViewport(false);   // start in no-wrap mode
-        editorHScroll.setHorizontalScrollBarEnabled(true);
-        editorHScroll.addView(editor, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
+        editorHScroll.setFillViewport(true);
+        editorHScroll.setHorizontalScrollBarEnabled(false);
+        editorHScroll.setHorizontalFadingEdgeEnabled(false);
+        editorHScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
 
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.setBackgroundColor(0xFF000000);
-        scrollView.setFillViewport(true);
-        scrollView.addView(editorHScroll, new ViewGroup.LayoutParams(
+        editorHScroll.addView(editor, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final ScrollView scrollView = new ScrollView(this);
+        scrollView.setBackgroundColor(0xFF000000);
+        scrollView.setFillViewport(true);
+        scrollView.setVerticalScrollBarEnabled(true);
+        scrollView.addView(editorHScroll, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
 
         root.addView(scrollView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
+        // ---- Bottom bar ----
         LinearLayout buttonBar = new LinearLayout(this);
         buttonBar.setOrientation(LinearLayout.HORIZONTAL);
         buttonBar.setBackgroundColor(0xFF001100);
         buttonBar.setPadding(8, 8, 8, 8);
+        buttonBar.setGravity(Gravity.CENTER_VERTICAL);
 
         Button btnSave = createEditorButton("SAVE", 0xFF00FF00);
         Button btnSaveAs = createEditorButton("SAVE AS", 0xFF00FF00);
@@ -1663,7 +1694,18 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .create();
 
         final String[] original = { content };
+
+        /*
+         * Keep the user's existing behavior: this editor starts with wrap OFF.
+         * Press WRAP to enable forced viewport reflow.
+         */
         final boolean[] wrapEnabled = { false };
+
+        /*
+         * Keep the same logical text while search highlighting changes spans.
+         * Never insert/remove newline characters as part of wrapping.
+         */
+        final CharSequence[] displayedText = { content };
 
         btnSave.setOnClickListener(v -> {
             String newContent = editor.getText().toString();
@@ -1675,45 +1717,176 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             showSaveAsDialog(file, newContent);
         });
 
-        btnWrap.setOnClickListener(v -> {
-            wrapEnabled[0] = !wrapEnabled[0];
+        /*
+         * This method is the only place that changes the physical wrapping
+         * mode. It never changes the underlying text.
+         */
+        final Runnable applyWrapMode = () -> {
             if (wrapEnabled[0]) {
-                // --- WRAP ON: text wraps at screen width, no horizontal scroll ---
+                // ========================================================
+                // WRAP ON
+                // ========================================================
+                editorHScroll.setWrapWidthLocked(true);
                 editor.setHorizontallyScrolling(false);
                 editor.setSingleLine(false);
                 editor.setMaxLines(Integer.MAX_VALUE);
 
+                // The outer horizontal scroller must NEVER be able to move.
                 editorHScroll.setFillViewport(true);
                 editorHScroll.setHorizontalScrollBarEnabled(false);
+                editorHScroll.setHorizontalFadingEdgeEnabled(false);
                 editorHScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
                 editorHScroll.scrollTo(0, 0);
+
+                // ScrollView itself must also remain at x=0.
+                scrollView.scrollTo(0, scrollView.getScrollY());
 
                 ViewGroup.LayoutParams lp = editor.getLayoutParams();
                 lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
                 editor.setLayoutParams(lp);
 
-                btnWrap.setTextColor(0xFFFFFF00);
+                // The custom HorizontalScrollView forces the child to the
+                // exact viewport width. Do NOT let the EditText grow to the
+                // width of a long line.
+                editorHScroll.setWrapWidthLocked(true);
+
                 btnWrap.setText("WRAP ON");
+                btnWrap.setTextColor(0xFFFFFF00);
+
             } else {
-                // --- WRAP OFF: original formatting, horizontal scroll ---
+                // ========================================================
+                // WRAP OFF
+                // ========================================================
+                editorHScroll.setWrapWidthLocked(false);
                 editor.setHorizontallyScrolling(true);
                 editor.setSingleLine(false);
                 editor.setMaxLines(Integer.MAX_VALUE);
 
                 editorHScroll.setFillViewport(false);
                 editorHScroll.setHorizontalScrollBarEnabled(true);
+                editorHScroll.setHorizontalFadingEdgeEnabled(false);
                 editorHScroll.setOverScrollMode(View.OVER_SCROLL_ALWAYS);
 
                 ViewGroup.LayoutParams lp = editor.getLayoutParams();
                 lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
                 editor.setLayoutParams(lp);
 
-                btnWrap.setTextColor(0xFF00FF00);
+                editorHScroll.setWrapWidthLocked(false);
+
                 btnWrap.setText("WRAP");
+                btnWrap.setTextColor(0xFF00FF00);
             }
+
+            // Re-measure all three levels. This is intentionally repeated
+            // because HSV/ScrollView perform different measurement passes.
             editor.requestLayout();
             editorHScroll.requestLayout();
             scrollView.requestLayout();
+            root.requestLayout();
+
+            // A second pass after the dialog/window has completed layout is
+            // required on devices where the first pass has width == 0.
+            editorHScroll.post(() -> {
+                if (wrapEnabled[0]) {
+                    editorHScroll.setWrapWidthLocked(true);
+                }
+
+                editor.requestLayout();
+                editorHScroll.requestLayout();
+                scrollView.requestLayout();
+            });
+        };
+
+        /*
+         * Keep the wrap width synchronized with the real viewport. This also
+         * handles rotation, split-screen, display resizing and dialog resizing.
+         */
+        editorHScroll.getViewTreeObserver().addOnGlobalLayoutListener(
+                () -> {
+                    if (!wrapEnabled[0]) return;
+
+                    int width = editorHScroll.getWidth();
+                    if (width <= 0) return;
+
+                    editorHScroll.setWrapWidthLocked(true);
+                    editor.requestLayout();
+
+                    // Hard guarantee: wrapped mode is never horizontally offset.
+                    if (editorHScroll.getScrollX() != 0) {
+                        editorHScroll.scrollTo(0, editorHScroll.getScrollY());
+                    }
+                });
+
+        btnWrap.setOnClickListener(v -> {
+            /*
+             * Preserve the approximate reading location across reflow.
+             * Offset is better than a raw line number because one old line can
+             * become several wrapped lines after the width changes.
+             */
+            int anchorOffset = editor.getSelectionStart();
+            if (anchorOffset < 0) anchorOffset = 0;
+            if (anchorOffset > editor.length()) anchorOffset = editor.length();
+
+            int oldScrollY = scrollView.getScrollY();
+            android.text.Layout oldLayout = editor.getLayout();
+            if (oldLayout != null && editor.length() > 0) {
+                int visibleTop = oldScrollY + editor.getPaddingTop();
+                int line = oldLayout.getLineForVertical(
+                        Math.max(0, visibleTop - editor.getTop()));
+                if (line >= 0 && line < oldLayout.getLineCount()) {
+                    anchorOffset = Math.max(
+                            0,
+                            Math.min(
+                                    editor.length(),
+                                    oldLayout.getOffsetForHorizontal(
+                                            line,
+                                            oldLayout.getLineLeft(line)
+                                    )
+                            )
+                    );
+                }
+            }
+
+            wrapEnabled[0] = !wrapEnabled[0];
+            applyWrapMode.run();
+
+            final int finalAnchorOffset = anchorOffset;
+
+            /*
+             * Restore the closest equivalent vertical position after the new
+             * Layout has been created. Multiple posts make this reliable across
+             * WebView/Android UI scheduling differences and large files.
+             */
+            editor.post(() -> editor.post(() -> {
+                android.text.Layout newLayout = editor.getLayout();
+                if (newLayout == null || newLayout.getLineCount() == 0) return;
+
+                int offset = Math.max(
+                        0,
+                        Math.min(finalAnchorOffset, editor.length())
+                );
+
+                int line = newLayout.getLineForOffset(offset);
+                line = Math.max(
+                        0,
+                        Math.min(
+                                line,
+                                newLayout.getLineCount() - 1
+                        )
+                );
+
+                int targetY = newLayout.getLineTop(line)
+                        - editor.getPaddingTop()
+                        - dp(8);
+
+                if (targetY < 0) targetY = 0;
+
+                scrollView.scrollTo(0, targetY);
+
+                if (wrapEnabled[0]) {
+                    editorHScroll.scrollTo(0, editorHScroll.getScrollY());
+                }
+            }));
         });
 
         btnClose.setOnClickListener(v -> {
@@ -1741,6 +1914,133 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                     ViewGroup.LayoutParams.MATCH_PARENT);
             dialog.getWindow().setBackgroundDrawableResource(android.R.color.black);
         }
+
+        /*
+         * The existing editor starts OFF. Apply it once after the window has
+         * dimensions so the initial measurement is deterministic.
+         */
+        editor.post(() -> {
+            applyWrapMode.run();
+            editor.requestFocus();
+        });
+    }
+
+    /**
+     * EditText with an explicit width constraint for true word wrapping.
+     *
+     * Android's HorizontalScrollView may give its child an unspecified width.
+     * In that situation MATCH_PARENT is not enough to force TextView's Layout
+     * to wrap. This class changes the width measure spec to EXACTLY the actual
+     * viewport width whenever wrapping is enabled.
+     */
+    private static class WrapAwareHorizontalScrollView
+            extends android.widget.HorizontalScrollView {
+
+        private boolean wrapWidthLocked = false;
+
+        WrapAwareHorizontalScrollView(Context context) {
+            super(context);
+            setFillViewport(true);
+            setClipToPadding(true);
+        }
+
+        void setWrapWidthLocked(boolean locked) {
+            if (wrapWidthLocked == locked) {
+                requestLayout();
+                return;
+            }
+
+            wrapWidthLocked = locked;
+            requestLayout();
+            invalidate();
+        }
+
+        @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            /*
+             * First let HorizontalScrollView establish its own real viewport
+             * size. We then explicitly re-measure the EditText.
+             */
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+
+            if (!wrapWidthLocked || getChildCount() == 0) {
+                return;
+            }
+
+            View child = getChildAt(0);
+
+            int availableWidth = getMeasuredWidth()
+                    - getPaddingLeft()
+                    - getPaddingRight();
+
+            if (availableWidth <= 0) {
+                return;
+            }
+
+            /*
+             * THIS is the important part.
+             *
+             * The child is measured with EXACTLY the viewport width.
+             * Therefore Android's TextView Layout receives a real finite
+             * width and must break:
+             *
+             * hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhg
+             * ggggggggggggggggggggggggg
+             *
+             * It can no longer measure itself to the full length of the
+             * original line and horizontally slide inside the viewport.
+             */
+            int childWidthSpec = MeasureSpec.makeMeasureSpec(
+                    availableWidth,
+                    MeasureSpec.EXACTLY
+            );
+
+            int childHeightSpec = getChildMeasureSpec(
+                    heightMeasureSpec,
+                    getPaddingTop() + getPaddingBottom(),
+                    child.getLayoutParams().height
+            );
+
+            child.measure(childWidthSpec, childHeightSpec);
+
+            setMeasuredDimension(
+                    getMeasuredWidth(),
+                    Math.max(
+                            getMeasuredHeight(),
+                            child.getMeasuredHeight()
+                                    + getPaddingTop()
+                                    + getPaddingBottom()
+                    )
+            );
+        }
+
+        @Override
+        protected void onLayout(
+                boolean changed,
+                int left,
+                int top,
+                int right,
+                int bottom) {
+
+            if (wrapWidthLocked && getChildCount() > 0) {
+                View child = getChildAt(0);
+
+                int childLeft = getPaddingLeft();
+                int childTop = getPaddingTop();
+
+                child.layout(
+                        childLeft,
+                        childTop,
+                        childLeft + getMeasuredWidth()
+                                - getPaddingLeft()
+                                - getPaddingRight(),
+                        childTop + child.getMeasuredHeight()
+                );
+                return;
+            }
+
+            super.onLayout(changed, left, top, right, bottom);
+        }
     }
 
     private Button createEditorButton(String text, int color) {
@@ -1753,7 +2053,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         btn.setPadding(8, 8, 8, 8);
         return btn;
     }
-
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
     private void saveFile(File file, String content, AlertDialog dialog, String[] original) {
         executor.execute(() -> {
             try {
@@ -1825,7 +2127,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-// ==================== Read-only text viewer ====================
+    // ==================== Read-only text viewer ====================
 
     private void openAsText(File file) {
         executor.execute(() -> {
@@ -1887,7 +2189,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-// ==================== Share ====================
+    // ==================== Share ====================
 
     private void shareFile(File file) {
         FileLog.i("shareFile: " + file.getAbsolutePath());
@@ -1919,7 +2221,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-// ==================== MIME HELPERS ====================
+    // ==================== MIME HELPERS ====================
 
     private String getMimeType(File file) {
         String name = file.getName();
@@ -2078,7 +2380,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             Toast.makeText(this, "No apps available", Toast.LENGTH_SHORT).show();
         }
     }
-// ==================== Actions Menu ====================
+    // ==================== Actions Menu ====================
 
     private void showActionsMenu(View anchor) {
         List<File> selected = new ArrayList<>(adapter.getSelectedFiles());
@@ -2161,7 +2463,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         } catch (Exception ignored) { }
     }
 
-// ==================== Clipboard ====================
+    // ==================== Clipboard ====================
 
     private void doCopy(List<File> selected) {
         clipboard.clear();
@@ -2181,7 +2483,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateFooterBar();
     }
 
-// ==================== Paste ====================
+    // ==================== Paste ====================
 
     private void startPaste() {
         if (clipboard.isEmpty()) return;
@@ -2262,7 +2564,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-// ==================== Delete ====================
+    // ==================== Delete ====================
 
     private void confirmDelete(List<File> files) {
         blackDialogBuilder()
@@ -2331,7 +2633,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-// ==================== Extract ====================
+    // ==================== Extract ====================
 
     private void startExtract(File zipFile) {
         long totalBytes = Math.max(zipFile.length(), 1);
@@ -2384,7 +2686,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-// ==================== Zip ====================
+    // ==================== Zip ====================
 
     private void startZip(List<File> files) {
         final List<File> targets = new ArrayList<>(files);
@@ -2454,7 +2756,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-// ==================== Progress ====================
+    // ==================== Progress ====================
 
     private void beginProgress(String title) {
         isTransferring = true;
@@ -2522,7 +2824,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private interface ProgressCallback { void onBytes(long bytes); }
     private interface FileCompletedCallback { void onFileCompleted(); }
 
-// ==================== Rename ====================
+    // ==================== Rename ====================
 
     private void showRenameDialog(File file) {
         EditText input = new EditText(this);
@@ -2549,7 +2851,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-// ==================== Share Multiple ====================
+    // ==================== Share Multiple ====================
 
     private void shareFiles(List<File> selected) {
         FileLog.i("shareFiles: " + selected.size() + " files");
@@ -2609,7 +2911,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateSelectionUI();
     }
 
-// ==================== File Info ====================
+    // ==================== File Info ====================
 
     private void showFileInfo(File file) {
         String info = "Name: " + file.getName() + "\n"
@@ -2640,5 +2942,4 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
         return size;
     }
-
 }
