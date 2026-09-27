@@ -5,12 +5,14 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.ContextThemeWrapper;
@@ -56,6 +58,7 @@ import java.util.concurrent.Executors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
+import androidx.annotation.NonNull;
 
 public class FileManagerActivity extends AppCompatActivity implements FileManagerAdapter.OnFileClickListener {
 
@@ -65,17 +68,18 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private static final int SORT_NAME_ASC   = 0;
     private static final int SORT_NAME_DESC  = 1;
     private static final int SORT_DATE_NEW   = 2;
+
+    private File pendingFileOpenAfterPermission = null;
     private static final int SORT_DATE_OLD   = 3;
     private static final int SORT_SIZE_BIG   = 4;
     private static final int SORT_SIZE_SMALL = 5;
 
-    // Install request code
+    private boolean launchedForIncomingFile = false;
+
     private static final int REQUEST_INSTALL_PACKAGES = 12345;
 
     private int currentSortMode = SORT_NAME_ASC;
     private List<File> currentFileList = new ArrayList<>();
-
-    // Pending APK for install after permission
     private File pendingApkInstall = null;
 
     // Views
@@ -105,11 +109,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private TextView tvProgressPath;
     private ProgressBar progressBar;
 
-    // Adapters
     private FileManagerAdapter adapter;
     private StorageAdapter storageAdapter;
 
-    // State
     private File currentDir;
     private final List<File> clipboard = new ArrayList<>();
     private boolean isCutOperation = false;
@@ -124,7 +126,21 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        FileLog.i("FileManagerActivity.onCreate: intent action="
+                + (getIntent() != null ? getIntent().getAction() : "null")
+                + " data=" + (getIntent() != null ? getIntent().getData() : "null"));
+
+
+        // -------- STORAGE PERMISSION CHECK --------
+        boolean hasAccess = StoragePermissionHelper.hasFullStorageAccess(this);
+        FileLog.i("Storage permission granted? " + hasAccess);
+        if (!hasAccess) {
+            StoragePermissionHelper.requestStorageAccess(this);
+        }
+
         setContentView(R.layout.activity_file_manager);
+        launchedForIncomingFile = isIncomingFileIntent(getIntent());
+        FileLog.i("launchedForIncomingFile=" + launchedForIncomingFile);
 
         initViews();
         setupRecyclerViews();
@@ -132,7 +148,30 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         setupStorageDrawer();
 
         currentDir = new File(HOME_DIR);
-        loadDirectory(currentDir);
+
+        if (!handleIncomingIntent(getIntent())) {
+            FileLog.i("No incoming intent — loading HOME_DIR=" + HOME_DIR);
+            loadDirectory(currentDir);
+        }
+    }
+
+    private boolean isIncomingFileIntent(Intent intent) {
+        if (intent == null) return false;
+        String a = intent.getAction();
+        return Intent.ACTION_VIEW.equals(a)
+                || Intent.ACTION_SEND.equals(a)
+                || Intent.ACTION_SEND_MULTIPLE.equals(a)
+                || Intent.ACTION_EDIT.equals(a);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        launchedForIncomingFile = isIncomingFileIntent(intent);
+        if (!handleIncomingIntent(intent)) {
+            // normal reopen
+        }
     }
 
     @Override
@@ -141,13 +180,55 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         executor.shutdownNow();
     }
 
+    /**
+     * Filters out our own package from the resolve list to prevent an infinite
+     * loop where our FileManagerActivity handles its own ACTION_VIEW intents.
+     */
+    private List<ResolveInfo> resolveExcludingSelf(Intent intent) {
+        PackageManager pm = getPackageManager();
+        List<ResolveInfo> all = pm.queryIntentActivities(intent, 0);
+        List<ResolveInfo> filtered = new ArrayList<>();
+        String self = getPackageName();
+        for (ResolveInfo ri : all) {
+            String pkg = ri.activityInfo.packageName;
+            if (!self.equals(pkg)) {
+                filtered.add(ri);
+            } else {
+                FileLog.d("Skipping self-handler: " + pkg + "/" + ri.activityInfo.name);
+            }
+        }
+        return filtered;
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+
+        // Handle storage permission result
+        if (requestCode == StoragePermissionHelper.REQUEST_CODE_MANAGE_STORAGE
+                || requestCode == StoragePermissionHelper.REQUEST_CODE_LEGACY_STORAGE) {
+            if (StoragePermissionHelper.handleActivityResult(this, requestCode)) {
+                Toast.makeText(this, "Storage access granted", Toast.LENGTH_SHORT).show();
+                // Reload current directory now that we can read everything
+                loadDirectory(currentDir != null ? currentDir : new File(HOME_DIR));
+                // Also retry the pending file open if there was one
+                if (pendingFileOpenAfterPermission != null) {
+                    File f = pendingFileOpenAfterPermission;
+                    pendingFileOpenAfterPermission = null;
+                    openFileWithMime(f, getMimeType(f));
+                }
+            } else {
+                Toast.makeText(this,
+                        "Storage access denied — some files won't open",
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+
+        // Existing APK install handling
         if (requestCode == REQUEST_INSTALL_PACKAGES) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                     && getPackageManager().canRequestPackageInstalls()) {
-                // Permission granted, retry install
                 if (pendingApkInstall != null) {
                     File apk = pendingApkInstall;
                     pendingApkInstall = null;
@@ -162,7 +243,155 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Setup ====================
+    @Override
+    public void onRequestPermissionsResult(int requestCode,
+                                           @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (StoragePermissionHelper.handleRequestPermissionsResult(this, requestCode, grantResults)) {
+            Toast.makeText(this, "Storage access granted", Toast.LENGTH_SHORT).show();
+            loadDirectory(currentDir != null ? currentDir : new File(HOME_DIR));
+            if (pendingFileOpenAfterPermission != null) {
+                File f = pendingFileOpenAfterPermission;
+                pendingFileOpenAfterPermission = null;
+                openFileWithMime(f, getMimeType(f));
+            }
+        } else {
+            Toast.makeText(this,
+                    "Storage access denied — some files won't open",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // ==================== Incoming File Handling ====================
+
+    private boolean handleIncomingIntent(Intent intent) {
+        if (intent == null) return false;
+
+        String action = intent.getAction();
+        Uri data = intent.getData();
+
+        if (Intent.ACTION_SEND.equals(action)) {
+            Uri streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (streamUri != null) {
+                handleIncomingUri(streamUri, intent.getType());
+                return true;
+            }
+        }
+
+        if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (uris != null && !uris.isEmpty()) {
+                handleIncomingUri(uris.get(0), intent.getType());
+                return true;
+            }
+        }
+
+        if (Intent.ACTION_VIEW.equals(action)
+                || Intent.ACTION_EDIT.equals(action)
+                || Intent.ACTION_OPEN_DOCUMENT.equals(action)) {
+            if (data != null) {
+                handleIncomingUri(data, intent.getType());
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void handleIncomingUri(Uri uri, String mimeType) {
+        FileLog.i("handleIncomingUri: uri=" + uri + " mime=" + mimeType);
+
+        // Copy SYNCHRONOUSLY on the caller thread (which is the main thread
+        // here, invoked from onCreate/onNewIntent). This ensures the URI grant
+        // from the caller app (WhatsApp/Gmail) is still valid — it expires
+        // as soon as we return from onCreate.
+
+        final String fileName;
+        {
+            String n = getFileNameFromUri(uri);
+            if (n == null || n.isEmpty()) {
+                n = "incoming_" + System.currentTimeMillis();
+            }
+            fileName = n;
+        }
+
+        File cacheDir = new File(getCacheDir(), "incoming");
+        if (!cacheDir.exists()) cacheDir.mkdirs();
+        File localFile = new File(cacheDir, fileName);
+
+        long copied = 0;
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             OutputStream out = new FileOutputStream(localFile)) {
+            if (in == null) {
+                FileLog.e("handleIncomingUri: openInputStream returned null");
+                Toast.makeText(this, "Cannot read incoming file", Toast.LENGTH_LONG).show();
+                return;
+            }
+            byte[] buf = new byte[64 * 1024];
+            int len;
+            while ((len = in.read(buf)) > 0) {
+                out.write(buf, 0, len);
+                copied += len;
+            }
+            out.flush();
+        } catch (Exception e) {
+            FileLog.e("handleIncomingUri: copy failed", e);
+            Toast.makeText(this, "Cannot copy file: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        FileLog.i("handleIncomingUri: copied " + copied + " bytes to " + localFile);
+
+        if (copied == 0) {
+            FileLog.e("handleIncomingUri: 0 bytes copied — source URI was empty");
+            Toast.makeText(this,
+                    "Received an empty file from the source app.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        final File fileToOpen = localFile;
+        final String mime = mimeType != null ? mimeType : getMimeType(fileToOpen);
+
+        // Small delay so the activity is fully resumed before we launch an
+        // external intent from within onNewIntent/onCreate
+        mainHandler.post(() -> openFileWithMime(fileToOpen, mime));
+    }
+
+    private String getFileNameFromUri(Uri uri) {
+        if (uri == null) return null;
+
+        // For file:// URIs
+        if ("file".equals(uri.getScheme())) {
+            return new File(uri.getPath()).getName();
+        }
+
+        // For content:// URIs, query the display name
+        String result = null;
+        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (nameIndex >= 0) {
+                    result = cursor.getString(nameIndex);
+                }
+            }
+        } catch (Exception ignored) { }
+
+        if (result == null) {
+            // Fallback: use last path segment
+            String path = uri.getLastPathSegment();
+            if (path != null) {
+                int slash = path.lastIndexOf('/');
+                result = slash >= 0 ? path.substring(slash + 1) : path;
+            }
+        }
+
+        return result;
+    }
+
+    // ==================== Setup (unchanged) ====================
 
     private void initViews() {
         drawerLayout = findViewById(R.id.drawer_layout);
@@ -189,14 +418,22 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         tvProgressStats = findViewById(R.id.tv_progress_stats);
         tvProgressPath = findViewById(R.id.tv_progress_path);
         progressBar = findViewById(R.id.progress_bar);
+        // Drawer config — must be set AFTER findViewById
+        drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED);
+        drawerLayout.setScrimColor(0x99000000);
     }
 
     private void setupRecyclerViews() {
-        recyclerFiles.setLayoutManager(new GridLayoutManager(this, 2));
+        GridLayoutManager glm = new GridLayoutManager(this, 2);
+        recyclerFiles.setLayoutManager(glm);
+        recyclerFiles.setNestedScrollingEnabled(false);   // don't eat horizontal drawer gestures
+        recyclerFiles.setHasFixedSize(true);
+
         adapter = new FileManagerAdapter(this, this);
         recyclerFiles.setAdapter(adapter);
 
         recyclerStorage.setLayoutManager(new LinearLayoutManager(this));
+        recyclerStorage.setNestedScrollingEnabled(false);
         storageAdapter = new StorageAdapter(this, item -> {
             drawerLayout.closeDrawers();
             currentDir = new File(item.path);
@@ -239,17 +476,23 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         btnFooterPaste.setOnClickListener(v -> {
             if (!isTransferring) startPaste();
         });
-
         getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
                 if (isTransferring) return;
+
                 if (drawerLayout.isDrawerOpen(drawerPanel)) {
                     drawerLayout.closeDrawer(drawerPanel);
-                } else if (adapter.isSelectionMode()) {
+                    return;
+                }
+
+                if (adapter != null && adapter.isSelectionMode()) {
                     adapter.setSelectionMode(false);
                     updateSelectionUI();
-                } else if (!clipboard.isEmpty()) {
+                    return;
+                }
+
+                if (!clipboard.isEmpty()) {
                     blackDialogBuilder()
                             .setTitle("Discard clipboard?")
                             .setMessage(clipboard.size() + " item(s) will be forgotten")
@@ -260,15 +503,32 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                             })
                             .setNegativeButton("Keep", null)
                             .show();
-                } else if (currentDir != null && !currentDir.getAbsolutePath().equals(HOME_DIR)) {
+                    return;
+                }
+
+                // If we were launched for an incoming file (WhatsApp/Gmail), pressing
+                // back should EXIT the whole file manager immediately. Otherwise the
+                // user is stuck because their previous task (WhatsApp) is the caller
+                // and Android keeps re-entering us.
+                if (launchedForIncomingFile) {
+                    setEnabled(false);
+                    finishAndRemoveTask();   // <-- important: removes the task entirely
+                    return;
+                }
+
+                // Normal in-app navigation: go up one directory
+                if (currentDir != null && !currentDir.getAbsolutePath().equals(HOME_DIR)) {
                     File parent = currentDir.getParentFile();
-                    if (parent != null) {
+                    if (parent != null && parent.canRead()) {
                         currentDir = parent;
                         loadDirectory(currentDir);
+                        return;
                     }
-                } else {
-                    finish();
                 }
+
+                // At home dir, normal launch
+                setEnabled(false);
+                finish();
             }
         });
     }
@@ -415,22 +675,25 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     // ==================== Directory Loading ====================
 
     private void loadDirectory(File dir) {
-        if (dir == null || !dir.exists() || !dir.canRead()) return;
+        FileLog.i("loadDirectory: " + (dir == null ? "null" : dir.getAbsolutePath()));
+        if (dir == null || !dir.exists() || !dir.canRead()) {
+            FileLog.w("loadDirectory: cannot read " + dir);
+            return;
+        }
 
         currentDir = dir;
         tvPath.setText(dir.getAbsolutePath());
-
         final int sortModeSnapshot = currentSortMode;
 
         executor.execute(() -> {
             File[] files = dir.listFiles();
+            FileLog.d("loadDirectory: listed " + (files == null ? 0 : files.length) + " entries");
             List<File> fileList = new ArrayList<>();
             if (files != null) fileList.addAll(Arrays.asList(files));
 
             if (sortModeSnapshot == SORT_SIZE_BIG || sortModeSnapshot == SORT_SIZE_SMALL) {
                 precomputeSizes(fileList);
             }
-
             Collections.sort(fileList, buildComparator());
 
             mainHandler.post(() -> {
@@ -441,6 +704,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 updateFooterBar();
                 tvEmpty.setVisibility(fileList.isEmpty() ? View.VISIBLE : View.GONE);
                 recyclerFiles.setVisibility(fileList.isEmpty() ? View.GONE : View.VISIBLE);
+                FileLog.d("loadDirectory: displayed " + fileList.size() + " entries");
             });
         });
     }
@@ -480,9 +744,12 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     }
 
     // ==================== Click Handling ====================
-
     @Override
     public void onFileClick(File file, int position) {
+        FileLog.i("onFileClick: " + file.getAbsolutePath()
+                + " dir=" + file.isDirectory()
+                + " exists=" + file.exists()
+                + " readable=" + file.canRead());
         if (adapter.isSelectionMode()) {
             adapter.toggleSelection(file);
             updateSelectionUI();
@@ -490,7 +757,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             if (file.isDirectory()) {
                 loadDirectory(file);
             } else {
-                openFile(file);
+                openFileWithMime(file, getMimeType(file));
             }
         }
     }
@@ -502,51 +769,221 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateSelectionUI();
     }
 
-    // ==================== File Opening ====================
+    // ==================== UNIVERSAL FILE OPENING ====================
 
-    private void openFile(File file) {
+    /**
+     * MASTER ROUTER. Given a File + optional MIME type, decides how to open it.
+     */
+    private void openFileWithMime(File file, String mimeType) {
+        FileLog.i("openFileWithMime: file=" + file.getAbsolutePath()
+                + " mime=" + mimeType
+                + " exists=" + file.exists()
+                + " readable=" + file.canRead()
+                + " size=" + file.length());
+
         if (!file.exists()) {
+            FileLog.e("openFileWithMime: file doesn't exist");
             Toast.makeText(this, "File no longer exists", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        if (!file.canRead()) {
-            Toast.makeText(this, "Cannot read file - permission denied", Toast.LENGTH_SHORT).show();
+        if (!StoragePermissionHelper.hasFullStorageAccess(this)
+                && file.getAbsolutePath().startsWith(
+                Environment.getExternalStorageDirectory().getAbsolutePath())) {
+            FileLog.w("openFileWithMime: no full storage access, requesting");
+            pendingFileOpenAfterPermission = file;
+            StoragePermissionHelper.requestStorageAccess(this);
             return;
         }
 
         String fileName = file.getName().toLowerCase(Locale.US);
-        String mimeType = getMimeType(file);
+        if (mimeType == null) mimeType = getMimeType(file);
 
-        // APK -> installer
         if (fileName.endsWith(".apk")) {
+            FileLog.d("Router: APK");
             requestInstallApk(file);
             return;
         }
-
-        // ZIP -> options
         if (fileName.endsWith(".zip")) {
+            FileLog.d("Router: ZIP");
             showZipFileOptions(file);
             return;
         }
-
-        // Unknown / no-app files -> open as text editor
-        // We try to open with system first, and if no app found, fall back to editor
+        if (mimeType.equals("application/pdf") || fileName.endsWith(".pdf")) {
+            FileLog.d("Router: PDF -> PdfViewerActivity");
+            openPdfNative(file);
+            return;
+        }
+        if (isOfficeDocument(mimeType, fileName)) {
+            FileLog.d("Router: Office");
+            openOfficeDocument(file, mimeType);
+            return;
+        }
+        if (isTextBasedFile(file) || mimeType.startsWith("text/")) {
+            FileLog.d("Router: Text -> built-in editor");
+            openTextEditor(file);
+            return;
+        }
+        if (mimeType.startsWith("image/")) {
+            FileLog.d("Router: Image");
+            tryOpenWithDefaultApp(file, mimeType);
+            return;
+        }
+        if (mimeType.startsWith("video/") || mimeType.startsWith("audio/")) {
+            FileLog.d("Router: Media");
+            tryOpenWithDefaultApp(file, mimeType);
+            return;
+        }
+        FileLog.d("Router: default -> tryOpenWithDefaultApp");
         tryOpenWithDefaultApp(file, mimeType);
     }
+    private boolean isOfficeDocument(String mimeType, String fileName) {
+        if (mimeType == null) return false;
+        if (mimeType.contains("msword")) return true;
+        if (mimeType.contains("wordprocessing")) return true;
+        if (mimeType.contains("ms-excel")) return true;
+        if (mimeType.contains("spreadsheet")) return true;
+        if (mimeType.contains("ms-powerpoint")) return true;
+        if (mimeType.contains("presentation")) return true;
+        if (mimeType.contains("opendocument")) return true;
+        if (mimeType.equals("application/rtf")) return true;
 
-    // ==================== APK INSTALL (FIXED) ====================
+        String lower = fileName.toLowerCase(Locale.US);
+        return lower.endsWith(".doc") || lower.endsWith(".docx")
+                || lower.endsWith(".xls") || lower.endsWith(".xlsx")
+                || lower.endsWith(".ppt") || lower.endsWith(".pptx")
+                || lower.endsWith(".odt") || lower.endsWith(".ods")
+                || lower.endsWith(".odp") || lower.endsWith(".rtf");
+    }
 
     /**
-     * Request install permission if needed, then launch installer.
-     * FIX: Uses correct flags, checks canRequestPackageInstalls(), and
-     *      provides clear feedback when package installer is not available.
+     * Opens PDF using our native PdfViewerActivity.
      */
+    private void openPdfNative(File pdfFile) {
+        FileLog.i("openPdfNative: " + pdfFile.getAbsolutePath());
+
+        // Strategy 1: pass the absolute path as a string extra. PdfViewerActivity
+        // reads it directly as a File — no FileProvider needed at all.
+        // This is the most robust approach and works for any file location.
+        try {
+            Intent intent = new Intent(this, PdfViewerActivity.class);
+            intent.putExtra(PdfViewerActivity.EXTRA_PDF_URI, pdfFile.getAbsolutePath());
+            intent.putExtra(PdfViewerActivity.EXTRA_PDF_NAME, pdfFile.getName());
+            startActivity(intent);
+            FileLog.i("openPdfNative: launched PdfViewerActivity with path");
+            return;
+        } catch (Exception e) {
+            FileLog.e("openPdfNative: path-based launch failed", e);
+        }
+
+        // Strategy 2: fallback to FileProvider URI
+        try {
+            Uri uri = FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", pdfFile);
+            FileLog.i("openPdfNative: FileProvider URI=" + uri);
+            Intent intent = new Intent(this, PdfViewerActivity.class);
+            intent.setData(uri);
+            intent.putExtra(PdfViewerActivity.EXTRA_PDF_NAME, pdfFile.getName());
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(intent);
+            return;
+        } catch (Exception e) {
+            FileLog.e("openPdfNative: FileProvider URI failed", e);
+        }
+
+        // Strategy 3: delegate to system PDF viewer
+        FileLog.w("openPdfNative: falling back to system viewer");
+        tryOpenWithDefaultApp(pdfFile, "application/pdf");
+    }
+
+    private void openOfficeDocument(File file, String mimeType) {
+        FileLog.i("openOfficeDocument: " + file.getAbsolutePath() + " mime=" + mimeType);
+
+        if (file.length() == 0) {
+            FileLog.e("openOfficeDocument: file is 0 bytes — refusing to open");
+            Toast.makeText(this,
+                    "File is empty (size 0). The share from the source app failed.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        Uri fileUri;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                fileUri = FileProvider.getUriForFile(
+                        this, getPackageName() + ".fileprovider", file);
+                FileLog.d("openOfficeDocument: URI=" + fileUri);
+            } catch (Exception e) {
+                FileLog.e("openOfficeDocument: FileProvider failed", e);
+                Toast.makeText(this, "Cannot share file: " + e.getMessage(),
+                        Toast.LENGTH_LONG).show();
+                showUnknownFileDialog(file, mimeType);
+                return;
+            }
+        } else {
+            fileUri = Uri.fromFile(file);
+        }
+
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(fileUri, mimeType);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        // CRITICAL: exclude ourselves from the resolve list, otherwise Android
+        // picks our own FileManagerActivity to handle the intent -> infinite loop
+        List<ResolveInfo> activities = resolveExcludingSelf(intent);
+        FileLog.d("openOfficeDocument: " + activities.size() + " external handlers");
+
+        if (activities.isEmpty()) {
+            FileLog.w("openOfficeDocument: no external office app for " + mimeType);
+            blackDialogBuilder()
+                    .setTitle("No Office App Found")
+                    .setMessage("No app is installed to open " + file.getName()
+                            + ".\n\nYou can view the raw file content as text, "
+                            + "share it, or install an office app.")
+                    .setPositiveButton("View as Text", (d, w) -> openAsText(file))
+                    .setNeutralButton("Share", (d, w) -> shareFile(file))
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            return;
+        }
+
+        for (ResolveInfo ri : activities) {
+            try {
+                grantUriPermission(ri.activityInfo.packageName, fileUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) { }
+        }
+
+        try {
+            if (activities.size() == 1) {
+                // Set the component explicitly so we don't accidentally match ourselves
+                intent.setComponent(new android.content.ComponentName(
+                        activities.get(0).activityInfo.packageName,
+                        activities.get(0).activityInfo.name));
+                FileLog.i("openOfficeDocument: launching "
+                        + activities.get(0).activityInfo.packageName);
+                startActivity(intent);
+            } else {
+                // Build a chooser but exclude our own package from it
+                Intent chooser = Intent.createChooser(intent,
+                        "Open " + file.getName() + " with");
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(chooser);
+            }
+        } catch (Exception e) {
+            FileLog.e("openOfficeDocument: failed to launch", e);
+            Toast.makeText(this, "Failed to open: " + e.getMessage(),
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    // ==================== APK INSTALL ====================
+
     private void requestInstallApk(File apkFile) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             PackageManager pm = getPackageManager();
             if (!pm.canRequestPackageInstalls()) {
-                // Need user to grant "Install unknown apps" permission
                 pendingApkInstall = apkFile;
                 Toast.makeText(this,
                         "Enable 'Install unknown apps' to install APKs",
@@ -556,7 +993,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                             Uri.parse("package:" + getPackageName()));
                     startActivityForResult(intent, REQUEST_INSTALL_PACKAGES);
                 } catch (Exception e) {
-                    // Fallback to app details page
                     try {
                         Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                 Uri.parse("package:" + getPackageName()));
@@ -574,58 +1010,53 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         launchApkInstaller(apkFile);
     }
 
-    /**
-     * Actually launches the package installer.
-     * FIX: Uses FLAG_ACTIVITY_NEW_TASK + FLAG_GRANT_READ_URI_PERMISSION,
-     *      checks with MATCH_DEFAULT_ONLY, and shows clear error if no installer.
-     */
     private void launchApkInstaller(File apkFile) {
+        FileLog.i("launchApkInstaller: " + apkFile.getAbsolutePath());
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
-            Uri apkUri;
+            Uri apkUri = null;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 apkUri = FileProvider.getUriForFile(
-                        this,
-                        getPackageName() + ".fileprovider",
-                        apkFile
-                );
+                        this, getPackageName() + ".fileprovider", apkFile);
+                FileLog.d("launchApkInstaller: URI=" + apkUri);
             } else {
                 apkUri = Uri.fromFile(apkFile);
             }
 
             intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
 
-            // Grant read permission to all apps that might receive this intent
             List<ResolveInfo> resInfoList = getPackageManager()
                     .queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
-            for (ResolveInfo resolveInfo : resInfoList) {
-                String packageName = resolveInfo.activityInfo.packageName;
-                grantUriPermission(packageName, apkUri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            FileLog.d("launchApkInstaller: " + resInfoList.size() + " installers");
+
+            for (ResolveInfo ri : resInfoList) {
+                String pkg = ri.activityInfo.packageName;
+                grantUriPermission(pkg, apkUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                FileLog.d("launchApkInstaller: granted to " + pkg);
             }
 
             if (resInfoList.isEmpty()) {
-                // No installer found - very unusual, but possible on custom ROMs
+                FileLog.w("launchApkInstaller: no package installer");
                 showNoInstallerDialog(apkFile);
                 return;
             }
 
             startActivity(intent);
+            FileLog.i("launchApkInstaller: launched");
 
         } catch (ActivityNotFoundException e) {
+            FileLog.e("launchApkInstaller: ActivityNotFound", e);
             showNoInstallerDialog(apkFile);
         } catch (Exception e) {
+            FileLog.e("launchApkInstaller: failed", e);
             Toast.makeText(this, "Failed to open installer: " + e.getMessage(),
                     Toast.LENGTH_LONG).show();
         }
     }
 
-    /**
-     * Shows dialog when no package installer exists on device.
-     */
     private void showNoInstallerDialog(File apkFile) {
         blackDialogBuilder()
                 .setTitle("No Package Installer")
@@ -663,56 +1094,77 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     // ==================== Open With Default App ====================
 
     private void tryOpenWithDefaultApp(File file, String mimeType) {
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        Uri fileUri;
+        FileLog.i("tryOpenWithDefaultApp: file=" + file.getAbsolutePath()
+                + " mime=" + mimeType);
 
+        if (!file.exists()) {
+            FileLog.e("tryOpenWithDefaultApp: file does not exist");
+            Toast.makeText(this, "File no longer exists", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!file.canRead()) {
+            FileLog.e("tryOpenWithDefaultApp: file not readable");
+            Toast.makeText(this, "File is not readable", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (file.length() == 0) {
+            FileLog.e("tryOpenWithDefaultApp: file is 0 bytes");
+            Toast.makeText(this, "File is empty", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Uri fileUri;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
                 fileUri = FileProvider.getUriForFile(
-                        this,
-                        getPackageName() + ".fileprovider",
-                        file
-                );
+                        this, getPackageName() + ".fileprovider", file);
             } catch (Exception e) {
-                fileUri = Uri.fromFile(file);
+                FileLog.e("tryOpenWithDefaultApp: FileProvider failed", e);
+                showUnknownFileDialog(file, mimeType);
+                return;
             }
         } else {
             fileUri = Uri.fromFile(file);
         }
 
+        Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setDataAndType(fileUri, mimeType);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
-        PackageManager pm = getPackageManager();
-        List<ResolveInfo> activities = pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
+        List<ResolveInfo> activities = resolveExcludingSelf(intent);
+        FileLog.d("tryOpenWithDefaultApp: " + activities.size() + " external handlers");
 
         if (activities.isEmpty()) {
-            // FALLBACK: Open as text editor for ANY unknown file
             showUnknownFileDialog(file, mimeType);
             return;
         }
 
+        for (ResolveInfo ri : activities) {
+            try {
+                grantUriPermission(ri.activityInfo.packageName, fileUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) { }
+        }
+
         try {
             if (activities.size() == 1) {
+                // Explicitly set component so Android can't pick us
+                intent.setComponent(new android.content.ComponentName(
+                        activities.get(0).activityInfo.packageName,
+                        activities.get(0).activityInfo.name));
                 startActivity(intent);
             } else {
                 Intent chooser = Intent.createChooser(intent, "Open with");
                 chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(chooser);
             }
-        } catch (ActivityNotFoundException e) {
-            showUnknownFileDialog(file, mimeType);
         } catch (Exception e) {
-            Toast.makeText(this, "Failed to open file: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            FileLog.e("tryOpenWithDefaultApp: failed", e);
+            showUnknownFileDialog(file, mimeType);
         }
     }
 
-    /**
-     * For unknown file types (no app can open them), we show a dialog
-     * offering to open in our built-in TEXT EDITOR.
-     * This includes .properties, .config, .ini, and any other unknown extension.
-     */
     private void showUnknownFileDialog(File file, String mimeType) {
         String fileName = file.getName();
         String fileSize = FileManagerAdapter.formatSize(file.length());
@@ -728,7 +1180,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         List<String> options = new ArrayList<>();
         List<Runnable> actions = new ArrayList<>();
 
-        // PRIMARY option: open in text editor
         options.add("📝  Open in Text Editor" + (isText ? " (recommended)" : ""));
         actions.add(() -> openTextEditor(file));
 
@@ -761,14 +1212,11 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-    /**
-     * Full in-app TEXT EDITOR with save support.
-     * Black background, green text, monospace font, save button.
-     */
+    // ==================== Text Editor ====================
+
     private void openTextEditor(File file) {
         executor.execute(() -> {
             try {
-                // Read file content (max 5MB for editing)
                 long maxEditSize = 5 * 1024 * 1024;
                 long fileSize = file.length();
                 boolean tooBig = fileSize > maxEditSize;
@@ -785,7 +1233,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                     return;
                 }
 
-                // Read content
                 StringBuilder sb = new StringBuilder();
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(new FileInputStream(file), "UTF-8"))) {
@@ -808,17 +1255,11 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    /**
-     * Builds and shows the text editor UI inside an AlertDialog.
-     */
     private void showEditorDialog(File file, String content) {
-        // Root container
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(0xFF000000);
-        root.setPadding(0, 0, 0, 0);
 
-        // Info bar (filename + size)
         TextView infoBar = new TextView(this);
         infoBar.setText(file.getName() + "  •  " + FileManagerAdapter.formatSize(file.length()));
         infoBar.setTextColor(0xFF00AA00);
@@ -830,7 +1271,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // EditText
         EditText editor = new EditText(this);
         editor.setText(content);
         editor.setTextColor(0xFF00FF00);
@@ -857,7 +1297,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         root.addView(scrollView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // Button bar
         LinearLayout buttonBar = new LinearLayout(this);
         buttonBar.setOrientation(LinearLayout.HORIZONTAL);
         buttonBar.setBackgroundColor(0xFF001100);
@@ -881,35 +1320,27 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // Build the dialog
         AlertDialog dialog = blackDialogBuilder()
                 .setView(root)
                 .create();
 
-        // Track original content to detect changes
         final String[] original = { content };
         final boolean[] wrapEnabled = { false };
 
-        // Save button
         btnSave.setOnClickListener(v -> {
             String newContent = editor.getText().toString();
             saveFile(file, newContent, dialog, original);
         });
 
-        // Save As button
         btnSaveAs.setOnClickListener(v -> {
             String newContent = editor.getText().toString();
             showSaveAsDialog(file, newContent);
         });
 
-        // Wrap toggle
         btnWrap.setOnClickListener(v -> {
             wrapEnabled[0] = !wrapEnabled[0];
             if (wrapEnabled[0]) {
                 editor.setHorizontallyScrolling(false);
-                editor.setInputType(InputType.TYPE_CLASS_TEXT
-                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                        | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
                 btnWrap.setTextColor(0xFFFFFF00);
                 btnWrap.setText("WRAP ON");
             } else {
@@ -919,7 +1350,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             }
         });
 
-        // Close button
         btnClose.setOnClickListener(v -> {
             String currentContent = editor.getText().toString();
             if (!currentContent.equals(original[0])) {
@@ -939,7 +1369,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         dialog.show();
 
-        // Make dialog window fill most of the screen
         if (dialog.getWindow() != null) {
             dialog.getWindow().setLayout(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -959,9 +1388,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         return btn;
     }
 
-    /**
-     * Save content to file. Shows toast on success/failure.
-     */
     private void saveFile(File file, String content, AlertDialog dialog, String[] original) {
         executor.execute(() -> {
             try {
@@ -981,9 +1407,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    /**
-     * Show Save As dialog to save content to a new file.
-     */
     private void showSaveAsDialog(File originalFile, String content) {
         EditText input = new EditText(this);
         input.setText(originalFile.getName());
@@ -1006,9 +1429,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                         blackDialogBuilder()
                                 .setTitle("File Exists")
                                 .setMessage(newName + " already exists. Overwrite?")
-                                .setPositiveButton("Overwrite", (d, w) -> {
-                                    writeFile(newFile, content);
-                                })
+                                .setPositiveButton("Overwrite", (d, w) -> writeFile(newFile, content))
                                 .setNegativeButton("Cancel", null)
                                 .show();
                     } else {
@@ -1038,13 +1459,12 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    /**
-     * Read-only text viewer (kept for very large files).
-     */
+    // ==================== Read-only text viewer ====================
+
     private void openAsText(File file) {
         executor.execute(() -> {
             try {
-                long maxSize = 1024 * 1024; // 1MB for viewer
+                long maxSize = 1024 * 1024;
                 long fileSize = file.length();
                 boolean truncated = fileSize > maxSize;
 
@@ -1101,25 +1521,39 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
+    // ==================== Share ====================
+
     private void shareFile(File file) {
+        FileLog.i("shareFile: " + file.getAbsolutePath());
         try {
             Uri uri = FileProvider.getUriForFile(
-                    this,
-                    getPackageName() + ".fileprovider",
-                    file
-            );
+                    this, getPackageName() + ".fileprovider", file);
+            FileLog.d("shareFile: URI=" + uri);
 
             Intent intent = new Intent(Intent.ACTION_SEND);
             intent.setType(getMimeType(file));
             intent.putExtra(Intent.EXTRA_STREAM, uri);
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
-            startActivity(Intent.createChooser(intent, "Share via"));
+            // Pre-grant to every app that might receive the share
+            PackageManager pm = getPackageManager();
+            List<ResolveInfo> all = pm.queryIntentActivities(intent, 0);
+            for (ResolveInfo ri : all) {
+                try {
+                    grantUriPermission(ri.activityInfo.packageName, uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Exception ignored) { }
+            }
 
+            startActivity(Intent.createChooser(intent, "Share via"));
         } catch (Exception e) {
-            Toast.makeText(this, "Failed to share: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            FileLog.e("shareFile: failed", e);
+            Toast.makeText(this, "Failed to share: " + e.getMessage(),
+                    Toast.LENGTH_SHORT).show();
         }
     }
+
+    // ==================== MIME HELPERS ====================
 
     private String getMimeType(File file) {
         String name = file.getName();
@@ -1180,6 +1614,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
                 case "ppt": return "application/vnd.ms-powerpoint";
                 case "pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+                case "odt": return "application/vnd.oasis.opendocument.text";
+                case "ods": return "application/vnd.oasis.opendocument.spreadsheet";
+                case "odp": return "application/vnd.oasis.opendocument.presentation";
+                case "rtf": return "application/rtf";
                 case "epub": return "application/epub+zip";
                 case "mobi": return "application/x-mobipocket-ebook";
             }
@@ -1222,7 +1660,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 ".csv", ".tsv", ".ini", ".cfg", ".conf", ".properties",
                 ".gradle", ".pro", ".sh", ".bat", ".yml", ".yaml", ".sql",
                 ".config", ".env", ".gitignore", ".editorconfig", ".toml",
-                ".lock", ".list", ".rc", ".text", ".me", ".readme"
+                ".lock", ".list", ".rc", ".text", ".me", ".readme",
+                ".php", ".xhtml", ".db", ".cs", ".rb", ".go", ".rs", ".swift"
         };
 
         for (String ext : textExtensions) {
@@ -1232,37 +1671,47 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     }
 
     private void openWithChooser(File file, String mimeType) {
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        Uri fileUri;
+        FileLog.i("openWithChooser: " + file.getAbsolutePath() + " mime=" + mimeType);
 
+        Uri fileUri;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
                 fileUri = FileProvider.getUriForFile(
-                        this,
-                        getPackageName() + ".fileprovider",
-                        file
-                );
+                        this, getPackageName() + ".fileprovider", file);
             } catch (Exception e) {
-                fileUri = Uri.fromFile(file);
+                FileLog.e("openWithChooser: FileProvider failed", e);
+                Toast.makeText(this, "Cannot open: " + e.getMessage(),
+                        Toast.LENGTH_LONG).show();
+                return;
             }
         } else {
             fileUri = Uri.fromFile(file);
         }
 
+        Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setDataAndType(fileUri, mimeType);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        List<ResolveInfo> all = resolveExcludingSelf(intent);
+        for (ResolveInfo ri : all) {
+            try {
+                grantUriPermission(ri.activityInfo.packageName, fileUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) { }
+        }
 
         Intent chooser = Intent.createChooser(intent, "Open with");
         chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
         try {
             startActivity(chooser);
+            FileLog.i("openWithChooser: chooser launched, " + all.size() + " apps");
         } catch (ActivityNotFoundException e) {
+            FileLog.e("openWithChooser: no apps", e);
             Toast.makeText(this, "No apps available", Toast.LENGTH_SHORT).show();
         }
     }
-
     // ==================== Actions Menu ====================
 
     private void showActionsMenu(View anchor) {
@@ -1346,7 +1795,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         } catch (Exception ignored) { }
     }
 
-    // ==================== Clipboard Actions ====================
+    // ==================== Clipboard ====================
 
     private void doCopy(List<File> selected) {
         clipboard.clear();
@@ -1366,7 +1815,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateFooterBar();
     }
 
-    // ==================== Paste with Progress ====================
+    // ==================== Paste ====================
 
     private void startPaste() {
         if (clipboard.isEmpty()) return;
@@ -1447,7 +1896,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Delete with Progress ====================
+    // ==================== Delete ====================
 
     private void confirmDelete(List<File> files) {
         blackDialogBuilder()
@@ -1639,7 +2088,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Progress Helpers ====================
+    // ==================== Progress ====================
 
     private void beginProgress(String title) {
         isTransferring = true;
@@ -1737,23 +2186,29 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     // ==================== Share Multiple ====================
 
     private void shareFiles(List<File> selected) {
+        FileLog.i("shareFiles: " + selected.size() + " files");
         if (selected.isEmpty()) return;
 
         ArrayList<Uri> uris = new ArrayList<>();
         String mimeType = "*/*";
 
         for (File f : selected) {
-            if (f.isFile()) {
-                try {
-                    Uri uri = FileProvider.getUriForFile(this,
-                            getPackageName() + ".fileprovider", f);
-                    uris.add(uri);
-                    mimeType = getMimeType(f);
-                } catch (Exception ignored) { }
+            if (!f.isFile()) continue;
+            try {
+                Uri uri = FileProvider.getUriForFile(this,
+                        getPackageName() + ".fileprovider", f);
+                uris.add(uri);
+                mimeType = getMimeType(f);
+                FileLog.d("shareFiles: added " + uri);
+            } catch (Exception e) {
+                FileLog.e("shareFiles: skipped " + f.getAbsolutePath(), e);
             }
         }
 
-        if (uris.isEmpty()) return;
+        if (uris.isEmpty()) {
+            FileLog.w("shareFiles: no shareable files");
+            return;
+        }
 
         Intent intent;
         if (uris.size() == 1) {
@@ -1766,9 +2221,23 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         intent.setType(mimeType);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
+        // Pre-grant to all receivers
+        PackageManager pm = getPackageManager();
+        List<ResolveInfo> all = pm.queryIntentActivities(intent, 0);
+        for (ResolveInfo ri : all) {
+            for (Uri u : uris) {
+                try {
+                    grantUriPermission(ri.activityInfo.packageName, u,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Exception ignored) { }
+            }
+        }
+
         try {
             startActivity(Intent.createChooser(intent, "Share via"));
-        } catch (Exception ignored) { }
+        } catch (Exception e) {
+            FileLog.e("shareFiles: failed", e);
+        }
 
         adapter.setSelectionMode(false);
         updateSelectionUI();

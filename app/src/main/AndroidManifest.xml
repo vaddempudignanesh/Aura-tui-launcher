@@ -9,8 +9,6 @@
         android:resizeable="true"
         android:smallScreens="true" />
 
-
-
     <!-- permissions -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FLASHLIGHT" />
@@ -18,15 +16,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
 
     <!-- MEDIA & STORAGE PERMISSIONS START -->
-    <!-- Required for Android 14 (API 34) and above for partial/selected media access -->
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
-
-    <!-- Required for Android 13 (API 33) and above -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
-
-    <!-- Required for Android 12 (API 32) and below -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <!-- MEDIA & STORAGE PERMISSIONS END -->
@@ -56,41 +49,18 @@
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-
     <!-- features -->
-    <uses-feature
-        android:name="android.hardware.camera"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.camera.flash"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.camera.autofocus"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.telephony"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.wifi"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.touchscreen"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.bluetooth"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.location.gps"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.location"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.location.network"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.audio.output"
-        android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.network" android:required="false" />
+    <uses-feature android:name="android.hardware.audio.output" android:required="false" />
 
     <permission
         android:name="ohi.andre.consolelauncher.permission.RECEIVE_CMD"
@@ -105,16 +75,19 @@
         android:requestLegacyExternalStorage="true"
         android:extractNativeLibs="true">
 
+
+
         <provider
-            android:name=".tuils.GenericFileProvider"
-            android:authorities="${applicationId}.FILE_PROVIDER"
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/provider_paths"/>
+                android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- ============ LAUNCHER ============ -->
         <activity
             android:name=".LauncherActivity"
             android:clearTaskOnLaunch="true"
@@ -129,7 +102,6 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -137,6 +109,7 @@
             </intent-filter>
         </activity>
 
+        <!-- ============ POLICY RECEIVER ============ -->
         <receiver
             android:name=".tuils.stuff.PolicyReceiver"
             android:description="@string/admin_permission"
@@ -145,13 +118,13 @@
             <meta-data
                 android:name="android.app.device_admin"
                 android:resource="@xml/policy" />
-
             <intent-filter>
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
                 <action android:name="android.app.action.DEVICE_ADMIN_DISABLED" />
             </intent-filter>
         </receiver>
 
+        <!-- ============ SERVICES ============ -->
         <service
             android:name=".managers.notifications.KeeperService"
             android:enabled="true"
@@ -166,6 +139,7 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- ============ TUIXT ACTIVITY ============ -->
         <activity
             android:name=".commands.tuixt.TuixtActivity"
             android:excludeFromRecents="true"
@@ -177,76 +151,33 @@
             <meta-data
                 android:name="androidx.core.app.PARENT_ACTIVITY"
                 android:value=".LauncherActivity" />
-
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <action android:name="android.intent.action.EDIT" />
-
                 <data android:mimeType="text/*" />
-
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <action android:name="android.intent.action.EDIT" />
-
                 <category android:name="android.intent.category.DEFAULT" />
-
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.js"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.htm"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.html"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.xhtml"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.php"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.ini"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.sh"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.log"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.db"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.conf"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.cfg"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.txt"
-                    android:scheme="file" />
-                <data
-                    android:host="*"
-                    android:pathPattern=".*\\.xml"
-                    android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.js" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.htm" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.html" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.xhtml" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.php" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.ini" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.sh" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.log" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.db" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.conf" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.cfg" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.txt" android:scheme="file" />
+                <data android:host="*" android:pathPattern=".*\\.xml" android:scheme="file" />
             </intent-filter>
         </activity>
 
+        <!-- ============ NOTIFICATION SERVICES ============ -->
         <service
             android:name=".managers.notifications.NotificationService"
             android:label="@string/notification_reader"
@@ -256,10 +187,11 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
-        <service 
+        <service
             android:name=".managers.notifications.NotificationMonitorService"
             android:exported="false" />
 
+        <!-- ============ OTHER ACTIVITIES ============ -->
         <activity
             android:name=".CalculatorActivity"
             android:theme="@style/Theme.Transparent"
@@ -272,19 +204,25 @@
             android:theme="@style/Theme.Transparent"
             android:exported="false"
             android:screenOrientation="portrait"/>
+
         <activity
             android:name=".GalleryActivity"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode"
             android:exported="true"
-            android:theme="@style/AppTheme">
-            <!-- existing intent filters -->
-        </activity>
+            android:theme="@style/AppTheme" />
 
         <activity
             android:name=".ImageViewerActivity"
             android:theme="@style/Theme.Transparent"
             android:exported="false"
             android:screenOrientation="portrait"/>
+
+
+        <activity
+            android:name=".PdfViewerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
             android:name=".AuraBrowserActivity"
@@ -296,33 +234,117 @@
 
         <activity
             android:name=".FileManagerActivity"
-            android:exported="false"
-            android:theme="@style/Theme.AppCompat.NoActionBar" />
+            android:exported="true"
+            android:theme="@style/Theme.AppCompat.NoActionBar"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="false"
+            android:windowSoftInputMode="adjustResize"
+            android:hardwareAccelerated="true"
+            android:taskAffinity="">
 
+            <!-- Text files -->
+            <intent-filter android:priority="100">
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
 
+            <!-- PDF -->
+            <intent-filter android:priority="100">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/pdf" />
+            </intent-filter>
 
+            <!-- Office docs -->
+            <intent-filter android:priority="100">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/rtf" />
+            </intent-filter>
 
+            <!-- File extensions -->
+            <intent-filter android:priority="100">
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.txt" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.log" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.md" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.json" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.xml" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.html" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.htm" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.css" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.js" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.py" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.java" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.kt" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.c" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.cpp" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.h" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.sh" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.bat" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.properties" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.config" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.cfg" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.conf" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.ini" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.yml" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.yaml" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.csv" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.pdf" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.doc" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.docx" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.xls" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.xlsx" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.ppt" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.pptx" />
+            </intent-filter>
+
+            <!-- Content URIs from WhatsApp/Gmail — NO BROWSABLE! -->
+            <intent-filter android:priority="100">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+
+            <!-- Share target -->
+            <intent-filter android:priority="100">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+
+            <intent-filter android:priority="100">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- ============ FAKE LAUNCHER ============ -->
         <activity
             android:name=".tuils.stuff.FakeLauncherActivity"
             android:enabled="false"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
 
+        <!-- ============ FULLSCREEN VIEWER ============ -->
         <activity
             android:name=".FullscreenViewerActivity"
             android:theme="@style/Theme.AppCompat.NoActionBar"
@@ -330,7 +352,34 @@
             android:screenOrientation="portrait"
             android:exported="false" />
 
-
     </application>
+
+    <!-- ============ PACKAGE VISIBILITY (Android 11+) ============ -->
+    <queries>
+        <!-- For opening PDFs -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/pdf" />
+        </intent>
+        <!-- For opening Office docs -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/msword" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+        </intent>
+        <!-- For APK install -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.android.package-archive" />
+        </intent>
+        <!-- For sharing -->
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
 
 </manifest>

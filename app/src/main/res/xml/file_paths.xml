@@ -1,11 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path name="external" path="." />
-    <external-files-path name="external_files" path="." />
-    <cache-path name="cache" path="." />
-    <external-cache-path name="external_cache" path="." />
-    <files-path name="files" path="." />
-    <root-path name="root" path="/" />
-    <external-path name="downloads" path="Download/" />
-    <files-path name="files" path="." />
+
+    <!-- ============ EXTERNAL STORAGE ROOTS ============ -->
+
+    <!-- /storage/emulated/0  (primary external storage) -->
+    <external-path
+        name="ext_root"
+        path="." />
+
+    <!-- /storage/emulated/0/Android/data/<pkg>/files -->
+    <external-files-path
+        name="ext_files"
+        path="." />
+
+    <!-- /storage/emulated/0/Android/data/<pkg>/cache -->
+    <external-cache-path
+        name="ext_cache"
+        path="." />
+
+    <!-- /storage/emulated/0/Android/media/<pkg> -->
+    <external-media-path
+        name="ext_media"
+        path="." />
+
+    <!-- ============ INTERNAL APP STORAGE ============ -->
+
+    <!-- /data/data/<pkg>/files -->
+    <files-path
+        name="int_files"
+        path="." />
+
+    <!-- /data/data/<pkg>/cache -->
+    <cache-path
+        name="int_cache"
+        path="." />
+
+    <!-- ============ SYSTEM ROOT (SD CARDS, /mnt, ETC) ============ -->
+
+    <!-- Covers /storage/XXXX-XXXX (SD cards), /mnt/, /data/local/tmp, etc. -->
+    <root-path
+        name="root"
+        path="/" />
+
 </paths>
