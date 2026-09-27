@@ -121,7 +121,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final java.util.Map<String, Long> sizeCache = new java.util.HashMap<>();
 
-    // ==================== Lifecycle ====================
+// ==================== Lifecycle ====================
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -263,7 +263,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Incoming File Handling ====================
+// ==================== Incoming File Handling ====================
 
     private boolean handleIncomingIntent(Intent intent) {
         if (intent == null) return false;
@@ -438,10 +438,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    /**
-     * Shows a scrollable, searchable, selectable TextView dialog
-     * containing the extracted document text.
-     */
+/**
+ * Shows a scrollable, searchable, selectable TextView dialog
+ * containing the extracted document text.
+ */
     /**
      * Shows a scrollable, searchable, selectable TextView dialog
      * containing the extracted document text.
@@ -482,6 +482,11 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 new android.widget.HorizontalScrollView(this);
         hScroll.setBackgroundColor(0xFF000000);
         hScroll.setHorizontalScrollBarEnabled(false);
+        // CRITICAL: without fillViewport, HorizontalScrollView measures its
+        // child with UNSPECIFIED width, so MATCH_PARENT on the TextView is
+        // ignored and text never wraps. With it, HSV measures the child with
+        // AT_MOST(viewportWidth), enabling true wrapping.
+        hScroll.setFillViewport(true);
         hScroll.addView(viewer, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -535,13 +540,29 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
 
         // ---- WRAP toggle ----
+        // Semantics:
+        //   WRAP ON  -> text wraps at screen width, no horizontal scrolling at all.
+        //   WRAP OFF -> text is shown exactly as-is (original line breaks only),
+        //               long lines scroll horizontally, no auto-wrapping.
         final boolean[] wrapOn = { true };
-        btnWrap.setOnClickListener(v -> {
-            wrapOn[0] = !wrapOn[0];
+
+        // Capture & restore the vertical reading position across toggles so the
+        // user doesn't lose their place when the layout reflows.
+        final Runnable applyWrapMode = () -> {
             if (wrapOn[0]) {
+                // --- WRAP ON ---
                 viewer.setHorizontallyScrolling(false);
                 viewer.setSingleLine(false);
                 viewer.setMaxLines(Integer.MAX_VALUE);
+                viewer.setIncludeFontPadding(true);
+
+                // HSV must measure child with AT_MOST(viewportW) so MATCH_PARENT
+                // actually constrains the TextView width -> text wraps.
+                hScroll.setFillViewport(true);
+                hScroll.setHorizontalScrollBarEnabled(false);
+                hScroll.setHorizontalFadingEdgeEnabled(false);
+                hScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                hScroll.scrollTo(0, 0);
 
                 ViewGroup.LayoutParams lp = viewer.getLayoutParams();
                 lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
@@ -551,15 +572,19 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 hlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
                 hScroll.setLayoutParams(hlp);
 
-                hScroll.setHorizontalScrollBarEnabled(false);
-                hScroll.scrollTo(0, 0);
-
                 btnWrap.setText("WRAP: ON");
                 btnWrap.setTextColor(0xFF00FF00);
             } else {
+                // --- WRAP OFF (show original formatting, horizontal scroll) ---
                 viewer.setHorizontallyScrolling(true);
                 viewer.setSingleLine(false);
                 viewer.setMaxLines(Integer.MAX_VALUE);
+
+                // HSV must measure child with UNSPECIFIED width so the TextView
+                // can grow to its natural (unwrapped) width and scroll freely.
+                hScroll.setFillViewport(false);
+                hScroll.setHorizontalScrollBarEnabled(true);
+                hScroll.setOverScrollMode(View.OVER_SCROLL_ALWAYS);
 
                 ViewGroup.LayoutParams lp = viewer.getLayoutParams();
                 lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
@@ -569,17 +594,40 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 hlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
                 hScroll.setLayoutParams(hlp);
 
-                hScroll.setHorizontalScrollBarEnabled(true);
-
                 btnWrap.setText("WRAP: OFF");
                 btnWrap.setTextColor(0xFFFFFF00);
             }
-            // Force a fresh layout + re-apply text so the new width constraint
-            // actually takes effect (this is why wrap "did nothing" before).
-            viewer.setText(content);
+
+            // Re-apply text + force full re-measure/re-layout down the chain.
+            viewer.setText(viewer.getText());
             viewer.requestLayout();
             hScroll.requestLayout();
             scroll.requestLayout();
+        };
+
+        btnWrap.setOnClickListener(v -> {
+            // Remember reading position (line index) before reflow.
+            final int anchorLine;
+            android.text.Layout oldLayout = viewer.getLayout();
+            if (oldLayout != null) {
+                int y = scroll.getScrollY();
+                anchorLine = oldLayout.getLineForVertical(y);
+            } else {
+                anchorLine = 0;
+            }
+
+            wrapOn[0] = !wrapOn[0];
+            applyWrapMode.run();
+
+            // Restore reading position after layout settles.
+            scroll.post(() -> {
+                android.text.Layout newLayout = viewer.getLayout();
+                if (newLayout == null) return;
+                int line = Math.min(anchorLine, newLayout.getLineCount() - 1);
+                if (line < 0) line = 0;
+                int targetY = newLayout.getLineTop(line);
+                scroll.scrollTo(0, targetY);
+            });
         });
         // ---- Search logic ----
         final String[] lastQuery = { "" };
@@ -828,13 +876,13 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         storageAdapter.setItems(items);
     }
 
-    // ==================== Dialogs ====================
+// ==================== Dialogs ====================
 
     private AlertDialog.Builder blackDialogBuilder() {
         return new AlertDialog.Builder(new ContextThemeWrapper(this, R.style.BlackDialog));
     }
 
-    // ==================== Sort ====================
+// ==================== Sort ====================
 
     private void showSortMenu(View anchor) {
         ContextThemeWrapper wrapper = new ContextThemeWrapper(this, R.style.PopupMenu_Black);
@@ -940,7 +988,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         return total;
     }
 
-    // ==================== Directory Loading ====================
+// ==================== Directory Loading ====================
 
     private void loadDirectory(File dir) {
         FileLog.i("loadDirectory: " + (dir == null ? "null" : dir.getAbsolutePath()));
@@ -977,7 +1025,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    // ==================== UI Updates ====================
+// ==================== UI Updates ====================
 
     private void updateSelectionUI() {
         boolean selectionMode = adapter.isSelectionMode();
@@ -1037,7 +1085,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateSelectionUI();
     }
 
-    // ==================== UNIVERSAL FILE OPENING ====================
+// ==================== UNIVERSAL FILE OPENING ====================
 
     /**
      * MASTER ROUTER. Given a File + optional MIME type, decides how to open it.
@@ -1252,7 +1300,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== APK INSTALL ====================
+// ==================== APK INSTALL ====================
 
     private void requestInstallApk(File apkFile) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1344,7 +1392,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-    // ==================== ZIP Options ====================
+// ==================== ZIP Options ====================
 
     private void showZipFileOptions(File zipFile) {
         blackDialogBuilder()
@@ -1365,7 +1413,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-    // ==================== Open With Default App ====================
+// ==================== Open With Default App ====================
 
     private void tryOpenWithDefaultApp(File file, String mimeType) {
         FileLog.i("tryOpenWithDefaultApp: file=" + file.getAbsolutePath()
@@ -1486,7 +1534,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-    // ==================== Text Editor ====================
+// ==================== Text Editor ====================
 
     private void openTextEditor(File file) {
         executor.execute(() -> {
@@ -1558,13 +1606,29 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         editor.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        // Start in no-wrap mode (original formatting preserved, horizontal scroll).
         editor.setHorizontallyScrolling(true);
+        editor.setSingleLine(false);
+        editor.setMaxLines(Integer.MAX_VALUE);
         editor.setVerticalScrollBarEnabled(true);
-        editor.setHorizontalScrollBarEnabled(true);
+        editor.setHorizontalScrollBarEnabled(false);
+
+        // HSV wrapper enables horizontal scroll when wrap is OFF, and (with
+        // fillViewport=true) constrains editor width to viewport when wrap is ON
+        // so text actually wraps.
+        final android.widget.HorizontalScrollView editorHScroll =
+                new android.widget.HorizontalScrollView(this);
+        editorHScroll.setBackgroundColor(0xFF000000);
+        editorHScroll.setFillViewport(false);   // start in no-wrap mode
+        editorHScroll.setHorizontalScrollBarEnabled(true);
+        editorHScroll.addView(editor, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         ScrollView scrollView = new ScrollView(this);
         scrollView.setBackgroundColor(0xFF000000);
-        scrollView.addView(editor, new ViewGroup.LayoutParams(
+        scrollView.setFillViewport(true);
+        scrollView.addView(editorHScroll, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -1614,9 +1678,15 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         btnWrap.setOnClickListener(v -> {
             wrapEnabled[0] = !wrapEnabled[0];
             if (wrapEnabled[0]) {
+                // --- WRAP ON: text wraps at screen width, no horizontal scroll ---
                 editor.setHorizontallyScrolling(false);
                 editor.setSingleLine(false);
                 editor.setMaxLines(Integer.MAX_VALUE);
+
+                editorHScroll.setFillViewport(true);
+                editorHScroll.setHorizontalScrollBarEnabled(false);
+                editorHScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                editorHScroll.scrollTo(0, 0);
 
                 ViewGroup.LayoutParams lp = editor.getLayoutParams();
                 lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
@@ -1625,9 +1695,14 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 btnWrap.setTextColor(0xFFFFFF00);
                 btnWrap.setText("WRAP ON");
             } else {
+                // --- WRAP OFF: original formatting, horizontal scroll ---
                 editor.setHorizontallyScrolling(true);
                 editor.setSingleLine(false);
                 editor.setMaxLines(Integer.MAX_VALUE);
+
+                editorHScroll.setFillViewport(false);
+                editorHScroll.setHorizontalScrollBarEnabled(true);
+                editorHScroll.setOverScrollMode(View.OVER_SCROLL_ALWAYS);
 
                 ViewGroup.LayoutParams lp = editor.getLayoutParams();
                 lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
@@ -1637,6 +1712,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 btnWrap.setText("WRAP");
             }
             editor.requestLayout();
+            editorHScroll.requestLayout();
             scrollView.requestLayout();
         });
 
@@ -1749,7 +1825,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    // ==================== Read-only text viewer ====================
+// ==================== Read-only text viewer ====================
 
     private void openAsText(File file) {
         executor.execute(() -> {
@@ -1811,7 +1887,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    // ==================== Share ====================
+// ==================== Share ====================
 
     private void shareFile(File file) {
         FileLog.i("shareFile: " + file.getAbsolutePath());
@@ -1843,7 +1919,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== MIME HELPERS ====================
+// ==================== MIME HELPERS ====================
 
     private String getMimeType(File file) {
         String name = file.getName();
@@ -2002,7 +2078,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             Toast.makeText(this, "No apps available", Toast.LENGTH_SHORT).show();
         }
     }
-    // ==================== Actions Menu ====================
+// ==================== Actions Menu ====================
 
     private void showActionsMenu(View anchor) {
         List<File> selected = new ArrayList<>(adapter.getSelectedFiles());
@@ -2085,7 +2161,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         } catch (Exception ignored) { }
     }
 
-    // ==================== Clipboard ====================
+// ==================== Clipboard ====================
 
     private void doCopy(List<File> selected) {
         clipboard.clear();
@@ -2105,7 +2181,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateFooterBar();
     }
 
-    // ==================== Paste ====================
+// ==================== Paste ====================
 
     private void startPaste() {
         if (clipboard.isEmpty()) return;
@@ -2186,7 +2262,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Delete ====================
+// ==================== Delete ====================
 
     private void confirmDelete(List<File> files) {
         blackDialogBuilder()
@@ -2255,7 +2331,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Extract ====================
+// ==================== Extract ====================
 
     private void startExtract(File zipFile) {
         long totalBytes = Math.max(zipFile.length(), 1);
@@ -2308,7 +2384,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    // ==================== Zip ====================
+// ==================== Zip ====================
 
     private void startZip(List<File> files) {
         final List<File> targets = new ArrayList<>(files);
@@ -2378,7 +2454,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Progress ====================
+// ==================== Progress ====================
 
     private void beginProgress(String title) {
         isTransferring = true;
@@ -2446,7 +2522,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private interface ProgressCallback { void onBytes(long bytes); }
     private interface FileCompletedCallback { void onFileCompleted(); }
 
-    // ==================== Rename ====================
+// ==================== Rename ====================
 
     private void showRenameDialog(File file) {
         EditText input = new EditText(this);
@@ -2473,7 +2549,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-    // ==================== Share Multiple ====================
+// ==================== Share Multiple ====================
 
     private void shareFiles(List<File> selected) {
         FileLog.i("shareFiles: " + selected.size() + " files");
@@ -2533,7 +2609,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateSelectionUI();
     }
 
-    // ==================== File Info ====================
+// ==================== File Info ====================
 
     private void showFileInfo(File file) {
         String info = "Name: " + file.getName() + "\n"
@@ -2564,4 +2640,5 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
         return size;
     }
+
 }
