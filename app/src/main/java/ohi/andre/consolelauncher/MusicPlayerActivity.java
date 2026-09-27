@@ -84,7 +84,8 @@ public class MusicPlayerActivity extends AppCompatActivity {
         String path;
         Uri contentUri;
         long durationMs;
-        long dateAdded;
+        long dateAdded;      // seconds since epoch (MediaStore index time)
+        long dateModified;   // seconds since epoch (file mtime)
         long size;
     }
 
@@ -151,7 +152,18 @@ public class MusicPlayerActivity extends AppCompatActivity {
         super.onDestroy();
         ui.removeCallbacksAndMessages(null);
         io.shutdownNow();
-        releasePlayer();
+        // Only release the player when the user actually leaves the task
+        // (swipe from recents / back at library view). If the OS is just
+        // reclaiming the activity while we are backgrounded, keep playing.
+        if (isFinishing()) {
+            releasePlayer();
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        // Do NOT pause the player — background playback is intentional.
     }
 
     @Override
@@ -388,7 +400,10 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private void requestAudioPermission() {
         if (Build.VERSION.SDK_INT >= 33) {
             ActivityCompat.requestPermissions(this,
-                    new String[]{"android.permission.READ_MEDIA_AUDIO"}, REQ_AUDIO);
+                    new String[]{
+                            "android.permission.READ_MEDIA_AUDIO",
+                            "android.permission.POST_NOTIFICATIONS"
+                    }, REQ_AUDIO);
         } else {
             ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_AUDIO);
@@ -435,6 +450,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
                     MediaStore.Audio.Media.DATA,
                     MediaStore.Audio.Media.DURATION,
                     MediaStore.Audio.Media.DATE_ADDED,
+                    MediaStore.Audio.Media.DATE_MODIFIED,
                     MediaStore.Audio.Media.SIZE
             };
             String selection = MediaStore.Audio.Media.IS_MUSIC + "!=0"
@@ -449,6 +465,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
                     int iData  = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA);
                     int iDur   = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION);
                     int iAdd   = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED);
+                    int iMod   = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_MODIFIED);
                     int iSize  = c.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE);
 
                     while (c.moveToNext()) {
@@ -461,6 +478,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
                         t.path = c.getString(iData);
                         t.durationMs = c.getLong(iDur);
                         t.dateAdded = c.getLong(iAdd);
+                        t.dateModified = c.getLong(iMod);
                         t.size = c.getLong(iSize);
                         t.contentUri = ContentUris.withAppendedId(collection, t.id);
                         found.add(t);
@@ -504,11 +522,34 @@ public class MusicPlayerActivity extends AppCompatActivity {
 
         Comparator<Track> cmp;
         switch (sortMode) {
-            case SORT_LATEST: cmp = (a, b) -> Long.compare(b.dateAdded, a.dateAdded); break;
-            case SORT_OLDEST: cmp = (a, b) -> Long.compare(a.dateAdded, b.dateAdded); break;
-            case SORT_ZA:     cmp = (a, b) -> b.title.compareToIgnoreCase(a.title); break;
+            case SORT_LATEST:
+                // Prefer DATE_MODIFIED. If two files share the same mtime
+                // (common when a batch was copied), fall back to file size
+                // and then to title, so the order is at least deterministic.
+                cmp = (a, b) -> {
+                    int c1 = Long.compare(b.dateModified, a.dateModified);
+                    if (c1 != 0) return c1;
+                    int c2 = Long.compare(b.size, a.size);
+                    if (c2 != 0) return c2;
+                    return a.title.compareToIgnoreCase(b.title);
+                };
+                break;
+            case SORT_OLDEST:
+                cmp = (a, b) -> {
+                    int c1 = Long.compare(a.dateModified, b.dateModified);
+                    if (c1 != 0) return c1;
+                    int c2 = Long.compare(a.size, b.size);
+                    if (c2 != 0) return c2;
+                    return a.title.compareToIgnoreCase(b.title);
+                };
+                break;
+            case SORT_ZA:
+                cmp = (a, b) -> b.title.compareToIgnoreCase(a.title);
+                break;
             case SORT_AZ:
-            default:          cmp = (a, b) -> a.title.compareToIgnoreCase(b.title); break;
+            default:
+                cmp = (a, b) -> a.title.compareToIgnoreCase(b.title);
+                break;
         }
         Collections.sort(base, cmp);
 
@@ -580,6 +621,14 @@ public class MusicPlayerActivity extends AppCompatActivity {
                 return true;
             });
             player.prepareAsync();
+            try {
+                Intent svc = new Intent(this, MusicPlaybackService.class);
+                if (Build.VERSION.SDK_INT >= 26) {
+                    startForegroundService(svc);
+                } else {
+                    startService(svc);
+                }
+            } catch (Exception ignored) { }
         } catch (Exception e) {
             FileLog.e("MusicPlayer: play failed", e);
             Toast.makeText(this, "Cannot play: " + e.getMessage(),
@@ -594,6 +643,9 @@ public class MusicPlayerActivity extends AppCompatActivity {
             try { player.release(); } catch (Exception ignored) { }
             player = null;
         }
+        try {
+            stopService(new Intent(this, MusicPlaybackService.class));
+        } catch (Exception ignored) { }
     }
 
     // ============================================================
@@ -757,7 +809,13 @@ public class MusicPlayerActivity extends AppCompatActivity {
             dots.setImageResource(R.drawable.ic_more_vert);
             dots.setColorFilter(GREEN);
             dots.setPadding(dp(6), dp(6), dp(6), dp(6));
-            row.addView(dots, new LinearLayout.LayoutParams(dp(36), dp(36)));
+            // Force right-alignment independent of text length.
+            LinearLayout.LayoutParams dotsLp =
+                    new LinearLayout.LayoutParams(dp(36), dp(36));
+            dotsLp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+            // Push it hard to the right with a small right margin.
+            dotsLp.rightMargin = dp(4);
+            row.addView(dots, dotsLp);
 
             return new VH(row, check, title, sub, dots);
         }

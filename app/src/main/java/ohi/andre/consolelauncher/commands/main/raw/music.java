@@ -8,15 +8,6 @@ import ohi.andre.consolelauncher.commands.CommandAbstraction;
 import ohi.andre.consolelauncher.commands.ExecutePack;
 import ohi.andre.consolelauncher.commands.main.MainPack;
 
-/**
- * TUI command that launches the built-in Music Player activity.
- *
- * Usage from the terminal:
- *     mplayer
- *
- * It appears in suggestions automatically because it lives in the
- * commands/main/raw package and implements CommandAbstraction.
- */
 public class music implements CommandAbstraction {
 
     @Override
