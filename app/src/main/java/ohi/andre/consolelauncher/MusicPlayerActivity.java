@@ -95,6 +95,10 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private static final int SORT_ZA     = 3;
     private int sortMode = SORT_LATEST;
 
+    public static volatile boolean alive = false;
+    /** True once the activity has been created at least once in this process. */
+    public static volatile boolean everOpened = false;
+
     // ---------- Permission ----------
     private static final int REQ_AUDIO = 3001;
 
@@ -117,6 +121,42 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private final List<Long> activePlaylistIds = new ArrayList<>();
     private boolean filterActive = false;
     private final Set<Long> pickBuffer = new HashSet<>();
+
+    private static final String PREFS = "music_player_prefs";
+    private static final String KEY_PLAYLIST = "active_playlist_ids";
+    private static final String KEY_FILTER_ACTIVE = "filter_active";
+
+    private void savePlaylist() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (Long id : activePlaylistIds) {
+                if (sb.length() > 0) sb.append(',');
+                sb.append(id);
+            }
+            getSharedPreferences(PREFS, MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_PLAYLIST, sb.toString())
+                    .putBoolean(KEY_FILTER_ACTIVE, filterActive)
+                    .apply();
+        } catch (Exception ignored) { }
+    }
+
+    private void loadPlaylist() {
+        try {
+            android.content.SharedPreferences p =
+                    getSharedPreferences(PREFS, MODE_PRIVATE);
+            String s = p.getString(KEY_PLAYLIST, "");
+            filterActive = p.getBoolean(KEY_FILTER_ACTIVE, false);
+            activePlaylistIds.clear();
+            if (s != null && s.length() > 0) {
+                for (String part : s.split(",")) {
+                    try { activePlaylistIds.add(Long.parseLong(part)); }
+                    catch (NumberFormatException ignored) { }
+                }
+            }
+            if (activePlaylistIds.isEmpty()) filterActive = false;
+        } catch (Exception ignored) { }
+    }
 
     // Search
     private boolean searchOpen = false;
@@ -174,9 +214,12 @@ public class MusicPlayerActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
         buildUi();
+        loadPlaylist();
         LocalBroadcastManager.getInstance(this)
                 .registerReceiver(ctrlReceiver,
                         new IntentFilter(ACTION_CTRL));
+        alive = true;
+        everOpened = true;
         boolean startHidden = getIntent() != null
                 && getIntent().getBooleanExtra("start_hidden", false);
         if (startHidden) pendingStartLast = true;
@@ -189,6 +232,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
         super.onDestroy();
         ui.removeCallbacksAndMessages(null);
         io.shutdownNow();
+        alive = false;
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(ctrlReceiver);
         } catch (Exception ignored) { }
@@ -424,16 +468,20 @@ public class MusicPlayerActivity extends AppCompatActivity {
             if (player.isPlaying()) {
                 player.pause();
                 isPaused = true;
+                isPausedStatic = true;
                 btnPlayPause.setImageResource(R.drawable.ic_play_circle);
                 btnPlayPause.setColorFilter(NOW_PLAY);
                 ui.removeCallbacks(progressTick);
             } else {
                 player.start();
                 isPaused = false;
-                btnPlayPause.setImageResource(R.drawable.ic_pause); // or ic_play_circle
+                isPausedStatic = false;
+                btnPlayPause.setImageResource(R.drawable.ic_pause);
                 btnPlayPause.setColorFilter(GREEN);
                 ui.post(progressTick);
             }
+            LocalBroadcastManager.getInstance(this)
+                    .sendBroadcast(new Intent("ohi.andre.consolelauncher.MUSIC_STATE_CHANGED"));
         } catch (Exception ignored) { }
     }
     private void toggleSearch() {
@@ -508,6 +556,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
                 pickBuffer.clear();
                 filterActive = !activePlaylistIds.isEmpty();
                 viewState = VIEW_PLAYLIST;
+                savePlaylist();
                 break;
         }
         refreshList();
@@ -739,6 +788,8 @@ public class MusicPlayerActivity extends AppCompatActivity {
     /** Public getters used by the home-screen widget. */
     public static long getLastPlayedId() { return lastPlayedId; }
     public static String getLastPlayedTitle() { return lastPlayedTitle; }
+    public static boolean isCurrentlyPlaying() { return !isPausedStatic; }
+    private static boolean isPausedStatic = false;
 
     // ============================================================
     // Playback
@@ -764,8 +815,9 @@ public class MusicPlayerActivity extends AppCompatActivity {
             player.setOnPreparedListener(mp -> {
                 mp.start();
                 isPaused = false;
+                isPausedStatic = false;
                 if (btnPlayPause != null) {
-                    btnPlayPause.setImageResource(R.drawable.ic_pause); // or ic_play_circle
+                    btnPlayPause.setImageResource(R.drawable.ic_pause);
                     btnPlayPause.setColorFilter(GREEN);
                 }
                 bottomBar.setVisibility(View.VISIBLE);
@@ -819,6 +871,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private void releasePlayer() {
         ui.removeCallbacks(progressTick);
         isPaused = false;
+        isPausedStatic = true;
         if (player != null) {
             try { player.stop(); } catch (Exception ignored) { }
             try { player.release(); } catch (Exception ignored) { }
@@ -916,6 +969,8 @@ public class MusicPlayerActivity extends AppCompatActivity {
                             visibleTracks.remove(track);
                             activePlaylistIds.remove((Long) track.id);
                             pickBuffer.remove((Long) track.id);
+                            if (activePlaylistIds.isEmpty()) filterActive = false;
+                            savePlaylist();
                             releasePlayer();
                             playingIndex = -1;
                             bottomBar.setVisibility(View.GONE);
@@ -939,6 +994,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
             activePlaylistIds.add(track.id);
         }
         filterActive = true;
+        savePlaylist();
         Toast.makeText(this, "Added to playlist (" + activePlaylistIds.size() + ")",
                 Toast.LENGTH_SHORT).show();
     }

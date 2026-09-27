@@ -102,6 +102,7 @@ public class UIManager implements OnTouchListener {
 
 
     private TextView musicNameView;
+    private ImageView musicPlayPauseView;
     public static String FILE_NAME = "fileName";
     public static String PREFS_NAME = "ui";
 
@@ -793,7 +794,7 @@ public class UIManager implements OnTouchListener {
         filter.addAction(ACTION_WEATHER_DELAY);
         filter.addAction(ACTION_WEATHER_MANUAL_UPDATE);
         filter.addAction("ohi.andre.consolelauncher.MUSIC_TRACK_CHANGED");
-
+        filter.addAction("ohi.andre.consolelauncher.MUSIC_STATE_CHANGED");
         receiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -891,6 +892,16 @@ public class UIManager implements OnTouchListener {
                     if (musicNameView != null) {
                         String t = MusicPlayerActivity.getLastPlayedTitle();
                         musicNameView.setText(t == null || t.isEmpty() ? "Music Player" : t);
+                    }
+                } else if(action.equals("ohi.andre.consolelauncher.MUSIC_STATE_CHANGED")) {
+                    if (musicPlayPauseView != null) {
+                        if (MusicPlayerActivity.isCurrentlyPlaying()) {
+                            musicPlayPauseView.setImageResource(R.drawable.ic_pause);
+                            musicPlayPauseView.setColorFilter(0xFF00FF00);
+                        } else {
+                            musicPlayPauseView.setImageResource(R.drawable.ic_play_circle);
+                            musicPlayPauseView.setColorFilter(0xFFFFFF00);
+                        }
                     }
                 }
             }
@@ -1528,14 +1539,19 @@ public class UIManager implements OnTouchListener {
         play.setImageResource(R.drawable.ic_play_circle);
         play.setColorFilter(0xFF00FF00);
         play.setOnClickListener(v -> {
-            sendMusicCmd(MusicPlayerActivity.CMD_START_LAST);
-            Intent i = new Intent(mContext, MusicPlayerActivity.class);
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                    | Intent.FLAG_ACTIVITY_NO_ANIMATION
-                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-            i.putExtra("start_hidden", true);
-            mContext.startActivity(i);
+            boolean playingNow = MusicPlayerActivity.isCurrentlyPlaying();
+            sendMusicCmd(MusicPlayerActivity.CMD_TOGGLE);
+            if (musicPlayPauseView != null) {
+                if (playingNow) {
+                    musicPlayPauseView.setImageResource(R.drawable.ic_play_circle);
+                    musicPlayPauseView.setColorFilter(0xFFFFFF00);
+                } else {
+                    musicPlayPauseView.setImageResource(R.drawable.ic_pause);
+                    musicPlayPauseView.setColorFilter(0xFF00FF00);
+                }
+            }
         });
+        musicPlayPauseView = play;
         LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(icon, icon);
         plp.leftMargin = plp.rightMargin = (int) (icon * 0.4f);
         row.addView(play, plp);
