@@ -479,9 +479,16 @@ public class PdfViewerActivity extends AppCompatActivity {
             iv.setClickable(true);
             iv.setFocusable(true);
 
+            // Fixed height so the ZoomableImageView always has a non-zero
+            // measured size (bitmap is always 1240 x 1754). Without this,
+            // short pages get a tiny WRAP_CONTENT height and baseScale stays 0,
+            // which silently kills all gesture handling.
+            int screenW = getResources().getDisplayMetrics().widthPixels - dp(16); // - padding
+            int fixedH = (int) (screenW * (PAGE_HEIGHT_PX / (float) PAGE_WIDTH_PX));
+
             pageContainer.addView(iv, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT));
+                    fixedH));
 
             View highlightOverlay = new View(PdfViewerActivity.this);
             highlightOverlay.setVisibility(View.GONE);
@@ -497,7 +504,7 @@ public class PdfViewerActivity extends AppCompatActivity {
 
             wrapper.addView(pageContainer, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT));
+                    fixedH));
 
             TextView tvPageNum = new TextView(PdfViewerActivity.this);
             tvPageNum.setTextColor(0xFF00AA00);
@@ -693,6 +700,12 @@ public class PdfViewerActivity extends AppCompatActivity {
             int dh = d.getIntrinsicHeight();
             if (dw <= 0 || dh <= 0) return;
 
+            // View not measured yet (short page / WRAP_CONTENT parent). Retry.
+            if (getWidth() == 0 || getHeight() == 0) {
+                post(this::applyFitMatrixIfNeeded);
+                return;
+            }
+
             if (lastDrawable == d && lastDrawableWidth == dw && lastDrawableHeight == dh
                     && baseScale > 0f && scaleFactor > baseScale + 0.001f) {
                 return;
@@ -810,6 +823,12 @@ public class PdfViewerActivity extends AppCompatActivity {
                     if (scaleFactor <= baseScale + 0.01f) {
                         getParent().requestDisallowInterceptTouchEvent(false);
                     }
+                    break;
+                }
+                case MotionEvent.ACTION_POINTER_DOWN: {
+                    // Second finger down → this is a pinch. Block RecyclerView
+                    // from stealing the gesture, otherwise short pages never zoom.
+                    getParent().requestDisallowInterceptTouchEvent(true);
                     break;
                 }
                 case MotionEvent.ACTION_POINTER_UP: {

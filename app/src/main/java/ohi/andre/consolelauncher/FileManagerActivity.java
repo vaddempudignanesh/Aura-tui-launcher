@@ -540,27 +540,47 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             wrapOn[0] = !wrapOn[0];
             if (wrapOn[0]) {
                 viewer.setHorizontallyScrolling(false);
-                viewer.setMaxLines(Integer.MAX_VALUE);
                 viewer.setSingleLine(false);
+                viewer.setMaxLines(Integer.MAX_VALUE);
+
+                ViewGroup.LayoutParams lp = viewer.getLayoutParams();
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                viewer.setLayoutParams(lp);
+
+                ViewGroup.LayoutParams hlp = hScroll.getLayoutParams();
+                hlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                hScroll.setLayoutParams(hlp);
+
                 hScroll.setHorizontalScrollBarEnabled(false);
-                viewer.getLayoutParams().width = ViewGroup.LayoutParams.MATCH_PARENT;
-                viewer.setLayoutParams(viewer.getLayoutParams());
-                viewer.setText(content);
+                hScroll.scrollTo(0, 0);
+
                 btnWrap.setText("WRAP: ON");
                 btnWrap.setTextColor(0xFF00FF00);
             } else {
                 viewer.setHorizontallyScrolling(true);
-                viewer.setMaxLines(Integer.MAX_VALUE);
                 viewer.setSingleLine(false);
+                viewer.setMaxLines(Integer.MAX_VALUE);
+
+                ViewGroup.LayoutParams lp = viewer.getLayoutParams();
+                lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+                viewer.setLayoutParams(lp);
+
+                ViewGroup.LayoutParams hlp = hScroll.getLayoutParams();
+                hlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                hScroll.setLayoutParams(hlp);
+
                 hScroll.setHorizontalScrollBarEnabled(true);
-                viewer.getLayoutParams().width = ViewGroup.LayoutParams.WRAP_CONTENT;
-                viewer.setLayoutParams(viewer.getLayoutParams());
-                viewer.setText(content);
+
                 btnWrap.setText("WRAP: OFF");
                 btnWrap.setTextColor(0xFFFFFF00);
             }
+            // Force a fresh layout + re-apply text so the new width constraint
+            // actually takes effect (this is why wrap "did nothing" before).
+            viewer.setText(content);
+            viewer.requestLayout();
+            hScroll.requestLayout();
+            scroll.requestLayout();
         });
-
         // ---- Search logic ----
         final String[] lastQuery = { "" };
         final int[] lastIndex = { -1 };
@@ -1595,13 +1615,29 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             wrapEnabled[0] = !wrapEnabled[0];
             if (wrapEnabled[0]) {
                 editor.setHorizontallyScrolling(false);
+                editor.setSingleLine(false);
+                editor.setMaxLines(Integer.MAX_VALUE);
+
+                ViewGroup.LayoutParams lp = editor.getLayoutParams();
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                editor.setLayoutParams(lp);
+
                 btnWrap.setTextColor(0xFFFFFF00);
                 btnWrap.setText("WRAP ON");
             } else {
                 editor.setHorizontallyScrolling(true);
+                editor.setSingleLine(false);
+                editor.setMaxLines(Integer.MAX_VALUE);
+
+                ViewGroup.LayoutParams lp = editor.getLayoutParams();
+                lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+                editor.setLayoutParams(lp);
+
                 btnWrap.setTextColor(0xFF00FF00);
                 btnWrap.setText("WRAP");
             }
+            editor.requestLayout();
+            scrollView.requestLayout();
         });
 
         btnClose.setOnClickListener(v -> {
