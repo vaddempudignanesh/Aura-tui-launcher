@@ -466,7 +466,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // ---- Content view (selectable) ----
+        // ---- Content view ----
         final TextView viewer = new TextView(this);
         viewer.setText(content);
         viewer.setTextColor(0xFF00FF00);
@@ -476,10 +476,19 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         viewer.setTypeface(android.graphics.Typeface.MONOSPACE);
         viewer.setTextIsSelectable(true);
         viewer.setGravity(Gravity.TOP | Gravity.START);
+        viewer.setHorizontallyScrolling(false);
+
+        final android.widget.HorizontalScrollView hScroll =
+                new android.widget.HorizontalScrollView(this);
+        hScroll.setBackgroundColor(0xFF000000);
+        hScroll.setHorizontalScrollBarEnabled(false);
+        hScroll.addView(viewer, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         final ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(0xFF000000);
-        scroll.addView(viewer, new ViewGroup.LayoutParams(
+        scroll.addView(hScroll, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -505,8 +514,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         Button btnNext = createEditorButton("NEXT", 0xFF00FF00);
+        Button btnWrap = createEditorButton("WRAP: ON", 0xFF00FF00);
         Button btnClose = createEditorButton("CLOSE", 0xFFFF5555);
         bar.addView(btnNext);
+        bar.addView(btnWrap);
         bar.addView(btnClose);
 
         root.addView(bar, new LinearLayout.LayoutParams(
@@ -523,19 +534,40 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             dialog.getWindow().setBackgroundDrawableResource(android.R.color.black);
         }
 
+        // ---- WRAP toggle ----
+        final boolean[] wrapOn = { true };
+        btnWrap.setOnClickListener(v -> {
+            wrapOn[0] = !wrapOn[0];
+            if (wrapOn[0]) {
+                viewer.setHorizontallyScrolling(false);
+                viewer.setMaxLines(Integer.MAX_VALUE);
+                viewer.setSingleLine(false);
+                hScroll.setHorizontalScrollBarEnabled(false);
+                viewer.getLayoutParams().width = ViewGroup.LayoutParams.MATCH_PARENT;
+                viewer.setLayoutParams(viewer.getLayoutParams());
+                viewer.setText(content);
+                btnWrap.setText("WRAP: ON");
+                btnWrap.setTextColor(0xFF00FF00);
+            } else {
+                viewer.setHorizontallyScrolling(true);
+                viewer.setMaxLines(Integer.MAX_VALUE);
+                viewer.setSingleLine(false);
+                hScroll.setHorizontalScrollBarEnabled(true);
+                viewer.getLayoutParams().width = ViewGroup.LayoutParams.WRAP_CONTENT;
+                viewer.setLayoutParams(viewer.getLayoutParams());
+                viewer.setText(content);
+                btnWrap.setText("WRAP: OFF");
+                btnWrap.setTextColor(0xFFFFFF00);
+            }
+        });
+
         // ---- Search logic ----
         final String[] lastQuery = { "" };
         final int[] lastIndex = { -1 };
 
-        // Applies the current query to the viewer:
-        //  - clears previous highlight
-        //  - finds next occurrence starting after lastIndex
-        //  - paints a yellow background over the match
-        //  - scrolls so the match is centered vertically
         final Runnable searchNext = () -> {
             String query = searchField.getText().toString();
             if (query.isEmpty()) {
-                // Reset to plain content
                 viewer.setText(content);
                 lastIndex[0] = -1;
                 lastQuery[0] = "";
@@ -545,7 +577,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             String haystack = content.toLowerCase(Locale.US);
             String needle = query.toLowerCase(Locale.US);
 
-            // If query changed, restart from top
             if (!needle.equals(lastQuery[0])) {
                 lastIndex[0] = -1;
                 lastQuery[0] = needle;
@@ -554,17 +585,14 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             int start = lastIndex[0] + 1;
             int found = haystack.indexOf(needle, start);
             if (found < 0) {
-                // Wrap to the top
                 found = haystack.indexOf(needle);
                 if (found < 0) {
-                    // Not found — show content unmodified
                     viewer.setText(content);
                     return;
                 }
             }
             lastIndex[0] = found;
 
-            // Build a spannable with the highlighted match
             android.text.Spannable span =
                     new android.text.SpannableString(content);
             span.setSpan(new android.text.style.BackgroundColorSpan(0xFFFFFF00),
@@ -572,8 +600,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                     android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             viewer.setText(span);
 
-            // Scroll so the highlighted line is centered in the ScrollView
-            int finalFound = found;
+            final int finalFound = found;
             scroll.post(() -> {
                 android.text.Layout layout = viewer.getLayout();
                 if (layout == null) return;
@@ -587,10 +614,18 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 if (targetY < 0) targetY = 0;
 
                 scroll.smoothScrollTo(0, targetY);
+
+                // Also scroll horizontally to the match when wrap is OFF
+                if (!wrapOn[0]) {
+                    int x = (int) layout.getPrimaryHorizontal(finalFound);
+                    int viewportW = hScroll.getWidth();
+                    int targetX = x - viewportW / 2;
+                    if (targetX < 0) targetX = 0;
+                    hScroll.smoothScrollTo(targetX, 0);
+                }
             });
         };
 
-        // Auto-search on every keystroke
         searchField.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
@@ -599,9 +634,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             }
         });
 
-        // Manual "NEXT" — advance to the next match
         btnNext.setOnClickListener(v -> {
-            // Advance lastIndex by 1 so searchNext() skips the current match
             lastIndex[0] = lastIndex[0] + 1;
             searchNext.run();
         });

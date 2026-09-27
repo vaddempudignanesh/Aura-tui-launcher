@@ -1,21 +1,22 @@
 package ohi.andre.consolelauncher;
 
-import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
-import android.util.LruCache;
+import android.util.SparseArray;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -34,99 +35,88 @@ import java.io.InputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * Native PDF viewer using Android's built-in {@link PdfRenderer}.
- *
- * No external dependencies required. Works on API 21+.
- *
- * Renders each PDF page to a Bitmap on a background thread and displays
- * them in a vertically scrolling RecyclerView with a black/green theme.
- */
 public class PdfViewerActivity extends AppCompatActivity {
 
-    public static final String EXTRA_PDF_URI  = "pdf_uri";
+    public static final String EXTRA_PDF_URI = "pdf_uri";
     public static final String EXTRA_PDF_NAME = "pdf_name";
 
     private File lastOpenedFile;
 
-    // Cached extracted text per page for search
-    private final java.util.Map<Integer, String> pageTextCache = new java.util.HashMap<>();
-    private volatile boolean searchRunning = false;
+    private PdfTextExtractor.Result extractedText;
+
     private int searchHighlightPage = -1;
 
-    // Rendering constants
-    private static final int PAGE_WIDTH_PX       = 1240; // ~A4 at 150 DPI
-    private static final int PAGE_HEIGHT_PX      = 1754;
-    private static final int BITMAP_CACHE_KB     = 32 * 1024; // 32 MB
+    private final java.util.List<Integer> matchPages = new java.util.ArrayList<>();
 
-    // Views
+    private int matchCursor = -1;
+
+    private static final int PAGE_WIDTH_PX = 1240;
+    private static final int PAGE_HEIGHT_PX = 1754;
+
     private RecyclerView recyclerPages;
     private ProgressBar progressBar;
     private TextView tvStatus;
 
-    // Rendering
     private PdfRenderer pdfRenderer;
     private ParcelFileDescriptor pfd;
     private int pageCount = 0;
+
     private final ExecutorService renderExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService textExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
     private PdfPageAdapter adapter;
+    private LinearLayoutManager layoutManager;
 
-    // Bitmap cache to avoid re-rendering pages when scrolling
-    private final LruCache<Integer, Bitmap> bitmapCache =
-            new LruCache<Integer, Bitmap>(BITMAP_CACHE_KB) {
-                @Override
-                protected int sizeOf(@NonNull Integer key, @NonNull Bitmap value) {
-                    return value.getByteCount() / 1024;
-                }
-            };
+    private final SparseArray<Bitmap> bitmapCache = new SparseArray<>();
 
-    // ==================== Lifecycle ====================
+    private final java.util.Set<Integer> inFlightRenders =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<Integer>());
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         FileLog.i("PdfViewerActivity.onCreate");
-
         try {
             buildUi();
         } catch (Exception e) {
-            FileLog.e("PdfViewerActivity.buildUi failed", e);
+            FileLog.e("buildUi failed: " + e);
             Toast.makeText(this, "Cannot open PDF viewer", Toast.LENGTH_SHORT).show();
             finish();
             return;
         }
-
         File pdfFile = resolvePdfFile();
         if (pdfFile == null) {
-            FileLog.e("PdfViewerActivity: no PDF file resolved");
+            FileLog.e("no PDF file resolved");
             Toast.makeText(this, "PDF file not found", Toast.LENGTH_SHORT).show();
             finish();
             return;
         }
-
-        FileLog.i("PdfViewerActivity: opening " + pdfFile.getAbsolutePath()
-                + " size=" + pdfFile.length()
-                + " readable=" + pdfFile.canRead());
-
+        lastOpenedFile = pdfFile;
         openPdfAsync(pdfFile);
+        loadPdfTextAsync(pdfFile);
     }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
         renderExecutor.shutdownNow();
+        textExecutor.shutdownNow();
         closeRenderer();
-        bitmapCache.evictAll();
+        synchronized (bitmapCache) {
+            for (int i = 0; i < bitmapCache.size(); i++) {
+                Bitmap b = bitmapCache.valueAt(i);
+                if (b != null && !b.isRecycled()) b.recycle();
+            }
+            bitmapCache.clear();
+        }
     }
-
-    // ==================== UI Construction ====================
 
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.BLACK);
 
-        // --- Top bar ---
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
         topBar.setBackgroundColor(0xFF001100);
@@ -148,16 +138,11 @@ public class PdfViewerActivity extends AppCompatActivity {
         tvTitle.setPadding(24, 0, 0, 0);
         tvTitle.setSingleLine(true);
         tvTitle.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-        topBar.addView(tvTitle, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        topBar.addView(tvTitle, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         root.addView(topBar, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        // ============================================================
-        // --- Search bar ---
-        // ============================================================
         LinearLayout searchBar = new LinearLayout(this);
         searchBar.setOrientation(LinearLayout.HORIZONTAL);
         searchBar.setBackgroundColor(0xFF001100);
@@ -165,23 +150,22 @@ public class PdfViewerActivity extends AppCompatActivity {
         searchBar.setGravity(Gravity.CENTER_VERTICAL);
 
         final EditText searchInput = new EditText(this);
-        searchInput.setHint("Search in PDF…");
+        searchInput.setHint("Type to search…");
         searchInput.setHintTextColor(0xFF00AA00);
         searchInput.setTextColor(0xFF00FF00);
         searchInput.setBackgroundColor(0xFF002200);
         searchInput.setPadding(16, 8, 16, 8);
         searchInput.setSingleLine(true);
         searchInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
-        searchBar.addView(searchInput, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        searchBar.addView(searchInput, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button btnSearch = new Button(this);
-        btnSearch.setText("FIND");
-        btnSearch.setTextColor(0xFF00FF00);
-        btnSearch.setBackgroundColor(0xFF003300);
-        btnSearch.setTextSize(11);
-        btnSearch.setTypeface(android.graphics.Typeface.MONOSPACE);
-        searchBar.addView(btnSearch);
+        Button btnNext = new Button(this);
+        btnNext.setText("NEXT");
+        btnNext.setTextColor(0xFF00FF00);
+        btnNext.setBackgroundColor(0xFF003300);
+        btnNext.setTextSize(11);
+        btnNext.setTypeface(android.graphics.Typeface.MONOSPACE);
+        searchBar.addView(btnNext);
 
         Button btnClear = new Button(this);
         btnClear.setText("CLEAR");
@@ -192,42 +176,26 @@ public class PdfViewerActivity extends AppCompatActivity {
         searchBar.addView(btnClear);
 
         root.addView(searchBar, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        // Wire the search buttons (must be after they're created)
-        btnSearch.setOnClickListener(v -> {
-            String query = searchInput.getText().toString().trim();
-            if (query.isEmpty()) return;
-            searchInPdf(query);
-        });
-
-        btnClear.setOnClickListener(v -> {
-            searchInput.setText("");
-            clearSearchHighlight();
-        });
-        // ============================================================
-
-        // --- RecyclerView for pages ---
         recyclerPages = new RecyclerView(this);
-        recyclerPages.setLayoutManager(new LinearLayoutManager(this));
+        layoutManager = new LinearLayoutManager(this);
+        recyclerPages.setLayoutManager(layoutManager);
         recyclerPages.setBackgroundColor(Color.BLACK);
-        recyclerPages.setItemViewCacheSize(3);
+        recyclerPages.setItemViewCacheSize(4);
+        recyclerPages.setItemAnimator(null);
         adapter = new PdfPageAdapter();
         recyclerPages.setAdapter(adapter);
         root.addView(recyclerPages, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // --- Progress bar ---
         progressBar = new ProgressBar(this);
         progressBar.setIndeterminate(true);
         LinearLayout.LayoutParams progParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         progParams.gravity = Gravity.CENTER;
         root.addView(progressBar, progParams);
 
-        // --- Status text ---
         tvStatus = new TextView(this);
         tvStatus.setText("Loading PDF…");
         tvStatus.setTextColor(0xFF00AA00);
@@ -236,23 +204,42 @@ public class PdfViewerActivity extends AppCompatActivity {
         tvStatus.setPadding(24, 8, 24, 8);
         tvStatus.setGravity(Gravity.CENTER);
         root.addView(tvStatus, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
+
+        final String[] lastQuery = {""};
+
+        searchInput.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(android.text.Editable s) {
+                String q = s.toString().trim();
+                if (q.equals(lastQuery[0])) return;
+                lastQuery[0] = q;
+                runSearch(q, false);
+            }
+        });
+
+        btnNext.setOnClickListener(v -> {
+            String q = searchInput.getText().toString().trim();
+            if (q.isEmpty()) return;
+            runSearch(q, true);
+        });
+
+        btnClear.setOnClickListener(v -> {
+            searchInput.setText("");
+            lastQuery[0] = "";
+            clearSearchHighlight();
+        });
     }
 
-    // ==================== URI resolution ====================
     @Nullable
     private File resolvePdfFile() {
-        // Priority 1: EXTRA_PDF_URI as a raw filesystem path
         String path = getIntent().getStringExtra(EXTRA_PDF_URI);
         if (path != null) {
-            FileLog.d("resolvePdfFile: trying EXTRA_PDF_URI=" + path);
             File f = new File(path);
             if (f.exists() && f.canRead()) return f;
-
-            // Maybe it's a URI string
             try {
                 Uri u = Uri.parse(path);
                 if ("file".equals(u.getScheme())) {
@@ -260,19 +247,13 @@ public class PdfViewerActivity extends AppCompatActivity {
                     if (f2.exists() && f2.canRead()) return f2;
                 }
                 if ("content".equals(u.getScheme())) {
-                    // Copy content URI to our cache
                     File cached = copyUriToCache(u);
                     if (cached != null) return cached;
                 }
-            } catch (Exception e) {
-                FileLog.e("resolvePdfFile: parse error", e);
-            }
+            } catch (Exception ignored) {}
         }
-
-        // Priority 2: intent.getData()
         Uri data = getIntent().getData();
         if (data != null) {
-            FileLog.d("resolvePdfFile: trying intent data=" + data);
             if ("file".equals(data.getScheme())) {
                 File f = new File(data.getPath());
                 if (f.exists() && f.canRead()) return f;
@@ -281,229 +262,204 @@ public class PdfViewerActivity extends AppCompatActivity {
                 return copyUriToCache(data);
             }
         }
-
         return null;
-    }
-
-    // ==================== PDF opening ====================
-    private void openPdfAsync(File pdfFile) {
-        this.lastOpenedFile = pdfFile;
-        renderExecutor.execute(() -> {
-            try {
-                FileLog.d("openPdfAsync: opening PFD for " + pdfFile);
-                pfd = ParcelFileDescriptor.open(pdfFile,
-                        ParcelFileDescriptor.MODE_READ_ONLY);
-                pdfRenderer = new PdfRenderer(pfd);
-                pageCount = pdfRenderer.getPageCount();
-                FileLog.i("openPdfAsync: " + pageCount + " pages");
-
-                mainHandler.post(this::onPdfReady);
-
-            } catch (Exception e) {
-                FileLog.e("openPdfAsync: failed", e);
-                mainHandler.post(() ->
-                        showError("Failed to open PDF: " + e.getMessage()));
-            }
-        });
-    }
-    /**
-     * Extracts text from a rendered page by scanning the bitmap for character-like
-     * pixel patterns. This is heuristic (Android's PdfRenderer does not expose text).
-     */
-    private String extractTextFromPage(int pageIndex) {
-        String cached = pageTextCache.get(pageIndex);
-        if (cached != null) return cached;
-
-        Bitmap bmp = bitmapCache.get(pageIndex);
-        if (bmp == null) return "";
-
-        // Very rough OCR-free "text presence" — we can't get real text from
-        // PdfRenderer. What we CAN do is check whether the query bytes appear
-        // in the *underlying file* first, and jump the user to any page whose
-        // raw stream contains those bytes. That's not page-precise, but works.
-        return "";
-    }
-
-    private void searchInPdf(final String query) {
-        if (searchRunning) return;
-        searchRunning = true;
-
-        // Strategy: scan the whole PDF file's raw bytes for the query encoded
-        // as PDF text (Tj/TJ operators store literal strings). This finds the
-        // page in most documents.
-        Toast.makeText(this, "Searching…", Toast.LENGTH_SHORT).show();
-
-        renderExecutor.execute(() -> {
-            int foundPage = -1;
-            try {
-                // Re-open the PDF raw file for scanning
-                java.io.File raw = lastOpenedFile;
-
-                if (raw != null && raw.exists() && raw.canRead()) {
-                    try (java.io.FileInputStream fis = new java.io.FileInputStream(raw)) {
-                        byte[] data = new byte[(int) Math.min(raw.length(), 20 * 1024 * 1024)];
-                        int read = 0, total = 0;
-                        while (total < data.length &&
-                                (read = fis.read(data, total, data.length - total)) > 0) {
-                            total += read;
-                        }
-                        String haystack = new String(data, 0, total, "ISO-8859-1");
-                        String needle = query;   // PDF text is usually ASCII-literal
-                        int idx = haystack.indexOf(needle);
-                        if (idx < 0) {
-                            needle = query.toLowerCase();
-                            haystack = haystack.toLowerCase();
-                            idx = haystack.indexOf(needle);
-                        }
-                        if (idx >= 0) {
-                            // Count how many page markers exist before idx to guess page
-                            foundPage = estimatePageFromOffset(haystack, idx);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                FileLog.e("searchInPdf: scan failed", e);
-            }
-
-            final int page = foundPage;
-            mainHandler.post(() -> {
-                searchRunning = false;
-                if (page < 0) {
-                    Toast.makeText(this, "Text not found in PDF", Toast.LENGTH_SHORT).show();
-                } else {
-                    searchHighlightPage = page;
-                    recyclerPages.scrollToPosition(page);
-                    Toast.makeText(this, "Found on page " + (page + 1), Toast.LENGTH_SHORT).show();
-                    // Force re-render to visually mark this page
-                    adapter.notifyItemChanged(page);
-                }
-            });
-        });
-    }
-
-    /** Rough estimate: split on "/Type /Page" or "endobj" markers before idx. */
-    private int estimatePageFromOffset(String haystack, int idx) {
-        int count = 0;
-        int pos = 0;
-        String marker = "/Type /Page";
-        while (true) {
-            int next = haystack.indexOf(marker, pos);
-            if (next < 0 || next >= idx) break;
-            count++;
-            pos = next + marker.length();
-        }
-        if (count == 0) return 0;
-        return Math.min(count - 1, pageCount - 1);
-    }
-
-    private void clearSearchHighlight() {
-        searchHighlightPage = -1;
-        adapter.notifyDataSetChanged();
     }
 
     @Nullable
     private File copyUriToCache(Uri uri) {
-        FileLog.d("copyUriToCache: " + uri);
         try {
-            if ("file".equals(uri.getScheme())) {
-                File f = new File(uri.getPath());
-                if (f.exists() && f.canRead()) return f;
-            }
-
-            File outFile = new File(getCacheDir(),
-                    "pdf_view_" + System.currentTimeMillis() + ".pdf");
+            File outFile = new File(getCacheDir(), "pdf_view_" + System.currentTimeMillis() + ".pdf");
             InputStream in = null;
             FileOutputStream out = null;
             try {
                 in = getContentResolver().openInputStream(uri);
-                if (in == null) {
-                    FileLog.e("copyUriToCache: openInputStream returned null");
-                    return null;
-                }
+                if (in == null) return null;
                 out = new FileOutputStream(outFile);
                 byte[] buf = new byte[64 * 1024];
                 int len;
-                long total = 0;
-                while ((len = in.read(buf)) > 0) {
-                    out.write(buf, 0, len);
-                    total += len;
-                }
+                while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
                 out.flush();
-                FileLog.i("copyUriToCache: copied " + total + " bytes");
                 return outFile;
             } finally {
-                try { if (in != null) in.close(); } catch (Exception ignored) { }
-                try { if (out != null) out.close(); } catch (Exception ignored) { }
+                try { if (in != null) in.close(); } catch (Exception ignored) {}
+                try { if (out != null) out.close(); } catch (Exception ignored) {}
             }
         } catch (Exception e) {
-            FileLog.e("copyUriToCache failed", e);
+            FileLog.e("copyUriToCache failed: " + e);
             return null;
         }
+    }
+
+    private void openPdfAsync(File pdfFile) {
+        renderExecutor.execute(() -> {
+            try {
+                pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY);
+                pdfRenderer = new PdfRenderer(pfd);
+                pageCount = pdfRenderer.getPageCount();
+                mainHandler.post(this::onPdfReady);
+            } catch (Exception e) {
+                FileLog.e("openPdfAsync failed: " + e);
+                mainHandler.post(() -> showError("Failed to open PDF: " + e.getMessage()));
+            }
+        });
+    }
+
+    private void loadPdfTextAsync(File pdfFile) {
+        textExecutor.execute(() -> {
+            try {
+                PdfTextExtractor.Result r = PdfTextExtractor.extract(pdfFile);
+                mainHandler.post(() -> {
+                    extractedText = r;
+                    FileLog.i("loadPdfTextAsync: " + (r == null ? 0 : r.fullText.length())
+                            + " chars, " + (r == null ? 0 : r.pageCount) + " pages");
+                });
+            } catch (Exception e) {
+                FileLog.e("loadPdfTextAsync failed: " + e);
+            }
+        });
     }
 
     private void onPdfReady() {
         progressBar.setVisibility(View.GONE);
         tvStatus.setText(pageCount + (pageCount == 1 ? " page" : " pages"));
         adapter.notifyDataSetChanged();
-
-        // Kick off rendering of the first page immediately
-        renderPageIfNeeded(0);
+        for (int i = 0; i < Math.min(3, pageCount); i++) renderPageIfNeeded(i);
     }
 
     private void showError(String msg) {
         progressBar.setVisibility(View.GONE);
         tvStatus.setText(msg);
-        Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
     }
 
-    // ==================== Page rendering ====================
+    private void runSearch(String query, boolean advance) {
+        if (query.isEmpty()) {
+            clearSearchHighlight();
+            return;
+        }
+        if (extractedText == null) {
+            final String q = query;
+            final boolean adv = advance;
+            mainHandler.postDelayed(() -> runSearch(q, adv), 200);
+            return;
+        }
+        if (extractedText.fullText == null || extractedText.fullText.isEmpty()) {
+            tvStatus.setText("No searchable text in this PDF");
+            return;
+        }
+        final String needle = query.toLowerCase(java.util.Locale.US);
+        final String haystack = extractedText.fullText.toLowerCase(java.util.Locale.US);
+
+        if (matchPages.isEmpty() || !advance) {
+            matchPages.clear();
+            matchCursor = -1;
+            int idx = 0;
+            while (true) {
+                idx = haystack.indexOf(needle, idx);
+                if (idx < 0) break;
+                int page = pageForOffset(idx);
+                if (matchPages.isEmpty() || matchPages.get(matchPages.size() - 1) != page) {
+                    matchPages.add(page);
+                }
+                idx += Math.max(1, needle.length());
+            }
+        }
+
+        if (matchPages.isEmpty()) {
+            searchHighlightPage = -1;
+            adapter.notifyDataSetChanged();
+            tvStatus.setText("Not found • " + pageCount + " pages");
+            return;
+        }
+
+        matchCursor = advance ? (matchCursor + 1) % matchPages.size() : 0;
+        int page = matchPages.get(matchCursor);
+        searchHighlightPage = page;
+        renderPageIfNeeded(page);
+        centerPage(page);
+        adapter.notifyItemChanged(page);
+        tvStatus.setText((matchCursor + 1) + " / " + matchPages.size()
+                + "  •  page " + (page + 1) + " / " + pageCount);
+    }
+
+    private int pageForOffset(int offset) {
+        if (extractedText == null || extractedText.pageOffsets == null
+                || extractedText.pageOffsets.length == 0) return 0;
+        int bestPage = 0;
+        for (int i = 0; i < extractedText.pageOffsets.length; i++) {
+            if (extractedText.pageOffsets[i] <= offset) bestPage = i;
+            else break;
+        }
+        return Math.min(bestPage, Math.max(0, pageCount - 1));
+    }
+
+    private void centerPage(int pageIndex) {
+        if (recyclerPages == null || layoutManager == null) return;
+        renderPageIfNeeded(pageIndex);
+        recyclerPages.scrollToPosition(pageIndex);
+        recyclerPages.post(() -> {
+            View v = layoutManager.findViewByPosition(pageIndex);
+            if (v == null) return;
+            int viewportH = recyclerPages.getHeight();
+            int pageTop = v.getTop();
+            int pageBottom = v.getBottom();
+            int pageCenter = (pageTop + pageBottom) / 2;
+            int delta = pageCenter - viewportH / 2;
+            recyclerPages.smoothScrollBy(0, delta);
+        });
+    }
+
+    private void clearSearchHighlight() {
+        searchHighlightPage = -1;
+        matchCursor = -1;
+        matchPages.clear();
+        if (adapter != null) adapter.notifyDataSetChanged();
+        if (tvStatus != null) {
+            tvStatus.setText(pageCount + (pageCount == 1 ? " page" : " pages"));
+        }
+    }
 
     private void renderPageIfNeeded(int pageIndex) {
-        if (bitmapCache.get(pageIndex) != null) return;
-        if (pdfRenderer == null) return;
         if (pageIndex < 0 || pageIndex >= pageCount) return;
-
+        if (pdfRenderer == null) return;
+        synchronized (bitmapCache) {
+            if (bitmapCache.get(pageIndex) != null) return;
+        }
+        synchronized (inFlightRenders) {
+            if (inFlightRenders.contains(pageIndex)) return;
+            inFlightRenders.add(pageIndex);
+        }
         renderExecutor.execute(() -> {
             Bitmap bmp = null;
             try {
                 synchronized (PdfRenderer.class) {
                     PdfRenderer.Page page = pdfRenderer.openPage(pageIndex);
-                    bmp = Bitmap.createBitmap(PAGE_WIDTH_PX, PAGE_HEIGHT_PX,
-                            Bitmap.Config.ARGB_8888);
+                    bmp = Bitmap.createBitmap(PAGE_WIDTH_PX, PAGE_HEIGHT_PX, Bitmap.Config.ARGB_8888);
                     bmp.eraseColor(Color.WHITE);
-                    page.render(bmp, null, null,
-                            PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                    page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
                     page.close();
                 }
-
                 final Bitmap result = bmp;
-                bitmapCache.put(pageIndex, result);
+                synchronized (bitmapCache) {
+                    bitmapCache.put(pageIndex, result);
+                }
                 mainHandler.post(() -> {
-                    adapter.notifyItemChanged(pageIndex);
+                    if (adapter != null) adapter.notifyItemChanged(pageIndex);
                 });
             } catch (Exception e) {
+                FileLog.e("renderPageIfNeeded failed page " + pageIndex + ": " + e);
                 if (bmp != null && !bmp.isRecycled()) bmp.recycle();
+            } finally {
+                synchronized (inFlightRenders) {
+                    inFlightRenders.remove(pageIndex);
+                }
             }
         });
     }
 
     private void closeRenderer() {
-        try {
-            if (pdfRenderer != null) {
-                pdfRenderer.close();
-                pdfRenderer = null;
-            }
-        } catch (Exception ignored) { }
-        try {
-            if (pfd != null) {
-                pfd.close();
-                pfd = null;
-            }
-        } catch (Exception ignored) { }
+        try { if (pdfRenderer != null) { pdfRenderer.close(); pdfRenderer = null; } } catch (Exception ignored) {}
+        try { if (pfd != null) { pfd.close(); pfd = null; } } catch (Exception ignored) {}
     }
-
-    // ==================== RecyclerView adapter ====================
-    // ==================== RecyclerView adapter ====================
 
     private class PdfPageAdapter extends RecyclerView.Adapter<PdfPageAdapter.PageViewHolder> {
 
@@ -515,11 +471,31 @@ public class PdfViewerActivity extends AppCompatActivity {
             wrapper.setBackgroundColor(Color.BLACK);
             wrapper.setPadding(8, 16, 8, 16);
 
-            ImageView iv = new ImageView(PdfViewerActivity.this);
-            iv.setAdjustViewBounds(true);
-            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            FrameLayout pageContainer = new FrameLayout(PdfViewerActivity.this);
+            pageContainer.setBackgroundColor(Color.WHITE);
+
+            ZoomableImageView iv = new ZoomableImageView(PdfViewerActivity.this);
             iv.setBackgroundColor(Color.WHITE);
-            wrapper.addView(iv, new LinearLayout.LayoutParams(
+            iv.setClickable(true);
+            iv.setFocusable(true);
+
+            pageContainer.addView(iv, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT));
+
+            View highlightOverlay = new View(PdfViewerActivity.this);
+            highlightOverlay.setVisibility(View.GONE);
+            GradientDrawable highlightDrawable = new GradientDrawable();
+            highlightDrawable.setColor(0x18FFD700);
+            highlightDrawable.setStroke(dp(4), 0xFFFFD700);
+            highlightOverlay.setBackground(highlightDrawable);
+            FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT);
+            overlayParams.gravity = Gravity.CENTER;
+            pageContainer.addView(highlightOverlay, overlayParams);
+
+            wrapper.addView(pageContainer, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT));
 
@@ -533,30 +509,30 @@ public class PdfViewerActivity extends AppCompatActivity {
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT));
 
-            return new PageViewHolder(wrapper, iv, tvPageNum);
+            return new PageViewHolder(wrapper, pageContainer, iv, highlightOverlay, tvPageNum);
         }
 
         @Override
         public void onBindViewHolder(@NonNull PageViewHolder holder, int position) {
-            // Page number + highlight color
             holder.tvPageNum.setText("Page " + (position + 1) + " / " + pageCount);
-            if (position == searchHighlightPage) {
+            boolean highlighted = position == searchHighlightPage;
+            if (highlighted) {
+                holder.highlightOverlay.setVisibility(View.VISIBLE);
                 holder.tvPageNum.setTextColor(0xFFFFD700);
                 holder.itemView.setBackgroundColor(0xFF221100);
             } else {
+                holder.highlightOverlay.setVisibility(View.GONE);
                 holder.tvPageNum.setTextColor(0xFF00AA00);
                 holder.itemView.setBackgroundColor(Color.BLACK);
             }
-
-            // *** CRITICAL: restore the bitmap binding ***
-            Bitmap cached = bitmapCache.get(position);
-            if (cached != null) {
+            Bitmap cached;
+            synchronized (bitmapCache) {
+                cached = bitmapCache.get(position);
+            }
+            if (cached != null && !cached.isRecycled()) {
                 holder.imageView.setImageBitmap(cached);
-                holder.imageView.setMinimumHeight(0);
             } else {
-                // Placeholder while we render
                 holder.imageView.setImageBitmap(null);
-                holder.imageView.setMinimumHeight(600);
                 renderPageIfNeeded(position);
             }
         }
@@ -567,14 +543,288 @@ public class PdfViewerActivity extends AppCompatActivity {
         }
 
         class PageViewHolder extends RecyclerView.ViewHolder {
-            final ImageView imageView;
+            final FrameLayout pageContainer;
+            final ZoomableImageView imageView;
+            final View highlightOverlay;
             final TextView tvPageNum;
 
-            PageViewHolder(@NonNull View itemView, ImageView iv, TextView tv) {
+            PageViewHolder(@NonNull View itemView, FrameLayout pageContainer,
+                           ZoomableImageView imageView, View highlightOverlay, TextView tvPageNum) {
                 super(itemView);
-                this.imageView = iv;
-                this.tvPageNum = tv;
+                this.pageContainer = pageContainer;
+                this.imageView = imageView;
+                this.highlightOverlay = highlightOverlay;
+                this.tvPageNum = tvPageNum;
             }
+        }
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    public static class ZoomableImageView extends androidx.appcompat.widget.AppCompatImageView {
+
+        private static final float MAX_SCALE = 8.0f;
+
+        private final android.graphics.Matrix matrix = new android.graphics.Matrix();
+        private final float[] matrixValues = new float[9];
+
+        private android.view.ScaleGestureDetector scaleDetector;
+        private android.view.GestureDetector gestureDetector;
+
+        private float scaleFactor = 1.0f;
+        private float baseScale = 1.0f;
+        private float lastTouchX, lastTouchY;
+        private int activePointerId = MotionEvent.INVALID_POINTER_ID;
+        private boolean isDragging = false;
+        private boolean isZooming = false;
+
+        private android.graphics.drawable.Drawable lastDrawable = null;
+        private int lastDrawableWidth = 0;
+        private int lastDrawableHeight = 0;
+
+        public ZoomableImageView(android.content.Context context) {
+            super(context);
+            init(context);
+        }
+
+        public ZoomableImageView(android.content.Context context, android.util.AttributeSet attrs) {
+            super(context, attrs);
+            init(context);
+        }
+
+        public ZoomableImageView(android.content.Context context, android.util.AttributeSet attrs, int defStyle) {
+            super(context, attrs, defStyle);
+            init(context);
+        }
+
+        private void init(android.content.Context context) {
+            super.setClickable(true);
+            super.setLongClickable(true);
+            setScaleType(ScaleType.MATRIX);
+
+            scaleDetector = new android.view.ScaleGestureDetector(context,
+                    new android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                        @Override
+                        public boolean onScaleBegin(android.view.ScaleGestureDetector detector) {
+                            isZooming = true;
+                            getParent().requestDisallowInterceptTouchEvent(true);
+                            return true;
+                        }
+
+                        @Override
+                        public boolean onScale(android.view.ScaleGestureDetector detector) {
+                            if (baseScale <= 0f) return false;
+                            float factor = detector.getScaleFactor();
+                            float newScale = scaleFactor * factor;
+                            newScale = Math.max(baseScale, Math.min(MAX_SCALE, newScale));
+                            float applied = newScale / scaleFactor;
+                            scaleFactor = newScale;
+                            matrix.postScale(applied, applied, detector.getFocusX(), detector.getFocusY());
+                            constrain();
+                            setImageMatrix(matrix);
+                            invalidate();
+                            return true;
+                        }
+
+                        @Override
+                        public void onScaleEnd(android.view.ScaleGestureDetector detector) {
+                            isZooming = false;
+                            if (scaleFactor <= baseScale + 0.01f) {
+                                applyFitMatrix();
+                                getParent().requestDisallowInterceptTouchEvent(false);
+                            }
+                        }
+                    });
+
+            gestureDetector = new android.view.GestureDetector(context,
+                    new android.view.GestureDetector.SimpleOnGestureListener() {
+                        @Override
+                        public boolean onDoubleTap(MotionEvent e) {
+                            if (baseScale <= 0f) return false;
+                            if (scaleFactor > baseScale + 0.01f) {
+                                scaleFactor = baseScale;
+                                applyFitMatrix();
+                            } else {
+                                float target = Math.min(MAX_SCALE, baseScale * 2.5f);
+                                float applied = target / scaleFactor;
+                                scaleFactor = target;
+                                matrix.postScale(applied, applied, e.getX(), e.getY());
+                                constrain();
+                                setImageMatrix(matrix);
+                                invalidate();
+                            }
+                            return true;
+                        }
+                    });
+        }
+
+        @Override
+        public void setImageBitmap(Bitmap bm) {
+            super.setImageBitmap(bm);
+            post(this::applyFitMatrixIfNeeded);
+        }
+
+        @Override
+        public void setImageDrawable(android.graphics.drawable.Drawable drawable) {
+            super.setImageDrawable(drawable);
+            post(this::applyFitMatrixIfNeeded);
+        }
+
+        @Override
+        protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+            super.onSizeChanged(w, h, oldw, oldh);
+            post(this::applyFitMatrixIfNeeded);
+        }
+
+        @Override
+        public void setImageMatrix(android.graphics.Matrix m) {
+            if (m != null && m.isIdentity()) {
+                m = null;
+            }
+            super.setImageMatrix(m);
+        }
+
+        private void applyFitMatrixIfNeeded() {
+            android.graphics.drawable.Drawable d = getDrawable();
+            if (d == null) return;
+            int dw = d.getIntrinsicWidth();
+            int dh = d.getIntrinsicHeight();
+            if (dw <= 0 || dh <= 0) return;
+
+            if (lastDrawable == d && lastDrawableWidth == dw && lastDrawableHeight == dh
+                    && baseScale > 0f && scaleFactor > baseScale + 0.001f) {
+                return;
+            }
+            lastDrawable = d;
+            lastDrawableWidth = dw;
+            lastDrawableHeight = dh;
+            applyFitMatrix();
+        }
+
+        private void applyFitMatrix() {
+            android.graphics.drawable.Drawable d = getDrawable();
+            if (d == null || getWidth() == 0 || getHeight() == 0) return;
+
+            float vw = getWidth();
+            float vh = getHeight();
+            float dw = d.getIntrinsicWidth();
+            float dh = d.getIntrinsicHeight();
+            if (dw <= 0 || dh <= 0) return;
+
+            float scale = Math.min(vw / dw, vh / dh);
+            baseScale = scale;
+            scaleFactor = scale;
+
+            matrix.reset();
+            matrix.postScale(scale, scale);
+            float dx = (vw - dw * scale) * 0.5f;
+            float dy = (vh - dh * scale) * 0.5f;
+            matrix.postTranslate(dx, dy);
+
+            setImageMatrix(matrix);
+            invalidate();
+        }
+
+        private void constrain() {
+            android.graphics.drawable.Drawable d = getDrawable();
+            if (d == null) return;
+
+            matrix.getValues(matrixValues);
+
+            float transX = matrixValues[android.graphics.Matrix.MTRANS_X];
+            float transY = matrixValues[android.graphics.Matrix.MTRANS_Y];
+            float scaleX = matrixValues[android.graphics.Matrix.MSCALE_X];
+            float scaleY = matrixValues[android.graphics.Matrix.MSCALE_Y];
+
+            float drawableW = d.getIntrinsicWidth() * scaleX;
+            float drawableH = d.getIntrinsicHeight() * scaleY;
+
+            float viewW = getWidth();
+            float viewH = getHeight();
+
+            float deltaX = 0, deltaY = 0;
+
+            if (drawableW <= viewW) {
+                deltaX = (viewW - drawableW) / 2 - transX;
+            } else {
+                if (transX > 0) deltaX = -transX;
+                else if (transX + drawableW < viewW) deltaX = viewW - (transX + drawableW);
+            }
+
+            if (drawableH <= viewH) {
+                deltaY = (viewH - drawableH) / 2 - transY;
+            } else {
+                if (transY > 0) deltaY = -transY;
+                else if (transY + drawableH < viewH) deltaY = viewH - (transY + drawableH);
+            }
+
+            if (deltaX != 0 || deltaY != 0) {
+                matrix.postTranslate(deltaX, deltaY);
+            }
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            scaleDetector.onTouchEvent(event);
+            gestureDetector.onTouchEvent(event);
+
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN: {
+                    lastTouchX = event.getX();
+                    lastTouchY = event.getY();
+                    activePointerId = event.getPointerId(0);
+                    isDragging = false;
+                    if (scaleFactor > baseScale + 0.01f) {
+                        getParent().requestDisallowInterceptTouchEvent(true);
+                    }
+                    break;
+                }
+                case MotionEvent.ACTION_MOVE: {
+                    if (event.getPointerCount() > 1) break;
+                    int pointerIndex = event.findPointerIndex(activePointerId);
+                    if (pointerIndex < 0) break;
+
+                    float x = event.getX(pointerIndex);
+                    float y = event.getY(pointerIndex);
+                    float dx = x - lastTouchX;
+                    float dy = y - lastTouchY;
+
+                    if (scaleFactor > baseScale + 0.01f) {
+                        matrix.postTranslate(dx, dy);
+                        constrain();
+                        setImageMatrix(matrix);
+                        isDragging = true;
+                        getParent().requestDisallowInterceptTouchEvent(true);
+                    }
+                    lastTouchX = x;
+                    lastTouchY = y;
+                    break;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL: {
+                    activePointerId = MotionEvent.INVALID_POINTER_ID;
+                    isDragging = false;
+                    isZooming = false;
+                    if (scaleFactor <= baseScale + 0.01f) {
+                        getParent().requestDisallowInterceptTouchEvent(false);
+                    }
+                    break;
+                }
+                case MotionEvent.ACTION_POINTER_UP: {
+                    int pointerIndex = event.getActionIndex();
+                    int pointerId = event.getPointerId(pointerIndex);
+                    if (pointerId == activePointerId) {
+                        int newIndex = pointerIndex == 0 ? 1 : 0;
+                        lastTouchX = event.getX(newIndex);
+                        lastTouchY = event.getY(newIndex);
+                        activePointerId = event.getPointerId(newIndex);
+                    }
+                    break;
+                }
+            }
+            return true;
         }
     }
 }
