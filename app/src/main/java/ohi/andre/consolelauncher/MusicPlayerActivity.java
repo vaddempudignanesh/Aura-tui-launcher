@@ -8,7 +8,9 @@ import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.net.Uri;
@@ -18,13 +20,16 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.Settings;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
@@ -54,10 +59,9 @@ import java.util.concurrent.Executors;
 public class MusicPlayerActivity extends AppCompatActivity {
 
     // ---------- Colors ----------
-    private static final int BG      = 0xFF000000;
-    private static final int GREEN   = 0xFF00FF00;
-    private static final int DIM     = 0xFF00AA00;
-    private static final int ROW_SEL = 0xFF003300;
+    private static final int BG       = 0xFF000000;
+    private static final int GREEN    = 0xFF00FF00;
+    private static final int DIM      = 0xFF00AA00;
     private static final int NOW_PLAY = 0xFFFFFF00;
 
     // ---------- View states ----------
@@ -84,8 +88,8 @@ public class MusicPlayerActivity extends AppCompatActivity {
         String path;
         Uri contentUri;
         long durationMs;
-        long dateAdded;      // seconds since epoch (MediaStore index time)
-        long dateModified;   // seconds since epoch (file mtime)
+        long dateAdded;
+        long dateModified;
         long size;
     }
 
@@ -96,18 +100,28 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private boolean filterActive = false;
     private final Set<Long> pickBuffer = new HashSet<>();
 
+    // Search
+    private boolean searchOpen = false;
+    private String  searchQuery = "";
+
     // ---------- Views ----------
     private RecyclerView recycler;
     private TrackAdapter adapter;
+    private LinearLayout topBar;
+    private LinearLayout searchRow;
+    private EditText     searchInput;
     private TextView     tvTitle;
     private TextView     emptyLabel;
     private ImageView    btnLeft;
+    private ImageView    btnSearch;
     private ImageView    btnSort;
     private Button       btnAdd;
 
     // Bottom bar
     private LinearLayout bottomBar;
     private TextView     tvNowPlaying;
+    private ImageView    btnPrev;
+    private ImageView    btnNext;
     private SeekBar      seekBar;
 
     // ---------- Player ----------
@@ -140,11 +154,8 @@ public class MusicPlayerActivity extends AppCompatActivity {
         setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
         buildUi();
 
-        if (hasAudioPermission()) {
-            loadTracks();
-        } else {
-            requestAudioPermission();
-        }
+        if (hasAudioPermission()) loadTracks();
+        else requestAudioPermission();
     }
 
     @Override
@@ -152,22 +163,15 @@ public class MusicPlayerActivity extends AppCompatActivity {
         super.onDestroy();
         ui.removeCallbacksAndMessages(null);
         io.shutdownNow();
-        // Only release the player when the user actually leaves the task
-        // (swipe from recents / back at library view). If the OS is just
-        // reclaiming the activity while we are backgrounded, keep playing.
-        if (isFinishing()) {
-            releasePlayer();
-        }
-    }
-
-    @Override
-    protected void onStop() {
-        super.onStop();
-        // Do NOT pause the player — background playback is intentional.
+        if (isFinishing()) releasePlayer();
     }
 
     @Override
     public void onBackPressed() {
+        if (searchOpen) {
+            closeSearch();
+            return;
+        }
         switch (viewState) {
             case VIEW_PICKER:
                 pickBuffer.clear();
@@ -195,7 +199,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
         root.setBackgroundColor(BG);
 
         // ---------- Top bar ----------
-        LinearLayout topBar = new LinearLayout(this);
+        topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
         topBar.setBackgroundColor(BG);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -219,16 +223,51 @@ public class MusicPlayerActivity extends AppCompatActivity {
         titleLp.leftMargin = dp(12);
         topBar.addView(tvTitle, titleLp);
 
+        // Search icon (magnifier)
+        btnSearch = new ImageView(this);
+        btnSearch.setImageResource(R.drawable.ic_search_black_24);
+        btnSearch.setColorFilter(GREEN);
+        btnSearch.setOnClickListener(v -> toggleSearch());
+        topBar.addView(btnSearch, new LinearLayout.LayoutParams(dp(40), dp(40)));
+
         btnSort = new ImageView(this);
         btnSort.setImageResource(R.drawable.ic_sort);
         btnSort.setColorFilter(GREEN);
         btnSort.setOnClickListener(this::showSortMenu);
-        LinearLayout.LayoutParams sortLp =
-                new LinearLayout.LayoutParams(dp(40), dp(40));
-        sortLp.gravity = Gravity.END;
-        topBar.addView(btnSort, sortLp);
+        topBar.addView(btnSort, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         root.addView(topBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // ---------- Search row (hidden until magnifier is tapped) ----------
+        searchRow = new LinearLayout(this);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setBackgroundColor(BG);
+        searchRow.setPadding(dp(12), dp(4), dp(12), dp(8));
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setVisibility(View.GONE);
+
+        searchInput = new EditText(this);
+        searchInput.setHint("search…");
+        searchInput.setHintTextColor(DIM);
+        searchInput.setTextColor(GREEN);
+        searchInput.setBackgroundColor(BG);
+        searchInput.setSingleLine(true);
+        searchInput.setInputType(InputType.TYPE_CLASS_TEXT);
+        searchInput.setTypeface(Typeface.MONOSPACE);
+        searchInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) {
+                searchQuery = s.toString().trim().toLowerCase(Locale.US);
+                refreshList();
+            }
+        });
+        searchRow.addView(searchInput, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        root.addView(searchRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -280,6 +319,17 @@ public class MusicPlayerActivity extends AppCompatActivity {
         bottomBar.setPadding(dp(12), dp(6), dp(12), dp(6));
         bottomBar.setVisibility(View.GONE);
 
+        // Row 1: prev | now playing | next
+        LinearLayout navRow = new LinearLayout(this);
+        navRow.setOrientation(LinearLayout.HORIZONTAL);
+        navRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        btnPrev = new ImageView(this);
+        btnPrev.setImageResource(R.drawable.ic_skip_back);
+        btnPrev.setColorFilter(GREEN);
+        btnPrev.setOnClickListener(v -> playPrevious());
+        navRow.addView(btnPrev, new LinearLayout.LayoutParams(dp(36), dp(36)));
+
         tvNowPlaying = new TextView(this);
         tvNowPlaying.setTextColor(GREEN);
         tvNowPlaying.setTextSize(12);
@@ -288,10 +338,23 @@ public class MusicPlayerActivity extends AppCompatActivity {
         tvNowPlaying.setEllipsize(android.text.TextUtils.TruncateAt.MARQUEE);
         tvNowPlaying.setMarqueeRepeatLimit(-1);
         tvNowPlaying.setSelected(true);
-        bottomBar.addView(tvNowPlaying, new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams npLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        npLp.leftMargin  = dp(8);
+        npLp.rightMargin = dp(8);
+        navRow.addView(tvNowPlaying, npLp);
+
+        btnNext = new ImageView(this);
+        btnNext.setImageResource(R.drawable.ic_skip_forward);
+        btnNext.setColorFilter(GREEN);
+        btnNext.setOnClickListener(v -> playNext());
+        navRow.addView(btnNext, new LinearLayout.LayoutParams(dp(36), dp(36)));
+
+        bottomBar.addView(navRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        // Row 2: seekbar
         seekBar = new SeekBar(this);
         seekBar.setProgressTintList(android.content.res.ColorStateList.valueOf(GREEN));
         seekBar.setThumbTintList(android.content.res.ColorStateList.valueOf(GREEN));
@@ -316,6 +379,27 @@ public class MusicPlayerActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
+    }
+
+    private void toggleSearch() {
+        if (searchOpen) closeSearch();
+        else openSearch();
+    }
+
+    private void openSearch() {
+        searchOpen = true;
+        searchRow.setVisibility(View.VISIBLE);
+        searchInput.requestFocus();
+        btnSearch.setColorFilter(NOW_PLAY);
+    }
+
+    private void closeSearch() {
+        searchOpen = false;
+        searchQuery = "";
+        searchInput.setText("");
+        searchRow.setVisibility(View.GONE);
+        btnSearch.setColorFilter(GREEN);
+        refreshList();
     }
 
     private void updateToolbar() {
@@ -343,7 +427,9 @@ public class MusicPlayerActivity extends AppCompatActivity {
 
         if (visibleTracks.isEmpty()) {
             emptyLabel.setVisibility(View.VISIBLE);
-            if (viewState == VIEW_PLAYLIST) {
+            if (!searchQuery.isEmpty()) {
+                emptyLabel.setText("No matches.");
+            } else if (viewState == VIEW_PLAYLIST) {
                 emptyLabel.setText("No playlist.\nTap ADD to choose tracks.");
             } else {
                 emptyLabel.setText("No audio files on this device.");
@@ -520,12 +606,21 @@ public class MusicPlayerActivity extends AppCompatActivity {
             base = new ArrayList<>(allTracks);
         }
 
+        // Apply search filter
+        if (!searchQuery.isEmpty()) {
+            List<Track> filtered = new ArrayList<>();
+            for (Track t : base) {
+                if (t.title.toLowerCase(Locale.US).contains(searchQuery)
+                        || t.artist.toLowerCase(Locale.US).contains(searchQuery)) {
+                    filtered.add(t);
+                }
+            }
+            base = filtered;
+        }
+
         Comparator<Track> cmp;
         switch (sortMode) {
             case SORT_LATEST:
-                // Prefer DATE_MODIFIED. If two files share the same mtime
-                // (common when a batch was copied), fall back to file size
-                // and then to title, so the order is at least deterministic.
                 cmp = (a, b) -> {
                     int c1 = Long.compare(b.dateModified, a.dateModified);
                     if (c1 != 0) return c1;
@@ -608,32 +703,31 @@ public class MusicPlayerActivity extends AppCompatActivity {
                 ui.post(progressTick);
                 adapter.notifyDataSetChanged();
             });
-            player.setOnCompletionListener(mp -> {
-                int next = playingIndex + 1;
-                if (next < visibleTracks.size()) playTrack(next);
-                else {
-                    tvNowPlaying.setText("Stopped");
-                    seekBar.setProgress(0);
-                }
-            });
+            player.setOnCompletionListener(mp -> playNext());
             player.setOnErrorListener((mp, what, extra) -> {
                 Toast.makeText(this, "Playback error", Toast.LENGTH_SHORT).show();
                 return true;
             });
             player.prepareAsync();
-            try {
-                Intent svc = new Intent(this, MusicPlaybackService.class);
-                if (Build.VERSION.SDK_INT >= 26) {
-                    startForegroundService(svc);
-                } else {
-                    startService(svc);
-                }
-            } catch (Exception ignored) { }
         } catch (Exception e) {
             FileLog.e("MusicPlayer: play failed", e);
             Toast.makeText(this, "Cannot play: " + e.getMessage(),
                     Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void playNext() {
+        if (visibleTracks.isEmpty()) return;
+        int next = playingIndex + 1;
+        if (next >= visibleTracks.size()) next = 0;
+        playTrack(next);
+    }
+
+    private void playPrevious() {
+        if (visibleTracks.isEmpty()) return;
+        int prev = playingIndex - 1;
+        if (prev < 0) prev = visibleTracks.size() - 1;
+        playTrack(prev);
     }
 
     private void releasePlayer() {
@@ -643,9 +737,6 @@ public class MusicPlayerActivity extends AppCompatActivity {
             try { player.release(); } catch (Exception ignored) { }
             player = null;
         }
-        try {
-            stopService(new Intent(this, MusicPlaybackService.class));
-        } catch (Exception ignored) { }
     }
 
     // ============================================================
@@ -771,12 +862,19 @@ public class MusicPlayerActivity extends AppCompatActivity {
 
         @NonNull @Override
         public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            // Outer row = horizontal LinearLayout.
+            // Column 1: checkbox + text column (weighted, width=0).
+            // Column 2: three-dots with EXACT width computed from screen size.
             LinearLayout row = new LinearLayout(MusicPlayerActivity.this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setBackgroundColor(BG);
-            row.setPadding(dp(12), dp(10), dp(8), dp(10));
+            row.setLayoutParams(new RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+            row.setPadding(dp(12), dp(6), 0, dp(6));
 
+            // Column 1 — checkbox + text
             ImageView check = new ImageView(MusicPlayerActivity.this);
             check.setColorFilter(GREEN);
             check.setVisibility(View.GONE);
@@ -805,16 +903,20 @@ public class MusicPlayerActivity extends AppCompatActivity {
             sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
             textCol.addView(sub);
 
+            // Column 2 — three dots, fixed width from screen width math.
+            // Nothing is added after this in the row, so it lands at the
+            // row's right edge. The row itself is MATCH_PARENT width, and the
+            // text column has weight=1f + width=0, which guarantees the dots
+            // sit flush against the row's right border regardless of text.
             ImageView dots = new ImageView(MusicPlayerActivity.this);
             dots.setImageResource(R.drawable.ic_more_vert);
             dots.setColorFilter(GREEN);
             dots.setPadding(dp(6), dp(6), dp(6), dp(6));
-            // In a LinearLayout, gravity does nothing. The weighted middle
-            // column with width=0 is what pushes this child to the right.
-            // We just give it a fixed size and a small right margin.
+            int dotsWidth = dp(40);
             LinearLayout.LayoutParams dotsLp =
-                    new LinearLayout.LayoutParams(dp(36), dp(36));
-            dotsLp.rightMargin = dp(4);
+                    new LinearLayout.LayoutParams(dotsWidth, dotsWidth);
+            // No rightMargin — the row's right padding is 0, so this lands
+            // exactly at the screen's right edge.
             row.addView(dots, dotsLp);
 
             return new VH(row, check, title, sub, dots);
@@ -844,9 +946,21 @@ public class MusicPlayerActivity extends AppCompatActivity {
                     && playingIndex < visibleTracks.size()
                     && visibleTracks.get(playingIndex) == t;
 
-            h.itemView.setBackgroundColor(isPlaying ? ROW_SEL : BG);
-            h.title.setTextColor(isPlaying ? NOW_PLAY : GREEN);
-            h.sub.setTextColor(isPlaying ? 0xFFAA8800 : DIM);
+            // Pure black background always. When playing, add a green
+            // outline stroke — no fill, no tint.
+            if (isPlaying) {
+                GradientDrawable border = new GradientDrawable();
+                border.setColor(BG);
+                border.setStroke(dp(2), GREEN);
+                h.itemView.setBackground(border);
+                h.title.setTextColor(NOW_PLAY);
+                h.sub.setTextColor(NOW_PLAY);
+            } else {
+                h.itemView.setBackgroundColor(BG);
+                h.title.setTextColor(GREEN);
+                h.sub.setTextColor(DIM);
+            }
+
             h.dots.setVisibility(pickerMode ? View.GONE : View.VISIBLE);
 
             final int pos = h.getAdapterPosition();
