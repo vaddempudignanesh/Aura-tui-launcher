@@ -391,8 +391,223 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         return result;
     }
 
-    // ==================== Setup (unchanged) ====================
 
+    /**
+     * Opens a .docx or .doc file using our built-in native readers.
+     * Falls back to external app only if native parsing fails.
+     */
+    private void openOfficeNative(File file) {
+        FileLog.i("openOfficeNative: " + file.getAbsolutePath());
+
+        final String fileName = file.getName().toLowerCase(Locale.US);
+        final boolean isDocx = fileName.endsWith(".docx") || fileName.endsWith(".docm");
+        final boolean isDoc  = fileName.endsWith(".doc");
+
+        if (!isDocx && !isDoc) {
+            // Not a Word document — use the external intent path for xlsx/pptx
+            openOfficeDocument(file, getMimeType(file));
+            return;
+        }
+
+        executor.execute(() -> {
+            try {
+                String text;
+                if (isDocx) {
+                    text = DocxReader.readDocx(file);
+                } else {
+                    text = DocReader.readDoc(file);
+                }
+
+                if (text == null || text.trim().isEmpty()) {
+                    text = "(This document contains no readable text or is protected.)";
+                }
+
+                final String content = text;
+                mainHandler.post(() -> showDocumentViewer(file, content));
+
+            } catch (Exception e) {
+                FileLog.e("openOfficeNative: native parse failed", e);
+                mainHandler.post(() -> {
+                    // Fallback: try external app
+                    Toast.makeText(this,
+                            "Native reader failed, trying external app…",
+                            Toast.LENGTH_SHORT).show();
+                    openOfficeDocument(file, getMimeType(file));
+                });
+            }
+        });
+    }
+
+    /**
+     * Shows a scrollable, searchable, selectable TextView dialog
+     * containing the extracted document text.
+     */
+    /**
+     * Shows a scrollable, searchable, selectable TextView dialog
+     * containing the extracted document text.
+     *
+     * - Searches automatically as you type
+     * - Centers the highlighted match vertically in the scroll view
+     */
+    private void showDocumentViewer(File file, String content) {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(0xFF000000);
+
+        // ---- Info bar ----
+        TextView infoBar = new TextView(this);
+        infoBar.setText(file.getName() + "  •  " + FileManagerAdapter.formatSize(file.length()));
+        infoBar.setTextColor(0xFF00AA00);
+        infoBar.setBackgroundColor(0xFF001100);
+        infoBar.setPadding(24, 16, 24, 16);
+        infoBar.setTextSize(11);
+        infoBar.setTypeface(android.graphics.Typeface.MONOSPACE);
+        root.addView(infoBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // ---- Content view (selectable) ----
+        final TextView viewer = new TextView(this);
+        viewer.setText(content);
+        viewer.setTextColor(0xFF00FF00);
+        viewer.setBackgroundColor(0xFF000000);
+        viewer.setPadding(32, 32, 32, 32);
+        viewer.setTextSize(14);
+        viewer.setTypeface(android.graphics.Typeface.MONOSPACE);
+        viewer.setTextIsSelectable(true);
+        viewer.setGravity(Gravity.TOP | Gravity.START);
+
+        final ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(0xFF000000);
+        scroll.addView(viewer, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // ---- Bottom bar ----
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setBackgroundColor(0xFF001100);
+        bar.setPadding(8, 8, 8, 8);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+
+        final EditText searchField = new EditText(this);
+        searchField.setHint("Type to search…");
+        searchField.setTextColor(0xFF00FF00);
+        searchField.setHintTextColor(0xFF00AA00);
+        searchField.setBackgroundColor(0xFF002200);
+        searchField.setPadding(16, 8, 16, 8);
+        searchField.setSingleLine(true);
+        searchField.setInputType(InputType.TYPE_CLASS_TEXT);
+        bar.addView(searchField, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button btnNext = createEditorButton("NEXT", 0xFF00FF00);
+        Button btnClose = createEditorButton("CLOSE", 0xFFFF5555);
+        bar.addView(btnNext);
+        bar.addView(btnClose);
+
+        root.addView(bar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // ---- Dialog ----
+        AlertDialog dialog = blackDialogBuilder().setView(root).create();
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT);
+            dialog.getWindow().setBackgroundDrawableResource(android.R.color.black);
+        }
+
+        // ---- Search logic ----
+        final String[] lastQuery = { "" };
+        final int[] lastIndex = { -1 };
+
+        // Applies the current query to the viewer:
+        //  - clears previous highlight
+        //  - finds next occurrence starting after lastIndex
+        //  - paints a yellow background over the match
+        //  - scrolls so the match is centered vertically
+        final Runnable searchNext = () -> {
+            String query = searchField.getText().toString();
+            if (query.isEmpty()) {
+                // Reset to plain content
+                viewer.setText(content);
+                lastIndex[0] = -1;
+                lastQuery[0] = "";
+                return;
+            }
+
+            String haystack = content.toLowerCase(Locale.US);
+            String needle = query.toLowerCase(Locale.US);
+
+            // If query changed, restart from top
+            if (!needle.equals(lastQuery[0])) {
+                lastIndex[0] = -1;
+                lastQuery[0] = needle;
+            }
+
+            int start = lastIndex[0] + 1;
+            int found = haystack.indexOf(needle, start);
+            if (found < 0) {
+                // Wrap to the top
+                found = haystack.indexOf(needle);
+                if (found < 0) {
+                    // Not found — show content unmodified
+                    viewer.setText(content);
+                    return;
+                }
+            }
+            lastIndex[0] = found;
+
+            // Build a spannable with the highlighted match
+            android.text.Spannable span =
+                    new android.text.SpannableString(content);
+            span.setSpan(new android.text.style.BackgroundColorSpan(0xFFFFFF00),
+                    found, found + needle.length(),
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            viewer.setText(span);
+
+            // Scroll so the highlighted line is centered in the ScrollView
+            int finalFound = found;
+            scroll.post(() -> {
+                android.text.Layout layout = viewer.getLayout();
+                if (layout == null) return;
+
+                int line = layout.getLineForOffset(finalFound);
+                int lineTop = layout.getLineTop(line);
+                int lineBottom = layout.getLineBottom(line);
+
+                int viewportHeight = scroll.getHeight();
+                int targetY = (lineTop + lineBottom) / 2 - viewportHeight / 2;
+                if (targetY < 0) targetY = 0;
+
+                scroll.smoothScrollTo(0, targetY);
+            });
+        };
+
+        // Auto-search on every keystroke
+        searchField.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(android.text.Editable s) {
+                searchNext.run();
+            }
+        });
+
+        // Manual "NEXT" — advance to the next match
+        btnNext.setOnClickListener(v -> {
+            // Advance lastIndex by 1 so searchNext() skips the current match
+            lastIndex[0] = lastIndex[0] + 1;
+            searchNext.run();
+        });
+
+        btnClose.setOnClickListener(v -> dialog.dismiss());
+    }
     private void initViews() {
         drawerLayout = findViewById(R.id.drawer_layout);
         recyclerFiles = findViewById(R.id.recycler_files);
@@ -816,7 +1031,13 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
         if (isOfficeDocument(mimeType, fileName)) {
             FileLog.d("Router: Office");
-            openOfficeDocument(file, mimeType);
+            // DOCX / DOC → use native reader
+            if (fileName.endsWith(".docx") || fileName.endsWith(".docm") || fileName.endsWith(".doc")) {
+                openOfficeNative(file);
+            } else {
+                // xlsx / pptx / odt / rtf etc → external app
+                openOfficeDocument(file, mimeType);
+            }
             return;
         }
         if (isTextBasedFile(file) || mimeType.startsWith("text/")) {
