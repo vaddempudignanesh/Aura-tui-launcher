@@ -84,7 +84,7 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         log("onCreateViewHolder");
         return new ViewHolder(v);
     }
-    
+
     @Override
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
         final int boundPosition = position;

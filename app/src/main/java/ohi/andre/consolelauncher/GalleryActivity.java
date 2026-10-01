@@ -152,6 +152,7 @@ public class GalleryActivity extends AppCompatActivity {
 
     // ★ NEW: gesture fields for double-tap and long-press
     private GestureDetector overlayVideoGestureDetector;
+    private android.view.View.OnTouchListener volumeBrightnessHandler;
     private float playbackSpeedBeforeLongPress = 1.0f;
     private static final float LONG_PRESS_SPEED = 2.0f;
 
@@ -462,14 +463,21 @@ public class GalleryActivity extends AppCompatActivity {
 
         // ★ NEW: forward video touches to the gesture detector
         fullscreenAdapter.setVideoTouchForwarder(event -> {
+            // Gesture detector: single-tap, double-tap, long-press
             if (overlayVideoGestureDetector != null) {
                 overlayVideoGestureDetector.onTouchEvent(event);
+            }
+            // Volume / brightness: route through the shared handler.
+            // We need a fake "source view" so the handler can read its width.
+            if (volumeBrightnessHandler != null) {
+                volumeBrightnessHandler.onTouch(fullscreenOverlay, event);
             }
             if (event.getActionMasked() == MotionEvent.ACTION_UP
                     || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
                 resetPlaybackSpeed();
             }
         });
+        setupVolumeAndBrightnessGestures();
         setupVolumeAndBrightnessGestures();
 
         fullscreenAdapter.setPageTypeCallback(new FullscreenAdapter.PageTypeCallback() {
@@ -496,7 +504,6 @@ public class GalleryActivity extends AppCompatActivity {
                         + " videoView=" + Integer.toHexString(System.identityHashCode(videoView)));
 
                 if (position == fullscreenCurrentPosition) {
-                    log("  video is for current page — starting now");
                     currentFullscreenPageIsVideo = true;
                     currentFullscreenVideo = videoView;
                     currentFullscreenVideoPosition = position;
@@ -511,12 +518,15 @@ public class GalleryActivity extends AppCompatActivity {
                     updateOverlaySeekBar();
                     startOverlayProgressUpdate();
 
+                    // ★ Show the video controls immediately — do not wait for a tap.
                     if (!userIsSwiping) {
-                        showAllControlsWithTimeout();
+                        if (videoControlContainer != null) {
+                            videoControlContainer.setVisibility(View.VISIBLE);
+                        }
+                        setFullscreenChromeVisible(true);
+                        overlayControlsVisible = true;
                     }
-                } else {
-                    log("  video is for off-screen page " + position
-                            + " — deferring start to onPageSelected");
+                    showAllControlsWithTimeout();
                 }
             }
         });
@@ -723,8 +733,11 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void onFullscreenTap() {
         boolean newVisible = !fullscreenChromeVisible;
-        if (newVisible) showAllControlsWithTimeout();
-        else hideAllControls();
+        if (newVisible) {
+            showAllControlsWithTimeout();
+        } else {
+            hideAllControls();
+        }
     }
 
     private void showAllControlsWithTimeout() {
@@ -1045,6 +1058,9 @@ public class GalleryActivity extends AppCompatActivity {
                             if (overlayVideoGestureDetector != null) {
                                 overlayVideoGestureDetector.onTouchEvent(event);
                             }
+                            if (volumeBrightnessHandler != null) {
+                                volumeBrightnessHandler.onTouch(v, event);
+                            }
                             if (event.getActionMasked() == MotionEvent.ACTION_UP
                                     || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
                                 resetPlaybackSpeed();
@@ -1173,7 +1189,23 @@ public class GalleryActivity extends AppCompatActivity {
         if (selTop != null) selTop.setVisibility(View.GONE);
 
         updateFullscreenInfo(currentIndex);
-        showAllControls();
+
+        // ★ Always show chrome first. Video controls row will appear
+        //    automatically the moment onVideoVisible fires.
+        setFullscreenChromeVisible(true);
+        if (videoControlContainer != null) {
+            // Pre-show if this page is a video so the row is visible from
+            // the very first frame.
+            String initialPath = fullscreenMediaPaths.get(currentIndex);
+            if (isVideoPath(initialPath)) {
+                videoControlContainer.setVisibility(View.VISIBLE);
+                overlayControlsVisible = true;
+            } else {
+                videoControlContainer.setVisibility(View.GONE);
+                overlayControlsVisible = false;
+            }
+        }
+        videoHandler.removeCallbacks(overlayHideControlsRunnable);
 
         bottomBar.setVisibility(View.GONE);
 
@@ -1204,6 +1236,14 @@ public class GalleryActivity extends AppCompatActivity {
      * Runs on the fullscreen overlay itself, so it works on both
      * images and videos.
      */
+    /**
+     * Right-half vertical swipe  → adjust system music volume
+     * Left-half  vertical swipe  → adjust screen brightness
+     *
+     * Attached to the fullscreen overlay. Because the CustomVideoView
+     * sits on top of the overlay when a video plays, we ALSO forward
+     * video touches into this same handler (see onVideoSwipe()).
+     */
     private void setupVolumeAndBrightnessGestures() {
         if (fullscreenOverlay == null) return;
 
@@ -1214,14 +1254,17 @@ public class GalleryActivity extends AppCompatActivity {
                 ? audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
                 : 15;
 
+        // State shared between the overlay and the video view
         final float[] gestureStartY = {0f};
         final int[]   gestureStartVolume = {0};
         final float[] gestureStartBrightness = {0f};
         final boolean[] isVolumeGesture = {false};
         final boolean[] isBrightnessGesture = {false};
 
-        fullscreenOverlay.setOnTouchListener((v, event) -> {
-            // Keep the single-tap chrome toggle working
+        // Shared handler — used by both the overlay and the video view.
+        final android.view.View.OnTouchListener handler = (v, event) -> {
+
+            // Keep the chrome-toggle tap working
             if (overlayTapDetector != null) {
                 overlayTapDetector.onTouchEvent(event);
             }
@@ -1235,9 +1278,9 @@ public class GalleryActivity extends AppCompatActivity {
                 }
                 case MotionEvent.ACTION_MOVE: {
                     float dy = gestureStartY[0] - event.getY(); // up = positive
-                    if (Math.abs(dy) < 40) break; // dead zone
+                    if (Math.abs(dy) < 40) break;               // dead zone
 
-                    float screenW = fullscreenOverlay.getWidth();
+                    float screenW = v.getWidth();
                     boolean onRightSide = event.getX() >= screenW / 2f;
 
                     if (onRightSide) {
@@ -1252,7 +1295,7 @@ public class GalleryActivity extends AppCompatActivity {
                             }
                         }
                         if (audioManager != null) {
-                            float fraction = dy / (fullscreenOverlay.getHeight() * 0.6f);
+                            float fraction = dy / (v.getHeight() * 0.6f);
                             int target = Math.round(gestureStartVolume[0]
                                     + fraction * maxVolume);
                             target = Math.max(0, Math.min(maxVolume, target));
@@ -1270,7 +1313,7 @@ public class GalleryActivity extends AppCompatActivity {
                             gestureStartBrightness[0] =
                                     lp.screenBrightness < 0 ? 0.5f : lp.screenBrightness;
                         }
-                        float fraction = dy / (fullscreenOverlay.getHeight() * 0.6f);
+                        float fraction = dy / (v.getHeight() * 0.6f);
                         float target = gestureStartBrightness[0] + fraction;
                         target = Math.max(0.02f, Math.min(1f, target));
                         WindowManager.LayoutParams lp = getWindow().getAttributes();
@@ -1287,8 +1330,15 @@ public class GalleryActivity extends AppCompatActivity {
                 }
             }
             return true;
-        });
+        };
+
+        fullscreenOverlay.setOnTouchListener(handler);
+
+        // ★ Store it so the video view can also route its touches through it.
+        this.volumeBrightnessHandler = handler;
     }
+
+    /** Reused by the video view's touch forwarder. */
 
     private void closeFullscreenViewer() {
         log("closeFullscreenViewer");
