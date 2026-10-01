@@ -18,6 +18,7 @@ import androidx.recyclerview.widget.RecyclerView;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHolder> {
 
@@ -28,6 +29,9 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
     private ExecutorService executor = Executors.newFixedThreadPool(4);
     private Handler mainHandler = new Handler(Looper.getMainLooper());
     private ThumbnailCache thumbnailCache;
+
+    // ★ Per-holder generation counter so stale async loads are dropped.
+    private final AtomicLong generation = new AtomicLong(0);
 
     public interface OnItemClickListener {
         void onImageClick(String path);
@@ -51,7 +55,12 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
     }
 
     public void updateItems(List<GalleryActivity.MediaItem> newItems) {
-        this.mediaItems = newItems;
+        // ★ Take a private copy. The activity may continue to mutate its
+        //   `displayedItems` list from background callbacks; the adapter must
+        //   never see those mutations mid-layout.
+        this.mediaItems = (newItems == null)
+                ? new java.util.ArrayList<>()
+                : new java.util.ArrayList<>(newItems);
         notifyDataSetChanged();
     }
 
@@ -60,7 +69,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         for (int i = 0; i < mediaItems.size(); i++) {
             GalleryActivity.MediaItem item = mediaItems.get(i);
             boolean isSelected = newSelectedItems != null && newSelectedItems.contains(item.path);
-            notifyItemChanged(i, isSelected);
+            notifyItemChanged(i, isSelected ? "selection-on" : "selection-off");
         }
     }
 
@@ -72,6 +81,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
 
     @Override
     public void onBindViewHolder(ViewHolder holder, int position, java.util.List<Object> payloads) {
+        // ★ Payload updates: only touch the checkbox, never the thumbnail.
         if (payloads != null && !payloads.isEmpty()) {
             GalleryActivity.MediaItem item = mediaItems.get(position);
             boolean isSelected = selectedItems != null && selectedItems.contains(item.path);
@@ -114,7 +124,6 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
 
         loadThumbnail(holder, item);
 
-        // ★ Click animation (scale bounce) + click dispatch
         holder.itemView.setOnClickListener(v -> {
             animateClickBounce(v);
             if (item.isTrashed) {
@@ -167,27 +176,46 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         } catch (Exception ignored) {}
     }
 
+    /**
+     * Loads the thumbnail for the given item.
+     *
+     * ★ FIX: Before kicking off the async load, the ImageView is cleared
+     * and tagged with the new path. When the async callback fires, it checks
+     * both the current tag AND a per-holder generation counter — if either
+     * has moved on, the bitmap is discarded instead of being shown under a
+     * different image (the "top image shows in bottom slot" flicker).
+     */
     private void loadThumbnail(ViewHolder holder, GalleryActivity.MediaItem item) {
-        String path = item.path;
+        final String path = item.path;
 
+        // ── 1. If the holder is already showing this path, do nothing. ──
         Object currentTag = holder.imageView.getTag();
-        if (currentTag != null && currentTag.equals(path) && holder.imageView.getDrawable() != null) {
+        if (currentTag != null && currentTag.equals(path)
+                && holder.imageView.getDrawable() != null) {
             return;
         }
 
+        // ── 2. Otherwise: clear + tag so a stale bitmap can't leak through. ──
+        holder.imageView.setImageDrawable(null);   // ★ prevents flash of old image
         holder.imageView.setTag(path);
+
+        // ── 3. Bump the generation for this holder. ──
+        final long myGen = holder.bindGeneration.incrementAndGet();
 
         executor.execute(() -> {
             Bitmap bitmap = thumbnailCache.getThumbnail(path, item.type);
 
             mainHandler.post(() -> {
-                if (holder.imageView.getTag() != null
-                        && holder.imageView.getTag().equals(path)) {
-                    if (bitmap != null) {
-                        holder.imageView.setImageBitmap(bitmap);
-                    } else {
-                        holder.imageView.setImageResource(android.R.drawable.ic_menu_gallery);
-                    }
+                // ★ Drop the result if the holder was rebound since we
+                //    started, OR if the tag was changed.
+                if (holder.bindGeneration.get() != myGen) return;
+                Object tag = holder.imageView.getTag();
+                if (tag == null || !tag.equals(path)) return;
+
+                if (bitmap != null) {
+                    holder.imageView.setImageBitmap(bitmap);
+                } else {
+                    holder.imageView.setImageResource(android.R.drawable.ic_menu_gallery);
                 }
             });
         });
@@ -215,6 +243,9 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         ImageView favIcon;
         ImageView checkIcon;
         RelativeLayout videoOverlay;
+
+        // ★ Per-holder generation counter — bumped on every bind.
+        final AtomicLong bindGeneration = new AtomicLong(0);
 
         public ViewHolder(View itemView) {
             super(itemView);

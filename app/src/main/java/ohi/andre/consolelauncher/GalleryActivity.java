@@ -88,6 +88,14 @@ public class GalleryActivity extends AppCompatActivity {
     private RecyclerView albumRecycler;
     private GalleryAdapter adapter;
 
+    // ── Auto-scroll during drag-select ──
+    private static final int AUTO_SCROLL_EDGE_DP = 80;
+    private static final long AUTO_SCROLL_TICK_MS = 16L;   // ~60 fps
+    private boolean autoScrollActive = false;
+    private int autoScrollDx = 0;
+    private int autoScrollDy = 0;
+
+
     // ═══ Volume / Brightness HUD — plain percentage only ═══
     private TextView mediaHudVolume;
     private TextView mediaHudBrightness;
@@ -175,6 +183,12 @@ public class GalleryActivity extends AppCompatActivity {
     private boolean overlayControlsVisible = false;
     private Runnable overlayHideControlsRunnable;
     private Runnable overlayProgressRunnable;
+
+    // ── Rectangle-change guard (skip no-op UI updates during drag) ──
+    private int dragLastRectMinRow = -1;
+    private int dragLastRectMaxRow = -1;
+    private int dragLastRectMinCol = -1;
+    private int dragLastRectMaxCol = -1;
     private GestureDetector overlayTapDetector;
 
     private GestureDetector overlayVideoGestureDetector;
@@ -697,6 +711,15 @@ public class GalleryActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
         playbackSpeedBeforeLongPress = 1.0f;
     }
+
+    private final Runnable autoScrollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!autoScrollActive || recyclerView == null) return;
+            recyclerView.scrollBy(autoScrollDx, autoScrollDy);
+            recyclerView.postDelayed(this, AUTO_SCROLL_TICK_MS);
+        }
+    };
 
     // ===================== CANONICAL PATH CACHE =====================
 
@@ -1583,19 +1606,6 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
-    // ===================== BIN SCAN — CACHED =====================
-
-    /**
-     * Returns the trashed files. Uses an in-memory cache valid for
-     * TRASHED_CACHE_TTL_MS milliseconds so that switching to the Bin tab
-     * and back feels instant.
-     */
-    /**
-     * Returns the trashed files. Runs the scan on a background thread and
-     * delivers the result on the main thread.
-     *
-     * Safe to call from applyFilter() on the main thread.
-     */
     private void getTrashedFilesAsync(boolean forceRescan, OnTrashedFilesReady callback) {
         if (callback == null) return;
 
@@ -1635,7 +1645,6 @@ public class GalleryActivity extends AppCompatActivity {
             });
         });
     }
-    /** Callback interface for async bin scans. */
     public interface OnTrashedFilesReady {
         void onReady(List<MediaItem> trashedItems);
     }
@@ -1789,50 +1798,68 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void applyFilter() {
         if (!isActivityAlive()) return;
-        displayedItems.clear();
 
         if (currentFilter == FilterMode.BIN) {
-            if (cachedTrashedItems != null) {
-                displayedItems.addAll(cachedTrashedItems);
-                runOnMain(() -> {
-                    if (adapter != null) {
-                        adapter.updateItems(displayedItems);
-                        adapter.updateSelectedItems(selectedItems);
-                        updateSelectionUI();
-                        showEmptyState();
-                        updateTopNavBar();
-                    } else {
-                        setupRecyclerView();
-                    }
-                });
-            } else {
-                runOnMain(this::showEmptyState);
-            }
+            // ── Bin mode ──
+            // Never mutate `displayedItems` while the adapter may be laying out.
+            // Instead, build a local list and swap it in on the main thread.
+            final List<MediaItem> snapshotNow =
+                    (cachedTrashedItems == null)
+                            ? new ArrayList<>()
+                            : new ArrayList<>(cachedTrashedItems);
 
+            runOnMain(() -> {
+                if (!isActivityAlive()) return;
+                if (currentFilter != FilterMode.BIN) return;
+
+                displayedItems = snapshotNow;
+
+                if (adapter == null) {
+                    setupRecyclerView();
+                    showEmptyState();
+                    updateTopNavBar();
+                } else {
+                    adapter.updateItems(snapshotNow);          // ★ new list instance
+                    adapter.updateSelectedItems(selectedItems);
+                    updateSelectionUI();
+                    showEmptyState();
+                    updateTopNavBar();
+                }
+            });
+
+            // Kick off the async scan; when it finishes we rebuild once more.
             getTrashedFilesAsync(false, trashed -> {
                 if (!isActivityAlive()) return;
                 if (currentFilter != FilterMode.BIN) return;
 
-                displayedItems.clear();
-                displayedItems.addAll(trashed);
+                final List<MediaItem> snapshot = new ArrayList<>(trashed);
 
                 runOnMain(() -> {
-                    if (adapter != null) {
-                        adapter.updateItems(displayedItems);
+                    if (!isActivityAlive()) return;
+                    if (currentFilter != FilterMode.BIN) return;
+
+                    displayedItems = snapshot;
+
+                    if (adapter == null) {
+                        setupRecyclerView();
+                        showEmptyState();
+                        updateTopNavBar();
+                    } else {
+                        adapter.updateItems(snapshot);         // ★ new list instance
                         adapter.updateSelectedItems(selectedItems);
                         updateSelectionUI();
                         showEmptyState();
                         updateTopNavBar();
-                    } else {
-                        setupRecyclerView();
                     }
                 });
             });
             return;
         }
 
-        // ── Normal filters ──
+        // ── Normal filters (ALL / IMAGES / VIDEOS / FAVORITES) ──
         final String targetCanon = currentAlbum == null ? null : getCachedCanonical(currentAlbum);
+        final List<MediaItem> filtered = new ArrayList<>();
+
         for (MediaItem item : mediaItems) {
             boolean matchesAlbum;
             if (targetCanon == null) {
@@ -1847,17 +1874,27 @@ public class GalleryActivity extends AppCompatActivity {
             item.isTrashed = isCurrentlyTrashed;
 
             switch (currentFilter) {
-                case ALL: if (!isCurrentlyTrashed) displayedItems.add(item); break;
-                case IMAGES: if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_IMAGE) displayedItems.add(item); break;
-                case VIDEOS: if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_VIDEO) displayedItems.add(item); break;
-                case FAVORITES: if (!isCurrentlyTrashed && item.isFavorite) displayedItems.add(item); break;
+                case ALL:       if (!isCurrentlyTrashed) filtered.add(item); break;
+                case IMAGES:    if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_IMAGE) filtered.add(item); break;
+                case VIDEOS:    if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_VIDEO) filtered.add(item); break;
+                case FAVORITES: if (!isCurrentlyTrashed && item.isFavorite) filtered.add(item); break;
                 default: break;
             }
         }
 
+        final List<MediaItem> snapshot = filtered;
+
         runOnMain(() -> {
-            if (adapter != null) {
-                adapter.updateItems(displayedItems);
+            if (!isActivityAlive()) return;
+
+            displayedItems = snapshot;
+
+            if (adapter == null) {
+                setupRecyclerView();
+                showEmptyState();
+                updateTopNavBar();
+            } else {
+                adapter.updateItems(snapshot);                 // ★ new list instance
                 adapter.updateSelectedItems(selectedItems);
                 updateSelectionUI();
                 showEmptyState();
@@ -1896,7 +1933,8 @@ public class GalleryActivity extends AppCompatActivity {
         if (!isActivityAlive()) return;
         if (displayedItems.isEmpty()) { showEmptyState(); return; }
 
-        adapter = new GalleryAdapter(this, displayedItems, selectedItems, new GalleryAdapter.OnItemClickListener() {
+        List<MediaItem> initialSnapshot = new ArrayList<>(displayedItems);
+        adapter = new GalleryAdapter(this, initialSnapshot, selectedItems, new GalleryAdapter.OnItemClickListener() {
             @Override public void onFavoriteToggle(MediaItem item) {
                 if (isActivityAlive()) {
                     toggleFavoriteForPath(item.path);
@@ -1975,6 +2013,12 @@ public class GalleryActivity extends AppCompatActivity {
         dragVisitedPositions.clear();
         dragRectanglePaths.clear();
 
+        // ── Reset the rectangle-change guard ──
+        dragLastRectMinRow = -1;
+        dragLastRectMaxRow = -1;
+        dragLastRectMinCol = -1;
+        dragLastRectMaxCol = -1;
+
         dragLastX = -1f;
         dragLastY = -1f;
 
@@ -1984,12 +2028,6 @@ public class GalleryActivity extends AppCompatActivity {
         updateSelectionUI();
     }
 
-    private int indexOfPath(String path) {
-        for (int i = 0; i < displayedItems.size(); i++) {
-            if (displayedItems.get(i).path.equals(path)) return i;
-        }
-        return -1;
-    }
     private void setupDragToSelect() {
         if (recyclerView == null) return;
 
@@ -2013,6 +2051,15 @@ public class GalleryActivity extends AppCompatActivity {
                         dragAnchorPath = null;
                         dragLastX = -1f;
                         dragLastY = -1f;
+
+                        // ★★★ RESET BLOCK ★★★
+                        dragLastRectMinRow = -1;
+                        dragLastRectMaxRow = -1;
+                        dragLastRectMinCol = -1;
+                        dragLastRectMaxCol = -1;
+                        stopAutoScroll();
+                        // ★★★ END RESET BLOCK ★★★
+
                         return true;
                 }
                 return false;
@@ -2031,18 +2078,38 @@ public class GalleryActivity extends AppCompatActivity {
                     case MotionEvent.ACTION_CANCEL:
                         dragSelectActive = false;
                         dragVisitedPositions.clear();
+                        dragRectanglePaths.clear();
+                        selectionBeforeDrag.clear();
                         dragAnchorPath = null;
                         dragLastX = -1f;
                         dragLastY = -1f;
+
+                        // ★★★ RESET BLOCK ★★★
+                        dragLastRectMinRow = -1;
+                        dragLastRectMaxRow = -1;
+                        dragLastRectMinCol = -1;
+                        dragLastRectMaxCol = -1;
+                        stopAutoScroll();
+                        // ★★★ END RESET BLOCK ★★★
+
                         break;
                 }
             }
         });
     }
+    private int indexOfPath(String path) {
+        for (int i = 0; i < displayedItems.size(); i++) {
+            if (displayedItems.get(i).path.equals(path)) return i;
+        }
+        return -1;
+    }
 
     private void handleDragMove(RecyclerView rv, float x, float y) {
         // Skip redundant work on tiny movements
-        if (Math.abs(x - dragLastX) < 2 && Math.abs(y - dragLastY) < 2) return;
+        if (Math.abs(x - dragLastX) < 2 && Math.abs(y - dragLastY) < 2) {
+            updateAutoScroll(rv, x, y);
+            return;
+        }
         dragLastX = x;
         dragLastY = y;
 
@@ -2058,24 +2125,67 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        // Auto-scroll near edges
-        int threshold = dpToPx(60);
-        if (y < threshold) {
-            rv.scrollBy(0, -dpToPx(8));
-        } else if (y > rv.getHeight() - threshold) {
-            rv.scrollBy(0, dpToPx(8));
+        updateAutoScroll(rv, x, y);
+    }
+
+
+
+    /**
+     * Starts, updates, or stops the auto-scroll loop based on where the finger
+     * currently is. The scroll speed ramps up the closer the finger gets to the
+     * edge — smooth and predictable even for fast drags.
+     */
+    private void updateAutoScroll(RecyclerView rv, float x, float y) {
+        if (rv == null) { stopAutoScroll(); return; }
+
+        int edge = dpToPx(AUTO_SCROLL_EDGE_DP);
+        int h = rv.getHeight();
+        int w = rv.getWidth();
+
+        int dy = 0;
+        int dx = 0;
+
+        // Vertical
+        if (y < edge) {
+            // Scale: 1 px at the edge boundary, up to 20 px deep inside.
+            float t = 1f - (y / (float) edge);            // 0..1
+            dy = -(int) (4 + t * 16);
+        } else if (y > h - edge) {
+            float t = 1f - ((h - y) / (float) edge);
+            dy = (int) (4 + t * 16);
+        }
+
+        // Horizontal (bonus: works if grid can scroll horizontally)
+        if (x < edge) {
+            float t = 1f - (x / (float) edge);
+            dx = -(int) (4 + t * 16);
+        } else if (x > w - edge) {
+            float t = 1f - ((w - x) / (float) edge);
+            dx = (int) (4 + t * 16);
+        }
+
+        if (dx == 0 && dy == 0) {
+            stopAutoScroll();
+            return;
+        }
+
+        autoScrollDx = dx;
+        autoScrollDy = dy;
+
+        if (!autoScrollActive) {
+            autoScrollActive = true;
+            rv.postDelayed(autoScrollRunnable, AUTO_SCROLL_TICK_MS);
         }
     }
-    /**
-     * Applies a rectangular selection from the anchor cell to the current
-     * finger cell.
-     *
-     * Grid is 3 columns wide. A cell at index i lives at:
-     *   row = i / 3   col = i % 3
-     *
-     * The rectangle spans every cell whose row is between the two rows and
-     * whose col is between the two cols, inclusive.
-     */
+
+    private void stopAutoScroll() {
+        autoScrollActive = false;
+        autoScrollDx = 0;
+        autoScrollDy = 0;
+        if (recyclerView != null) {
+            recyclerView.removeCallbacks(autoScrollRunnable);
+        }
+    }
     private void applyDragRectangle(int anchorIndex, int currentIndex) {
         int anchorRow = anchorIndex / GRID_COLUMNS;
         int anchorCol = anchorIndex % GRID_COLUMNS;
@@ -2087,7 +2197,16 @@ public class GalleryActivity extends AppCompatActivity {
         int minCol = Math.min(anchorCol, currentCol);
         int maxCol = Math.max(anchorCol, currentCol);
 
-        // Recompute the rectangle's path set
+        // ── Guard: if the rectangle hasn't changed since the last call, skip. ──
+        if (dragLastRectMinRow == minRow && dragLastRectMaxRow == maxRow
+                && dragLastRectMinCol == minCol && dragLastRectMaxCol == maxCol) {
+            return;
+        }
+        dragLastRectMinRow = minRow;
+        dragLastRectMaxRow = maxRow;
+        dragLastRectMinCol = minCol;
+        dragLastRectMaxCol = maxCol;
+
         Set<String> newRectangle = new HashSet<>();
         int total = displayedItems.size();
 
@@ -2100,61 +2219,36 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        // Determine what the selection should be *after* applying this
-        // rectangle, based on the mode decided at long-press time.
         Set<String> desiredSelection = new HashSet<>(selectionBeforeDrag);
-
         if (dragSelectDeselectMode) {
-            // Deselect everything in the rectangle.
             desiredSelection.removeAll(newRectangle);
         } else {
-            // Select everything in the rectangle.
             desiredSelection.addAll(newRectangle);
         }
 
-        // Now apply the difference to the live selectedItems set and notify
-        // only the affected cells (keeps RecyclerView updates cheap).
-        List<String> toAdd = new ArrayList<>();
-        List<String> toRemove = new ArrayList<>();
-
-        for (String p : desiredSelection) {
-            if (!selectedItems.contains(p)) toAdd.add(p);
-        }
-        for (String p : selectedItems) {
-            if (!desiredSelection.contains(p)) toRemove.add(p);
-        }
-
-        if (toAdd.isEmpty() && toRemove.isEmpty()) {
+        // ── Fast diff: if the desired selection equals what we already have, bail. ──
+        if (desiredSelection.equals(selectedItems)) {
             dragRectanglePaths.clear();
             dragRectanglePaths.addAll(newRectangle);
-            return;   // nothing changed
+            return;
         }
 
         selectedItems.clear();
         selectedItems.addAll(desiredSelection);
 
-        // Refresh the affected rows in the RecyclerView
         Set<Integer> affectedPositions = new HashSet<>();
         for (int i = 0; i < displayedItems.size(); i++) {
             MediaItem item = displayedItems.get(i);
             boolean nowSelected = selectedItems.contains(item.path);
             boolean wasSelected = selectionBeforeDrag.contains(item.path);
-            // If state changed vs. what the view may still think, notify it.
-            if (nowSelected != wasSelected) {
-                affectedPositions.add(i);
-            }
+            if (nowSelected != wasSelected) affectedPositions.add(i);
         }
-        // Always notify the rectangle cells so the checkbox state is fresh.
         for (int r = minRow; r <= maxRow; r++) {
             for (int c = minCol; c <= maxCol; c++) {
                 int idx = r * GRID_COLUMNS + c;
-                if (idx >= 0 && idx < displayedItems.size()) {
-                    affectedPositions.add(idx);
-                }
+                if (idx >= 0 && idx < displayedItems.size()) affectedPositions.add(idx);
             }
         }
-        // Also notify cells that were in the previous rectangle and are no
-        // longer in it — they should revert to their pre-drag state.
         for (String prev : dragRectanglePaths) {
             if (!newRectangle.contains(prev)) {
                 int idx = indexOfPath(prev);
@@ -2164,16 +2258,15 @@ public class GalleryActivity extends AppCompatActivity {
 
         if (adapter != null) {
             for (int p : affectedPositions) {
+                // ★ Use payload so the thumbnail isn't reloaded.
                 adapter.notifyItemChanged(p, "selection");
             }
         }
 
         dragRectanglePaths.clear();
         dragRectanglePaths.addAll(newRectangle);
-
         updateSelectionUI();
-    }
-    private int dpToPx(int dp) {
+    }    private int dpToPx(int dp) {
         return Math.round(dp * getResources().getDisplayMetrics().density);
     }
 
@@ -2492,6 +2585,7 @@ public class GalleryActivity extends AppCompatActivity {
         dragAnchorPath = null;
         dragLastX = -1f;
         dragLastY = -1f;
+        stopAutoScroll();   // ← add this
     }
 
     // ===================== SHARE / INFO =====================
@@ -2880,6 +2974,7 @@ public class GalleryActivity extends AppCompatActivity {
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
         mediaRefreshHandler.removeCallbacksAndMessages(null);
         hideMediaHudImmediately();
+        stopAutoScroll();
         pendingMediaRefresh = null;
         executor.shutdown();
     }
