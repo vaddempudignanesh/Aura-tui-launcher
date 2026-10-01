@@ -130,7 +130,6 @@
             android:layout_height="match_parent"
             android:clickable="false"
             android:focusable="false">
-
             <LinearLayout
                 android:id="@+id/videoControlContainer"
                 android:layout_width="match_parent"
@@ -205,8 +204,8 @@
                     </LinearLayout>
                 </FrameLayout>
 
-                <!-- BOTTOM: seek bar — pushed up 80dp so it sits ABOVE the
-                     Bin/Fav/Share/Info bar, which is drawn on top with elevation -->
+                <!-- BOTTOM: seek bar — pushed well up (30% taller than the
+                     bottom action bar) so it sits comfortably above it -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -214,8 +213,10 @@
                     android:gravity="center_vertical"
                     android:paddingStart="16dp"
                     android:paddingEnd="16dp"
-                    android:paddingTop="8dp"
-                    android:paddingBottom="80dp">
+                    android:paddingTop="12dp"
+                    android:paddingBottom="120dp">
+                    <!-- 120dp bottom padding: 30% more than the previous 80dp,
+                         and it clears the elevated fullscreenBottomBar above it. -->
 
                     <TextView
                         android:id="@+id/videoTimeCurrent"

@@ -84,7 +84,7 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         log("onCreateViewHolder");
         return new ViewHolder(v);
     }
-
+    
     @Override
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
         final int boundPosition = position;
@@ -116,19 +116,13 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
 
             holder.videoView.setOnPreparedListener(mp -> {
                 int adapterPosition = holder.getBindingAdapterPosition();
-                log("  adapter.onPrepared pos=" + boundPosition
-                        + " currentAdapterPos=" + adapterPosition);
                 if (adapterPosition != boundPosition
                         || boundPosition < 0 || boundPosition >= paths.size()
                         || !path.equals(paths.get(boundPosition))) {
-                    log("  → rejected (stale)");
                     return;
                 }
-
                 holder.progressBar.setVisibility(View.GONE);
-
                 if (pageTypeCallback != null) {
-                    log("  → dispatching onVideoVisible pos=" + boundPosition);
                     pageTypeCallback.onVideoVisible(holder.videoView, boundPosition);
                 }
             });
@@ -138,23 +132,22 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 if (tapCallback != null) tapCallback.onTap();
             });
 
-            // ★ NEW: forward raw touches to activity for double-tap and long-press
+            // Forward raw touches — the activity's gesture detector handles
+            // single tap, double tap, and long press.
             holder.videoView.setOnTouchListener((v, event) -> {
                 if (videoTouchForwarder != null) {
                     videoTouchForwarder.onTouch(event);
                 }
-                return true;   // consume — we handle taps ourselves
+                return true;
             });
 
             holder.videoView.setOnErrorListener((mp, what, extra) -> {
-                log("  adapter.onError what=" + what + " extra=" + extra);
                 int adapterPosition = holder.getBindingAdapterPosition();
                 if (adapterPosition == boundPosition) holder.progressBar.setVisibility(View.GONE);
                 return true;
             });
 
             try {
-                log("  calling videoView.setVideoPath");
                 holder.videoView.setVideoPath(path);
             } catch (Exception e) {
                 Log.e(LOG_TAG, src() + " setVideoPath threw", e);
@@ -164,14 +157,11 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         }
 
         // IMAGE
-        log("  → IMAGE page");
-
         if (previousVideoPath != null) {
-            log("  recycled video view → stopping");
             try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
             holder.videoView.setOnPreparedListener(null);
             holder.videoView.setOnTapListener(null);
-            holder.videoView.setOnTouchListener(null);   // ★ NEW: clear forwarder
+            holder.videoView.setOnTouchListener(null);
         }
 
         holder.imageView.setImageDrawable(null);
@@ -184,10 +174,8 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 if (adapterPosition != boundPosition
                         || boundPosition < 0 || boundPosition >= paths.size()
                         || !path.equals(paths.get(boundPosition))) {
-                    log("  image decode stale for pos=" + boundPosition);
                     return;
                 }
-
                 holder.progressBar.setVisibility(View.GONE);
                 holder.imageView.setVisibility(View.VISIBLE);
 
@@ -202,13 +190,11 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 });
 
                 if (pageTypeCallback != null) {
-                    log("  → dispatching onImageVisible pos=" + boundPosition);
                     pageTypeCallback.onImageVisible(boundPosition);
                 }
             });
         });
     }
-
     private static boolean isVideoPath(String path) {
         if (path == null) return false;
         String lower = path.toLowerCase(java.util.Locale.ROOT);
