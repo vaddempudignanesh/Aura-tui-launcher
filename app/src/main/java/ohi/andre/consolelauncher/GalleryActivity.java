@@ -1438,18 +1438,27 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
-    // ===================== MEDIA LOADING — FULL DEVICE SCAN =====================
+    private void loadMedia() {
+        loadMediaInternal(true);
+    }
 
     /**
-     * Loads ALL media on the device.
-     *
-     * Previously we only read MediaStore.Images and MediaStore.Video, which
-     * silently skip files that the user added via adb / file manager / other
-     * apps that didn't trigger the media scanner. To catch those, we ALSO do
-     * a recursive filesystem scan of every mounted storage root and merge
-     * anything that MediaStore missed.
+     * Quiet rescan used after file operations (move-to-bin / restore / delete).
+     * Repopulates `mediaItems` on a background thread, then refreshes the
+     * existing adapter in place — does NOT create a new adapter, does NOT
+     * reset the scroll position, and does NOT cause a flash of the home list.
      */
-    private void loadMedia() {
+    private void loadMediaQuiet() {
+        loadMediaInternal(false);
+    }
+
+    /**
+     * @param fullRefresh when true → applyFilter() + setupRecyclerView() +
+     *                    showEmptyState() (used on first load / permission grant).
+     *                    when false → only repopulates mediaItems and calls
+     *                    applyFilter() in place (used after file operations).
+     */
+    private void loadMediaInternal(boolean fullRefresh) {
         executor.execute(() -> {
             // ── 1. MediaStore (fast, includes app-added files) ──
             List<MediaItem> newItems = new ArrayList<>();
@@ -1544,16 +1553,26 @@ public class GalleryActivity extends AppCompatActivity {
 
             // ── 5. Hand the result to the UI thread ──
             final List<MediaItem> result = newItems;
+            final boolean fullRefreshFinal = fullRefresh;
             runOnMain(() -> {
                 if (!isActivityAlive()) return;
                 mediaItems.clear();
                 mediaItems.addAll(result);
-                applyFilter();
-                setupRecyclerView();
-                showEmptyState();
+                if (fullRefreshFinal) {
+                    // First-load path: build/refresh everything.
+                    applyFilter();
+                    setupRecyclerView();
+                    showEmptyState();
+                } else {
+                    // Post-operation path: update the existing adapter in place.
+                    // Do NOT recreate the adapter (that resets scroll & flickers).
+                    applyFilter();
+                    showEmptyState();
+                }
             });
         });
     }
+
     /**
      * Recursively scans a directory for media files that aren't already in
      * `knownPaths`. Adds found items directly to `out`.
@@ -1801,25 +1820,22 @@ public class GalleryActivity extends AppCompatActivity {
 
         if (currentFilter == FilterMode.BIN) {
             // ── Bin mode ──
-            // Never mutate `displayedItems` while the adapter may be laying out.
-            // Instead, build a local list and swap it in on the main thread.
-            final List<MediaItem> snapshotNow =
-                    (cachedTrashedItems == null)
-                            ? new ArrayList<>()
-                            : new ArrayList<>(cachedTrashedItems);
-
+            // Step 1: IMMEDIATELY blank the adapter so the old (home) list
+            //         doesn't linger for a frame while the bin scan runs.
+            //         This is what prevents the "home files flash for a
+            //         second when opening Bin" glitch.
             runOnMain(() -> {
                 if (!isActivityAlive()) return;
                 if (currentFilter != FilterMode.BIN) return;
 
-                displayedItems = snapshotNow;
+                displayedItems = new ArrayList<>();
 
                 if (adapter == null) {
                     setupRecyclerView();
                     showEmptyState();
                     updateTopNavBar();
                 } else {
-                    adapter.updateItems(snapshotNow);          // ★ new list instance
+                    adapter.updateItems(new ArrayList<>());
                     adapter.updateSelectedItems(selectedItems);
                     updateSelectionUI();
                     showEmptyState();
@@ -1827,7 +1843,29 @@ public class GalleryActivity extends AppCompatActivity {
                 }
             });
 
-            // Kick off the async scan; when it finishes we rebuild once more.
+            // Step 2: If we have a cache, paint it right away — still no
+            //         stale home content because step 1 already blanked it.
+            if (cachedTrashedItems != null) {
+                final List<MediaItem> cachedSnapshot =
+                        new ArrayList<>(cachedTrashedItems);
+                runOnMain(() -> {
+                    if (!isActivityAlive()) return;
+                    if (currentFilter != FilterMode.BIN) return;
+
+                    displayedItems = cachedSnapshot;
+
+                    if (adapter != null) {
+                        adapter.updateItems(cachedSnapshot);
+                        adapter.updateSelectedItems(selectedItems);
+                        updateSelectionUI();
+                        showEmptyState();
+                        updateTopNavBar();
+                    }
+                });
+            }
+
+            // Step 3: Kick off the async scan; when it finishes, swap in the
+            //         authoritative list.
             getTrashedFilesAsync(false, trashed -> {
                 if (!isActivityAlive()) return;
                 if (currentFilter != FilterMode.BIN) return;
@@ -1845,7 +1883,7 @@ public class GalleryActivity extends AppCompatActivity {
                         showEmptyState();
                         updateTopNavBar();
                     } else {
-                        adapter.updateItems(snapshot);         // ★ new list instance
+                        adapter.updateItems(snapshot);
                         adapter.updateSelectedItems(selectedItems);
                         updateSelectionUI();
                         showEmptyState();
@@ -1857,7 +1895,8 @@ public class GalleryActivity extends AppCompatActivity {
         }
 
         // ── Normal filters (ALL / IMAGES / VIDEOS / FAVORITES) ──
-        final String targetCanon = currentAlbum == null ? null : getCachedCanonical(currentAlbum);
+        final String targetCanon = currentAlbum == null
+                ? null : getCachedCanonical(currentAlbum);
         final List<MediaItem> filtered = new ArrayList<>();
 
         for (MediaItem item : mediaItems) {
@@ -1894,7 +1933,7 @@ public class GalleryActivity extends AppCompatActivity {
                 showEmptyState();
                 updateTopNavBar();
             } else {
-                adapter.updateItems(snapshot);                 // ★ new list instance
+                adapter.updateItems(snapshot);
                 adapter.updateSelectedItems(selectedItems);
                 updateSelectionUI();
                 showEmptyState();
@@ -1970,7 +2009,7 @@ public class GalleryActivity extends AppCompatActivity {
         recyclerView.setAdapter(adapter);
         recyclerView.setHasFixedSize(true);
         recyclerView.setItemViewCacheSize(40);
-        recyclerView.setItemAnimator(null);
+        recyclerView.setItemAnimator(new androidx.recyclerview.widget.DefaultItemAnimator());
         setupDragToSelect();
     }
 
@@ -2310,8 +2349,7 @@ public class GalleryActivity extends AppCompatActivity {
         item.isTrashed = true;
         item.name = trashedFile.getName();
 
-        MediaScannerConnection.scanFile(this, new String[]{trashedFile.getAbsolutePath()}, null, null);
-        MediaScannerConnection.scanFile(this, new String[]{oldPath}, null, null);
+
 
         for (int i = 0; i < mediaItems.size(); i++) {
             if (mediaItems.get(i).path.equals(oldPath)) {
@@ -2364,17 +2402,9 @@ public class GalleryActivity extends AppCompatActivity {
         }
 
         cachedTrashedItems = null;
-        scanPathsAndThen(
-                Arrays.asList(restoredFile.getAbsolutePath(), oldPath),
-                () -> scheduleMediaRefresh(0L));
-
         return true;
     }
 
-    /**
-     * Move all selected items to Bin — asynchronous so the UI never freezes.
-     * Progress toast is shown; UI refreshes after all renames complete.
-     */
     private void moveSelectedToTrash() {
         if (selectedItems.isEmpty()) return;
 
@@ -2384,6 +2414,7 @@ public class GalleryActivity extends AppCompatActivity {
 
         executor.execute(() -> {
             int moved = 0, failed = 0;
+            final List<String> newTrashPaths = new ArrayList<>();   // ★ collect for scan
 
             for (String path : paths) {
                 File f = new File(path);
@@ -2394,21 +2425,37 @@ public class GalleryActivity extends AppCompatActivity {
                         0, false, "");
 
                 if (!f.getName().startsWith(".trashed.")) {
-                    moveToTrash(item);
-                    moved++;
+                    String newPath = moveToTrashAndReturnPath(item);
+                    if (newPath != null) {
+                        moved++;
+                        newTrashPaths.add(newPath);
+                    } else {
+                        failed++;
+                    }
                 } else {
                     moved++;
                 }
+            }
+
+            // ★ Single MediaScanner call with every new trash path.
+            if (!newTrashPaths.isEmpty()) {
+                MediaScannerConnection.scanFile(
+                        this,
+                        newTrashPaths.toArray(new String[0]),
+                        null, null);
             }
 
             final int fm = moved, ff = failed;
             runOnUiThread(() -> {
                 if (progressToast != null) progressToast.cancel();
                 if (!isActivityAlive()) return;
+
                 clearSelection();
                 cachedTrashedItems = null;
-                applyFilter();
-                scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
+
+                applyFilter();        // ★ one refresh
+                loadMediaQuiet();     // ★ silent re-scan (now actually scans + re-filters)
+
                 Toast.makeText(this, "Moved " + fm + " item(s) to Bin"
                                 + (ff > 0 ? " (" + ff + " failed)" : ""),
                         Toast.LENGTH_SHORT).show();
@@ -2417,8 +2464,55 @@ public class GalleryActivity extends AppCompatActivity {
     }
 
     /**
-     * Restore all selected items — asynchronous.
+     * Variant of moveToTrash that returns the new ".trashed." path (or null on
+     * failure). No per-item MediaScanner call, no per-item refresh.
      */
+    private String moveToTrashAndReturnPath(MediaItem item) {
+        if (item.isTrashed) return null;
+        File file = new File(item.path);
+        if (!file.exists()) return null;
+
+        String parent = file.getParent();
+        String name = file.getName();
+        String cleanName = cleanFileName(name);
+        File trashedFile = new File(parent, ".trashed." + cleanName);
+
+        if (trashedFile.exists()) {
+            int count = 1;
+            String baseName = cleanName;
+            String ext = "";
+            int dotIndex = cleanName.lastIndexOf(".");
+            if (dotIndex > 0) {
+                baseName = cleanName.substring(0, dotIndex);
+                ext = cleanName.substring(dotIndex);
+            }
+            while (trashedFile.exists()) {
+                trashedFile = new File(parent, ".trashed." + baseName + "_" + count + ext);
+                count++;
+            }
+        }
+
+        if (!renameFileRobust(file, trashedFile)) {
+            Toast.makeText(this, "Could not move to Bin: " + name, Toast.LENGTH_SHORT).show();
+            return null;
+        }
+
+        String oldPath = item.path;
+        item.path = trashedFile.getAbsolutePath();
+        item.isTrashed = true;
+        item.name = trashedFile.getName();
+
+        for (int i = 0; i < mediaItems.size(); i++) {
+            if (mediaItems.get(i).path.equals(oldPath)) {
+                mediaItems.set(i, item);
+                break;
+            }
+        }
+
+        albumsCacheValid = false;
+        cachedTrashedItems = null;
+        return item.path;
+    }
     private void restoreSelectedItems() {
         if (selectedItems.isEmpty()) return;
 
@@ -2428,6 +2522,7 @@ public class GalleryActivity extends AppCompatActivity {
 
         executor.execute(() -> {
             int restored = 0, failed = 0;
+            final List<String> restoredPaths = new ArrayList<>();   // ★ collect for single scan
 
             for (String path : paths) {
                 File file = new File(path);
@@ -2437,20 +2532,38 @@ public class GalleryActivity extends AppCompatActivity {
                         isVideoPath(path) ? MediaItem.TYPE_VIDEO : MediaItem.TYPE_IMAGE,
                         0, true, "");
 
-                if (restoreFromTrash(item)) restored++;
-                else failed++;
+                // restoreFromTrash now returns the new path (or null on failure)
+                String newPath = restoreFromTrashAndReturnPath(item);
+                if (newPath != null) {
+                    restored++;
+                    restoredPaths.add(newPath);
+                } else {
+                    failed++;
+                }
+            }
+
+            // ★ Single MediaScanner call with every restored path.
+            if (!restoredPaths.isEmpty()) {
+                MediaScannerConnection.scanFile(
+                        this,
+                        restoredPaths.toArray(new String[0]),
+                        null, null);
             }
 
             final int r = restored, f = failed;
             runOnUiThread(() -> {
                 if (progressToast != null) progressToast.cancel();
                 if (!isActivityAlive()) return;
+
                 clearSelection();
                 cachedTrashedItems = null;
-                applyFilter();
-                if (r > 0) scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
+
+                applyFilter();        // ★ one refresh
+                loadMediaQuiet();     // ★ silent re-scan (now actually scans + re-filters)
+
                 if (f == 0) {
-                    Toast.makeText(this, "Restored " + r + " item(s)", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "Restored " + r + " item(s)",
+                            Toast.LENGTH_SHORT).show();
                 } else {
                     Toast.makeText(this, "Restored " + r + ", failed " + f,
                             Toast.LENGTH_LONG).show();
@@ -2459,6 +2572,53 @@ public class GalleryActivity extends AppCompatActivity {
         });
     }
 
+    /**
+     * Variant of restoreFromTrash that returns the final path (or null on
+     * failure) so the caller can batch a single MediaScanner call at the end.
+     * Does NOT call scheduleMediaRefresh() — the caller controls refresh.
+     */
+    private String restoreFromTrashAndReturnPath(MediaItem item) {
+        File file = new File(item.path);
+        if (!file.exists()) return null;
+
+        String parent = file.getParent();
+        String name = file.getName();
+        String cleanName = cleanFileName(name);
+        File restoredFile = new File(parent, cleanName);
+
+        if (restoredFile.exists()) {
+            int count = 1;
+            String baseName = cleanName;
+            String ext = "";
+            int dotIndex = cleanName.lastIndexOf(".");
+            if (dotIndex > 0) {
+                baseName = cleanName.substring(0, dotIndex);
+                ext = cleanName.substring(dotIndex);
+            }
+            while (restoredFile.exists()) {
+                restoredFile = new File(parent, baseName + "_" + count + ext);
+                count++;
+            }
+        }
+
+        if (!renameFileRobust(file, restoredFile)) return null;
+
+        String oldPath = item.path;
+        item.path = restoredFile.getAbsolutePath();
+        item.isTrashed = false;
+        item.name = restoredFile.getName();
+
+        for (int i = 0; i < mediaItems.size(); i++) {
+            if (mediaItems.get(i).path.equals(oldPath)) {
+                mediaItems.set(i, item);
+                break;
+            }
+        }
+
+        cachedTrashedItems = null;
+        // ★ No scan, no refresh — caller handles both in one batch.
+        return item.path;
+    }
     /**
      * Permanently delete selected items — asynchronous.
      */
@@ -2489,12 +2649,11 @@ public class GalleryActivity extends AppCompatActivity {
                             if (ok) deleted++;
                             else failed++;
                         }
-
                         final int delCount = deleted, failCount = failed;
                         runOnUiThread(() -> {
                             if (progressToast != null) progressToast.cancel();
                             if (!isActivityAlive()) return;
-                            // Remove deleted entries from in-memory list
+
                             for (String path : paths) {
                                 for (int i = mediaItems.size() - 1; i >= 0; i--) {
                                     if (mediaItems.get(i).path.equals(path)) {
@@ -2503,11 +2662,17 @@ public class GalleryActivity extends AppCompatActivity {
                                     }
                                 }
                             }
+
                             albumsCacheValid = false;
                             cachedTrashedItems = null;
                             clearSelection();
-                            applyFilter();
-                            if (delCount > 0) scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
+
+                            applyFilter();        // ★ single refresh
+                            loadMediaQuiet();     // ★ silent re-scan (now actually scans + re-filters)
+
+                            if (delCount > 0) {
+                                // no scheduleMediaRefresh here — loadMediaQuiet handles it
+                            }
                             if (failCount == 0) {
                                 Toast.makeText(this, "Deleted " + delCount + " item(s)",
                                         Toast.LENGTH_SHORT).show();

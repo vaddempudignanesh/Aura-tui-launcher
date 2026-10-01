@@ -55,13 +55,26 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
     }
 
     public void updateItems(List<GalleryActivity.MediaItem> newItems) {
-        // ★ Take a private copy. The activity may continue to mutate its
-        //   `displayedItems` list from background callbacks; the adapter must
-        //   never see those mutations mid-layout.
-        this.mediaItems = (newItems == null)
+        List<GalleryActivity.MediaItem> copy = (newItems == null)
                 ? new java.util.ArrayList<>()
                 : new java.util.ArrayList<>(newItems);
-        notifyDataSetChanged();
+
+        int oldCount = (this.mediaItems == null) ? 0 : this.mediaItems.size();
+        int newCount = copy.size();
+
+        this.mediaItems = copy;
+
+        if (oldCount == 0 && newCount > 0) {
+            notifyItemRangeInserted(0, newCount);
+        } else if (oldCount > 0 && newCount == 0) {
+            notifyItemRangeRemoved(0, oldCount);
+        } else if (oldCount == newCount) {
+            // Same count → full rebind via change animation
+            notifyItemRangeChanged(0, newCount);
+        } else {
+            // Size changed → fall back to full notify but only once
+            notifyDataSetChanged();
+        }
     }
 
     public void updateSelectedItems(List<String> newSelectedItems) {
