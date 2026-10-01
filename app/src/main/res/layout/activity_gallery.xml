@@ -139,25 +139,7 @@
                 android:focusable="false"
                 android:visibility="gone">
 
-                <!-- TOP: video title -->
-                <TextView
-                    android:id="@+id/videoTitle"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:paddingStart="16dp"
-                    android:paddingEnd="16dp"
-                    android:paddingTop="16dp"
-                    android:paddingBottom="8dp"
-                    android:text="Video"
-                    android:textColor="#FFFFFF"
-                    android:textStyle="bold"
-                    android:shadowColor="#80000000"
-                    android:shadowDx="1"
-                    android:shadowDy="1"
-                    android:shadowRadius="2"
-                    android:textSize="14sp"
-                    android:singleLine="true"
-                    android:ellipsize="end" />
+
 
                 <!-- MIDDLE: play / pause / skip -->
                 <FrameLayout
@@ -617,9 +599,7 @@
             android:gravity="center"
             android:padding="24dp"
             android:visibility="gone">
-            <ImageButton android:id="@+id/btnCenterPlayPause" style="@style/LegacyVideoButton"
-                android:layout_width="72dp" android:layout_height="72dp"
-                android:src="@android:drawable/ic_media_play" />
+
         </LinearLayout>
 
         <LinearLayout

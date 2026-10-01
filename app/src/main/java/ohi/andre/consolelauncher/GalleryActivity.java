@@ -495,7 +495,8 @@ public class GalleryActivity extends AppCompatActivity {
                         setFullscreenChromeVisible(true);
                         overlayControlsVisible = true;
                     }
-                    showAllControlsWithTimeout();
+                    // ★ Do NOT call showAllControlsWithTimeout() here — the
+                    //    initial chrome is shown by openFullscreenViewer().
                 }
             }
         });
@@ -597,7 +598,8 @@ public class GalleryActivity extends AppCompatActivity {
             videoSeekBar.setProgress((int) ((target / (float) dur) * 1000));
 
         videoHandler.postDelayed(() -> overlayPendingSeekMs = -1, 350);
-        showAllControlsWithTimeout();
+        // ★ Do NOT call showAllControlsWithTimeout() here — skip gestures
+        //    must not pop the chrome open.
     }
 
     private void resetPlaybackSpeed() {
@@ -893,15 +895,16 @@ public class GalleryActivity extends AppCompatActivity {
             if (btnCenterPlayPause != null)
                 btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_play);
             videoHandler.removeCallbacks(overlayProgressRunnable);
-            showAllControlsWithTimeout();
         } else {
             currentFullscreenVideo.start();
             isOverlayVideoPlaying = true;
             if (btnCenterPlayPause != null)
                 btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
             startOverlayProgressUpdate();
-            showAllControlsWithTimeout();
         }
+        // ★ Deliberately do NOT touch the chrome here.
+        //    The chrome (title bar, seek bar, buttons, bottom action bar)
+        //    keeps whatever visibility it had before the double-tap.
     }
 
     private void startOverlayProgressUpdate() {
@@ -2506,17 +2509,15 @@ public class GalleryActivity extends AppCompatActivity {
                 : 15;
 
         // ── Tunables ──
-        // Pixels of finger travel required to advance ONE step.
-        // Smaller = more sensitive (fewer pixels per step).
         final float STEP_PX_VOLUME     = 45f;
         final float STEP_PX_BRIGHTNESS = 45f;
-
-        // Brightness is a float [0..1]. 20 steps means each step = 0.05.
         final float BRIGHTNESS_STEPS = 20f;
         final float BRIGHTNESS_STEP_VALUE = 1.0f / BRIGHTNESS_STEPS;
-
-        // Ignore tiny jitter before committing.
         final int DEAD_ZONE_PX = 12;
+
+        // ── Tap / double-tap timing ──
+        final long DOUBLE_TAP_TIMEOUT =
+                android.view.ViewConfiguration.getDoubleTapTimeout();
 
         // ── Gesture state ──
         final float[] startY = {0f};
@@ -2525,9 +2526,17 @@ public class GalleryActivity extends AppCompatActivity {
         final boolean[] isVolumeSide = {false};
         final boolean[] committed = {false};
         final boolean[] pagerLocked = {false};
-        final float[] accumulator = {0f};       // leftover pixels between steps
+        final float[] accumulator = {0f};
         final int[]   appliedVolume = {-1};
         final float[] appliedBrightness = {-1f};
+
+        // Tap deferral
+        final boolean[] tapPending = {false};
+        final Runnable[] pendingTap = {null};
+
+        // ★ NEW: If true, the current DOWN is part of a double-tap and
+        //    the following UP must NOT schedule a deferred single-tap.
+        final boolean[] suppressNextUpTap = {false};
 
         final Runnable lockPager = () -> {
             if (fullscreenViewPager != null && !pagerLocked[0]) {
@@ -2546,6 +2555,18 @@ public class GalleryActivity extends AppCompatActivity {
             switch (event.getActionMasked()) {
 
                 case MotionEvent.ACTION_DOWN: {
+                    // ── Did a single-tap toggle get scheduled recently?
+                    //    If yes, this DOWN is the second tap of a double-tap. ──
+                    if (tapPending[0] && pendingTap[0] != null) {
+                        videoHandler.removeCallbacks(pendingTap[0]);
+                        tapPending[0] = false;
+                        pendingTap[0] = null;
+                        // ★ Mark this DOWN so its UP doesn't reschedule.
+                        suppressNextUpTap[0] = true;
+                    } else {
+                        suppressNextUpTap[0] = false;
+                    }
+
                     startY[0] = event.getY();
                     startX[0] = event.getX();
                     lastY[0]  = event.getY();
@@ -2557,7 +2578,6 @@ public class GalleryActivity extends AppCompatActivity {
                     float w = v.getWidth();
                     isVolumeSide[0] = (w > 0) && (event.getX() >= w / 2f);
 
-                    // Snapshot the current value as our baseline.
                     if (isVolumeSide[0] && audioManager != null) {
                         try {
                             appliedVolume[0] = audioManager.getStreamVolume(
@@ -2578,7 +2598,17 @@ public class GalleryActivity extends AppCompatActivity {
                     float dyTotal = Math.abs(currentY - startY[0]);
                     float dxTotal = Math.abs(currentX - startX[0]);
 
-                    // ── Commit decision (once per gesture) ──
+                    // Movement past dead zone cancels BOTH pending tap AND the
+                    // suppress flag (it wasn't a tap after all, it was a swipe).
+                    if (dyTotal > DEAD_ZONE_PX || dxTotal > DEAD_ZONE_PX) {
+                        if (tapPending[0] && pendingTap[0] != null) {
+                            videoHandler.removeCallbacks(pendingTap[0]);
+                            tapPending[0] = false;
+                            pendingTap[0] = null;
+                        }
+                        suppressNextUpTap[0] = false;
+                    }
+
                     if (!committed[0]) {
                         if (dyTotal < DEAD_ZONE_PX && dxTotal < DEAD_ZONE_PX) {
                             return true;
@@ -2586,27 +2616,20 @@ public class GalleryActivity extends AppCompatActivity {
                         if (dyTotal >= dxTotal) {
                             committed[0] = true;
                             lockPager.run();
-                            // Reset the reference so the accumulated distance
-                            // is measured from the commit point, not the touch
-                            // start. Prevents the dead zone from "eating" the
-                            // first few pixels.
                             lastY[0] = currentY;
                             accumulator[0] = 0f;
                         } else {
-                            // Horizontal → hand off to ViewPager2
                             committed[0] = false;
                             unlockPager.run();
                             return false;
                         }
                     }
 
-                    // ── Accumulate pixels since the previous move ──
-                    float dyPixels = lastY[0] - currentY;  // up = positive
+                    float dyPixels = lastY[0] - currentY;
                     lastY[0] = currentY;
                     accumulator[0] += dyPixels;
 
                     if (isVolumeSide[0]) {
-                        // ── VOLUME: discrete steps of 1/15 ──
                         if (audioManager == null) return true;
 
                         while (accumulator[0] >= STEP_PX_VOLUME) {
@@ -2627,7 +2650,6 @@ public class GalleryActivity extends AppCompatActivity {
                         } catch (Exception ignored) {}
 
                     } else {
-                        // ── BRIGHTNESS: discrete steps of 1/20 ──
                         int stepAdvances = 0;
                         while (accumulator[0] >= STEP_PX_BRIGHTNESS) {
                             accumulator[0] -= STEP_PX_BRIGHTNESS;
@@ -2657,11 +2679,28 @@ public class GalleryActivity extends AppCompatActivity {
                 case MotionEvent.ACTION_CANCEL: {
                     unlockPager.run();
 
-                    // Tap detection — finger barely moved on both axes
-                    if (!committed[0]
+                    boolean wasTap = !committed[0]
                             && Math.abs(event.getY() - startY[0]) < DEAD_ZONE_PX
-                            && Math.abs(event.getX() - startX[0]) < DEAD_ZONE_PX) {
-                        onFullscreenTap();
+                            && Math.abs(event.getX() - startX[0]) < DEAD_ZONE_PX;
+
+                    if (wasTap) {
+                        if (suppressNextUpTap[0]) {
+                            // ★ This UP belonged to the second half of a
+                            //    double-tap. Do NOT schedule the toggle.
+                            suppressNextUpTap[0] = false;
+                        } else {
+                            final Runnable[] holder = new Runnable[1];
+                            holder[0] = () -> {
+                                tapPending[0] = false;
+                                pendingTap[0] = null;
+                                onFullscreenTap();
+                            };
+                            pendingTap[0] = holder[0];
+                            tapPending[0] = true;
+                            videoHandler.postDelayed(holder[0], DOUBLE_TAP_TIMEOUT);
+                        }
+                    } else {
+                        suppressNextUpTap[0] = false;
                     }
 
                     committed[0] = false;
