@@ -21,12 +21,12 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.animation.TranslateAnimation;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -50,6 +50,7 @@ import androidx.webkit.WebViewFeature;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -135,6 +136,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
 
         setContentView(R.layout.activity_aura_browser);
+        // ── Initialize ad blocker on a background thread ─────────
+        new Thread(() -> AdBlocker.init(getApplicationContext()), "adblock-init").start();
 
         topBar           = findViewById(R.id.aura_top_bar);
         footerBar        = findViewById(R.id.aura_footer_bar);
@@ -934,15 +937,36 @@ public class AuraBrowserActivity extends AppCompatActivity {
         wv.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                view.loadUrl(request.getUrl().toString());
-                return true;
+                String url = request.getUrl().toString();
+
+                // Block ad domains in main frame
+                if (AdBlocker.isAd(url)) {
+                    Log.d("AuraBrowser", "Blocked nav: " + url);
+                    return true;
+                }
+
+                // Block non-web protocols (intent://, market://, whatsapp://, tel://)
+                if (!url.startsWith("http://") && !url.startsWith("https://")
+                        && !url.startsWith("file://") && !url.startsWith("content://")
+                        && !url.startsWith("about:")) {
+                    Log.d("AuraBrowser", "Blocked protocol: " + url);
+                    return true;
+                }
+
+                // Let WebView handle it normally (keeps history clean)
+                return false;
             }
 
             @Override
             @SuppressWarnings("deprecation")
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                view.loadUrl(url);
-                return true;
+                if (AdBlocker.isAd(url)) return true;
+                if (!url.startsWith("http://") && !url.startsWith("https://")
+                        && !url.startsWith("file://") && !url.startsWith("content://")
+                        && !url.startsWith("about:")) {
+                    return true;
+                }
+                return false;
             }
 
             @Override
@@ -954,7 +978,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     btnRefresh.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
                 }
                 updateTabUrl(view, url);
-
             }
 
             @Override
@@ -969,7 +992,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 if (forceDark) injectPureBlackCSS(view);
             }
         });
-
 
 
         wv.setWebChromeClient(new WebChromeClient() {
