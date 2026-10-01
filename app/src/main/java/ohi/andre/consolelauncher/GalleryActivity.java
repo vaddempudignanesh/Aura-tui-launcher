@@ -2494,17 +2494,7 @@ public class GalleryActivity extends AppCompatActivity {
         pendingMediaRefresh = null;
         executor.shutdown();
     }
-    /**
-     * Volume / brightness gesture — continuous relative model.
-     *
-     * Left half  → screen brightness
-     * Right half → system music volume
-     *
-     * While a vertical gesture is committed (finger moved past the dead
-     * zone in a mostly-vertical direction), ViewPager2's user input is
-     * disabled so that horizontal drift does NOT hijack the touch into a
-     * page swipe. Input is restored on finger-up.
-     */
+
     private void setupVolumeAndBrightnessGestures() {
         if (fullscreenOverlay == null) return;
 
@@ -2515,20 +2505,30 @@ public class GalleryActivity extends AppCompatActivity {
                 ? audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                 : 15;
 
+        // ── Tunables ──
+        // Pixels of finger travel required to advance ONE step.
+        // Smaller = more sensitive (fewer pixels per step).
+        final float STEP_PX_VOLUME     = 45f;
+        final float STEP_PX_BRIGHTNESS = 45f;
+
+        // Brightness is a float [0..1]. 20 steps means each step = 0.05.
+        final float BRIGHTNESS_STEPS = 20f;
+        final float BRIGHTNESS_STEP_VALUE = 1.0f / BRIGHTNESS_STEPS;
+
+        // Ignore tiny jitter before committing.
+        final int DEAD_ZONE_PX = 12;
+
         // ── Gesture state ──
-        final float[] lastY = {0f};
-        final float[] startX = {0f};
         final float[] startY = {0f};
+        final float[] startX = {0f};
+        final float[] lastY  = {0f};
         final boolean[] isVolumeSide = {false};
         final boolean[] committed = {false};
         final boolean[] pagerLocked = {false};
-        final int[]   lastAppliedVolume = {-1};
-        final float[] lastAppliedBrightness = {-1f};
+        final float[] accumulator = {0f};       // leftover pixels between steps
+        final int[]   appliedVolume = {-1};
+        final float[] appliedBrightness = {-1f};
 
-        final float PIXELS_FOR_FULL_RANGE = 600f;
-        final int DEAD_ZONE_PX = 12;
-
-        // Helper to lock/unlock the ViewPager2 cleanly.
         final Runnable lockPager = () -> {
             if (fullscreenViewPager != null && !pagerLocked[0]) {
                 fullscreenViewPager.setUserInputEnabled(false);
@@ -2548,13 +2548,26 @@ public class GalleryActivity extends AppCompatActivity {
                 case MotionEvent.ACTION_DOWN: {
                     startY[0] = event.getY();
                     startX[0] = event.getX();
-                    lastY[0] = event.getY();
+                    lastY[0]  = event.getY();
                     committed[0] = false;
-                    lastAppliedVolume[0] = -1;
-                    lastAppliedBrightness[0] = -1f;
+                    accumulator[0] = 0f;
+                    appliedVolume[0] = -1;
+                    appliedBrightness[0] = -1f;
 
                     float w = v.getWidth();
                     isVolumeSide[0] = (w > 0) && (event.getX() >= w / 2f);
+
+                    // Snapshot the current value as our baseline.
+                    if (isVolumeSide[0] && audioManager != null) {
+                        try {
+                            appliedVolume[0] = audioManager.getStreamVolume(
+                                    AudioManager.STREAM_MUSIC);
+                        } catch (Exception ignored) {}
+                    } else {
+                        WindowManager.LayoutParams lp = getWindow().getAttributes();
+                        appliedBrightness[0] = lp.screenBrightness < 0
+                                ? 0.5f : lp.screenBrightness;
+                    }
                     return true;
                 }
 
@@ -2566,89 +2579,85 @@ public class GalleryActivity extends AppCompatActivity {
                     float dxTotal = Math.abs(currentX - startX[0]);
 
                     // ── Commit decision (once per gesture) ──
-                    // Once the finger has moved past the dead zone, decide
-                    // whether this is a VERTICAL (volume/brightness) gesture
-                    // or a HORIZONTAL (page swipe) gesture.
                     if (!committed[0]) {
                         if (dyTotal < DEAD_ZONE_PX && dxTotal < DEAD_ZONE_PX) {
-                            return true; // not yet a real move
+                            return true;
                         }
-
                         if (dyTotal >= dxTotal) {
-                            // Vertical wins → lock the pager for the rest
-                            // of this gesture so horizontal drift can't
-                            // steal the touch.
                             committed[0] = true;
                             lockPager.run();
+                            // Reset the reference so the accumulated distance
+                            // is measured from the commit point, not the touch
+                            // start. Prevents the dead zone from "eating" the
+                            // first few pixels.
+                            lastY[0] = currentY;
+                            accumulator[0] = 0f;
                         } else {
-                            // Horizontal wins → let ViewPager2 do its thing.
-                            // We bail out of the gesture entirely for this
-                            // touch sequence.
+                            // Horizontal → hand off to ViewPager2
                             committed[0] = false;
-                            // Do NOT consume any further events from this
-                            // gesture — return false so ViewPager2 gets them.
                             unlockPager.run();
                             return false;
                         }
                     }
 
-                    // From here on: it's a vertical gesture. We consume events.
-                    float dyPixels = lastY[0] - currentY;   // up = positive
+                    // ── Accumulate pixels since the previous move ──
+                    float dyPixels = lastY[0] - currentY;  // up = positive
                     lastY[0] = currentY;
-
-                    float valueDelta = dyPixels / PIXELS_FOR_FULL_RANGE;
+                    accumulator[0] += dyPixels;
 
                     if (isVolumeSide[0]) {
+                        // ── VOLUME: discrete steps of 1/15 ──
                         if (audioManager == null) return true;
 
-                        int currentVol;
-                        try {
-                            currentVol = audioManager.getStreamVolume(
-                                    AudioManager.STREAM_MUSIC);
-                        } catch (Exception e) { return true; }
-
-                        int base = lastAppliedVolume[0] >= 0
-                                ? lastAppliedVolume[0] : currentVol;
-
-                        int target = base + Math.round(valueDelta * maxVolume);
-                        target = Math.max(0, Math.min(maxVolume, target));
-
-                        if (target == lastAppliedVolume[0]) return true;
-                        lastAppliedVolume[0] = target;
+                        while (accumulator[0] >= STEP_PX_VOLUME) {
+                            accumulator[0] -= STEP_PX_VOLUME;
+                            appliedVolume[0] = Math.min(maxVolume,
+                                    Math.max(0, appliedVolume[0] + 1));
+                        }
+                        while (accumulator[0] <= -STEP_PX_VOLUME) {
+                            accumulator[0] += STEP_PX_VOLUME;
+                            appliedVolume[0] = Math.min(maxVolume,
+                                    Math.max(0, appliedVolume[0] - 1));
+                        }
 
                         try {
                             audioManager.setStreamVolume(
-                                    AudioManager.STREAM_MUSIC, target, 0);
+                                    AudioManager.STREAM_MUSIC,
+                                    appliedVolume[0], 0);
                         } catch (Exception ignored) {}
+
                     } else {
-                        WindowManager.LayoutParams lp = getWindow().getAttributes();
-                        float currentBright = lp.screenBrightness < 0
-                                ? 0.5f : lp.screenBrightness;
+                        // ── BRIGHTNESS: discrete steps of 1/20 ──
+                        int stepAdvances = 0;
+                        while (accumulator[0] >= STEP_PX_BRIGHTNESS) {
+                            accumulator[0] -= STEP_PX_BRIGHTNESS;
+                            stepAdvances++;
+                        }
+                        while (accumulator[0] <= -STEP_PX_BRIGHTNESS) {
+                            accumulator[0] += STEP_PX_BRIGHTNESS;
+                            stepAdvances--;
+                        }
 
-                        float base = lastAppliedBrightness[0] >= 0
-                                ? lastAppliedBrightness[0] : currentBright;
+                        if (stepAdvances != 0) {
+                            appliedBrightness[0] = Math.min(1f, Math.max(0.02f,
+                                    appliedBrightness[0]
+                                            + stepAdvances * BRIGHTNESS_STEP_VALUE));
 
-                        float target = base + valueDelta;
-                        target = Math.max(0.02f, Math.min(1f, target));
-
-                        if (Math.abs(target - lastAppliedBrightness[0]) < 0.002f) return true;
-                        lastAppliedBrightness[0] = target;
-
-                        try {
-                            lp.screenBrightness = target;
-                            getWindow().setAttributes(lp);
-                        } catch (Exception ignored) {}
+                            try {
+                                WindowManager.LayoutParams lp = getWindow().getAttributes();
+                                lp.screenBrightness = appliedBrightness[0];
+                                getWindow().setAttributes(lp);
+                            } catch (Exception ignored) {}
+                        }
                     }
                     return true;
                 }
 
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL: {
-                    // Always restore pager input, regardless of how the
-                    // gesture ended.
                     unlockPager.run();
 
-                    // If the finger never meaningfully moved → it's a tap.
+                    // Tap detection — finger barely moved on both axes
                     if (!committed[0]
                             && Math.abs(event.getY() - startY[0]) < DEAD_ZONE_PX
                             && Math.abs(event.getX() - startX[0]) < DEAD_ZONE_PX) {
@@ -2656,8 +2665,9 @@ public class GalleryActivity extends AppCompatActivity {
                     }
 
                     committed[0] = false;
-                    lastAppliedVolume[0] = -1;
-                    lastAppliedBrightness[0] = -1f;
+                    accumulator[0] = 0f;
+                    appliedVolume[0] = -1;
+                    appliedBrightness[0] = -1f;
                     return true;
                 }
             }
