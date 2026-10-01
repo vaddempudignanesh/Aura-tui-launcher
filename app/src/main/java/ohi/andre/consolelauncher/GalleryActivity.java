@@ -1321,11 +1321,13 @@ public class GalleryActivity extends AppCompatActivity {
     private void showFileInfoDialog(String path) {
         File file = new File(path);
         if (!file.exists()) return;
+        long tsSec = file.lastModified() / 1000L;
+        if (tsSec <= 0) tsSec = System.currentTimeMillis() / 1000L;
         StringBuilder info = new StringBuilder();
         info.append("📄 File: ").append(file.getName()).append("\n");
         info.append("📏 Size: ").append(formatFileSize(file.length())).append("\n");
         info.append("📅 Modified: ").append(new SimpleDateFormat("dd/MM/yyyy HH:mm",
-                Locale.getDefault()).format(new Date(file.lastModified()))).append("\n");
+                Locale.getDefault()).format(new Date(tsSec * 1000L))).append("\n");
         info.append("🔤 Type: ").append(getFileType(path)).append("\n");
         info.append("📍 Path: ").append(file.getAbsolutePath());
         showInfoDialog(info.toString(), "📄 File Info");
@@ -1481,8 +1483,9 @@ public class GalleryActivity extends AppCompatActivity {
                     while (imageCursor.moveToNext()) {
                         String path = dataIndex >= 0 ? imageCursor.getString(dataIndex) : null;
                         String name = nameIndex >= 0 ? imageCursor.getString(nameIndex) : "image";
-                        long date = dateIndex >= 0 ? imageCursor.getLong(dateIndex) : 0;
+                        long storeDate = dateIndex >= 0 ? imageCursor.getLong(dateIndex) : 0;
                         if (path != null && new File(path).exists()) {
+                            long date = resolveTimestamp(path, storeDate);
                             boolean isTrashed = path.contains(".trashed.");
                             String parentPath = new File(path).getParent();
                             String albumKey = parentPath != null
@@ -1516,8 +1519,9 @@ public class GalleryActivity extends AppCompatActivity {
                     while (videoCursor.moveToNext()) {
                         String path = dataIndex >= 0 ? videoCursor.getString(dataIndex) : null;
                         String name = nameIndex >= 0 ? videoCursor.getString(nameIndex) : "video";
-                        long date = dateIndex >= 0 ? videoCursor.getLong(dateIndex) : 0;
+                        long storeDate = dateIndex >= 0 ? videoCursor.getLong(dateIndex) : 0;
                         if (path != null && new File(path).exists()) {
+                            long date = resolveTimestamp(path, storeDate);
                             boolean isTrashed = path.contains(".trashed.");
                             String parentPath = new File(path).getParent();
                             String albumKey = parentPath != null
@@ -1543,6 +1547,16 @@ public class GalleryActivity extends AppCompatActivity {
             }
 
             // ── 3. Sort newest first ──
+            //    Use the file's own lastModified (converted to seconds) as the
+            //    authoritative timestamp so the visible "Modified" value in the
+            //    Info dialog always matches the sort order.
+            for (MediaItem item : newItems) {
+                try {
+                    File f = new File(item.path);
+                    long fileSec = f.lastModified() / 1000L;
+                    if (fileSec > 0) item.dateModified = fileSec;
+                } catch (Exception ignored) {}
+            }
             Collections.sort(newItems, (a, b) -> Long.compare(b.dateModified, a.dateModified));
 
             // ── 4. Apply favorites ──
@@ -1559,18 +1573,34 @@ public class GalleryActivity extends AppCompatActivity {
                 mediaItems.clear();
                 mediaItems.addAll(result);
                 if (fullRefreshFinal) {
-                    // First-load path: build/refresh everything.
                     applyFilter();
                     setupRecyclerView();
                     showEmptyState();
                 } else {
-                    // Post-operation path: update the existing adapter in place.
-                    // Do NOT recreate the adapter (that resets scroll & flickers).
                     applyFilter();
                     showEmptyState();
                 }
             });
         });
+    }
+
+    /**
+     * Returns the best-known modification timestamp for a media file, in
+     * SECONDS since epoch (matching MediaStore.DATE_MODIFIED).
+     *
+     * Preference order:
+     *   1. The file's own lastModified() — the most accurate value and the
+     *      one shown in the Info dialog.
+     *   2. MediaStore's DATE_MODIFIED (only used if the file timestamp is 0,
+     *      which happens on some SD cards / exFAT mounts).
+     */
+    private long resolveTimestamp(String path, long storeDate) {
+        try {
+            File f = new File(path);
+            long sec = f.lastModified() / 1000L;
+            if (sec > 0) return sec;
+        } catch (Exception ignored) {}
+        return storeDate;
     }
 
     /**
@@ -1615,7 +1645,7 @@ public class GalleryActivity extends AppCompatActivity {
                 knownPaths.add(path);
 
                 boolean isVideo = isVideoPath(name);
-                long date = f.lastModified() / 1000;
+                long date = resolveTimestamp(path, 0);
                 String parent = f.getParent();
                 String albumKey = parent != null ? getCachedCanonical(parent) : "";
                 out.add(new MediaItem(path, name,

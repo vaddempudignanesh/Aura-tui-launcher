@@ -59,24 +59,94 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
                 ? new java.util.ArrayList<>()
                 : new java.util.ArrayList<>(newItems);
 
-        int oldCount = (this.mediaItems == null) ? 0 : this.mediaItems.size();
+        List<GalleryActivity.MediaItem> oldItems = this.mediaItems;
+        if (oldItems == null) oldItems = new java.util.ArrayList<>();
+
+        int oldCount = oldItems.size();
         int newCount = copy.size();
 
-        this.mediaItems = copy;
+        // ── Fast path: identical size + identical path order → nothing to do. ──
+        if (oldCount == newCount) {
+            boolean sameOrder = true;
+            for (int i = 0; i < oldCount; i++) {
+                if (!oldItems.get(i).path.equals(copy.get(i).path)) {
+                    sameOrder = false;
+                    break;
+                }
+            }
+            if (sameOrder) {
+                // Just swap the list, no notification at all — zero flicker.
+                this.mediaItems = copy;
+                return;
+            }
 
-        if (oldCount == 0 && newCount > 0) {
-            notifyItemRangeInserted(0, newCount);
-        } else if (oldCount > 0 && newCount == 0) {
-            notifyItemRangeRemoved(0, oldCount);
-        } else if (oldCount == newCount) {
-            // Same count → full rebind via change animation
+            // Same size but order differs → try a single move, otherwise full.
+            // Detect a single-item move (common when one item's timestamp
+            // changed and it jumped to a new position).
+            int movedFrom = -1, movedTo = -1;
+            for (int i = 0; i < oldCount; i++) {
+                if (!oldItems.get(i).path.equals(copy.get(i).path)) { movedFrom = i; break; }
+            }
+            if (movedFrom >= 0) {
+                // Find where the item went
+                String movedPath = oldItems.get(movedFrom).path;
+                for (int i = 0; i < newCount; i++) {
+                    if (copy.get(i).path.equals(movedPath)) { movedTo = i; break; }
+                }
+                if (movedTo >= 0) {
+                    this.mediaItems = copy;
+                    notifyItemMoved(movedFrom, movedTo);
+                    // Rebind the span between the two positions
+                    int lo = Math.min(movedFrom, movedTo);
+                    int hi = Math.max(movedFrom, movedTo);
+                    notifyItemRangeChanged(lo, hi - lo + 1);
+                    return;
+                }
+            }
+
+            // Fallback: same size, but complex reorder → full rebind
+            this.mediaItems = copy;
             notifyItemRangeChanged(0, newCount);
-        } else {
-            // Size changed → fall back to full notify but only once
-            notifyDataSetChanged();
+            return;
         }
-    }
 
+        // ── Size changed. Try a path-keyed diff to emit precise inserts/removes. ──
+        java.util.Set<String> oldPaths = new java.util.HashSet<>();
+        for (GalleryActivity.MediaItem it : oldItems) oldPaths.add(it.path);
+
+        java.util.Set<String> newPaths = new java.util.HashSet<>();
+        for (GalleryActivity.MediaItem it : copy) newPaths.add(it.path);
+
+        // If exactly one item was added and none removed → notifyItemInserted
+        if (newCount == oldCount + 1) {
+            int insertAt = -1;
+            for (int i = 0; i < newCount; i++) {
+                if (!oldPaths.contains(copy.get(i).path)) { insertAt = i; break; }
+            }
+            if (insertAt >= 0) {
+                this.mediaItems = copy;
+                notifyItemInserted(insertAt);
+                return;
+            }
+        }
+
+        // If exactly one item was removed and none added → notifyItemRemoved
+        if (newCount == oldCount - 1) {
+            int removeAt = -1;
+            for (int i = 0; i < oldCount; i++) {
+                if (!newPaths.contains(oldItems.get(i).path)) { removeAt = i; break; }
+            }
+            if (removeAt >= 0) {
+                this.mediaItems = copy;
+                notifyItemRemoved(removeAt);
+                return;
+            }
+        }
+
+        // Fallback: multi-change → full dataset notify (single, no loops)
+        this.mediaItems = copy;
+        notifyDataSetChanged();
+    }
     public void updateSelectedItems(List<String> newSelectedItems) {
         this.selectedItems = newSelectedItems;
         for (int i = 0; i < mediaItems.size(); i++) {
