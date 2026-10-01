@@ -29,7 +29,6 @@ import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.RelativeLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -87,12 +86,9 @@ public class GalleryActivity extends AppCompatActivity {
     private RecyclerView albumRecycler;
     private GalleryAdapter adapter;
 
-    // ═══ Volume / Brightness HUD ═══
-    private LinearLayout mediaHudContainer;
-    private ImageView mediaHudIcon;
-    private TextView mediaHudLabel;
-    private TextView mediaHudValue;
-    private ProgressBar mediaHudBar;
+    // ═══ Volume / Brightness HUD — plain percentage only ═══
+    private TextView mediaHudVolume;
+    private TextView mediaHudBrightness;
     private Runnable mediaHudHideRunnable;
     private static final long MEDIA_HUD_VISIBLE_MS = 800L;
 
@@ -322,11 +318,9 @@ public class GalleryActivity extends AppCompatActivity {
         btnSkipBackwardOverlay = findViewById(R.id.btnSkipBackward);
         videoTimeCurrent = findViewById(R.id.videoTimeCurrent);
         videoTimeTotal = findViewById(R.id.videoTimeTotal);
-        mediaHudContainer = findViewById(R.id.mediaHudContainer);
-        mediaHudIcon = findViewById(R.id.mediaHudIcon);
-        mediaHudLabel = findViewById(R.id.mediaHudLabel);
-        mediaHudValue = findViewById(R.id.mediaHudValue);
-        mediaHudBar = findViewById(R.id.mediaHudBar);        videoSeekBar = findViewById(R.id.videoSeekBar);
+        mediaHudVolume = findViewById(R.id.mediaHudVolume);
+        mediaHudBrightness = findViewById(R.id.mediaHudBrightness);
+        videoSeekBar = findViewById(R.id.videoSeekBar);
         videoControlsOverlay = findViewById(R.id.videoControlsOverlay);
         fullscreenBottomBar = findViewById(R.id.fullscreenBottomBar);
         fsBtnBin = findViewById(R.id.fsBtnBin);
@@ -508,8 +502,6 @@ public class GalleryActivity extends AppCompatActivity {
                         setFullscreenChromeVisible(true);
                         overlayControlsVisible = true;
                     }
-                    // ★ Do NOT call showAllControlsWithTimeout() here — the
-                    //    initial chrome is shown by openFullscreenViewer().
                 }
             }
         });
@@ -583,52 +575,39 @@ public class GalleryActivity extends AppCompatActivity {
         if (topNavBar != null) updateTopNavBar();
     }
 
-
     // ═════════════════════════════════════════════════════════════
-//  Volume / Brightness HUD
-// ═════════════════════════════════════════════════════════════
+    //  Volume / Brightness HUD — transparent percentage only
+    // ═════════════════════════════════════════════════════════════
 
     private void showMediaHud(boolean isVolume, int percent) {
-        if (mediaHudContainer == null) return;
+        if (mediaHudVolume == null || mediaHudBrightness == null) return;
 
-        // Label + icon
-        if (isVolume) {
-            mediaHudLabel.setText("Volume");
-            if (percent == 0) {
-                mediaHudIcon.setImageResource(android.R.drawable.ic_lock_silent_mode);
-            } else {
-                mediaHudIcon.setImageResource(android.R.drawable.ic_lock_silent_mode_off);
-            }
-        } else {
-            mediaHudLabel.setText("Brightness");
-            mediaHudIcon.setImageResource(android.R.drawable.ic_menu_view);
-        }
+        TextView target = isVolume ? mediaHudVolume : mediaHudBrightness;
+        TextView other  = isVolume ? mediaHudBrightness : mediaHudVolume;
 
-        // Value text + bar
-        mediaHudValue.setText(percent + "%");
-        if (mediaHudBar != null) {
-            mediaHudBar.setProgress(percent);
-        }
+        // Hide the opposite side's value — only one at a time.
+        other.setVisibility(View.GONE);
 
-        // Show the HUD
-        mediaHudContainer.setVisibility(View.VISIBLE);
-        mediaHudContainer.bringToFront();
+        // Update and show the target with just the percentage.
+        target.setText(percent + "%");
+        target.setVisibility(View.VISIBLE);
+        target.bringToFront();
 
-        // Schedule auto-hide
+        // Schedule auto-hide.
         videoHandler.removeCallbacks(mediaHudHideRunnable);
         mediaHudHideRunnable = () -> {
-            if (mediaHudContainer != null) {
-                mediaHudContainer.setVisibility(View.GONE);
-            }
+            if (mediaHudVolume != null) mediaHudVolume.setVisibility(View.GONE);
+            if (mediaHudBrightness != null) mediaHudBrightness.setVisibility(View.GONE);
         };
         videoHandler.postDelayed(mediaHudHideRunnable, MEDIA_HUD_VISIBLE_MS);
     }
 
     private void hideMediaHudImmediately() {
-        if (mediaHudContainer == null) return;
-        videoHandler.removeCallbacks(mediaHudHideRunnable);
-        mediaHudContainer.setVisibility(View.GONE);
+        if (mediaHudVolume != null) mediaHudVolume.setVisibility(View.GONE);
+        if (mediaHudBrightness != null) mediaHudBrightness.setVisibility(View.GONE);
+        if (videoHandler != null) videoHandler.removeCallbacks(mediaHudHideRunnable);
     }
+
     // ===================== EFFECTIVE SEEK POSITION =====================
 
     private int getEffectivePositionMs() {
@@ -657,8 +636,6 @@ public class GalleryActivity extends AppCompatActivity {
             videoSeekBar.setProgress((int) ((target / (float) dur) * 1000));
 
         videoHandler.postDelayed(() -> overlayPendingSeekMs = -1, 350);
-        // ★ Do NOT call showAllControlsWithTimeout() here — skip gestures
-        //    must not pop the chrome open.
     }
 
     private void resetPlaybackSpeed() {
@@ -961,9 +938,6 @@ public class GalleryActivity extends AppCompatActivity {
                 btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
             startOverlayProgressUpdate();
         }
-        // ★ Deliberately do NOT touch the chrome here.
-        //    The chrome (title bar, seek bar, buttons, bottom action bar)
-        //    keeps whatever visibility it had before the double-tap.
     }
 
     private void startOverlayProgressUpdate() {
@@ -2704,7 +2678,6 @@ public class GalleryActivity extends AppCompatActivity {
                         } catch (Exception ignored) {}
 
                         if (changed) {
-                            // ★ Update HUD with the current volume
                             int percent = maxVolume > 0
                                     ? (int) Math.round(
                                     (appliedVolume[0] * 100.0) / maxVolume)
@@ -2735,7 +2708,6 @@ public class GalleryActivity extends AppCompatActivity {
                                 getWindow().setAttributes(lp);
                             } catch (Exception ignored) {}
 
-                            // ★ Update HUD with the current brightness
                             int percent = (int) Math.round(appliedBrightness[0] * 100);
                             percent = Math.max(0, Math.min(100, percent));
                             showMediaHud(false, percent);
@@ -2783,6 +2755,7 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenOverlay.setOnTouchListener(handler);
         this.volumeBrightnessHandler = handler;
     }
+
     public static class MediaItem {
         public static final int TYPE_IMAGE = 0;
         public static final int TYPE_VIDEO = 1;
