@@ -385,16 +385,13 @@ public class GalleryActivity extends AppCompatActivity {
 
                     @Override
                     public boolean onSingleTapUp(MotionEvent e) {
+                        // Fires immediately on finger-up — no 300ms delay.
                         onFullscreenTap();
                         return true;
                     }
                 });
 
-        fullscreenOverlay.setOnTouchListener((v, event) -> {
-            overlayTapDetector.onTouchEvent(event);
-            return false;
-        });
-
+// Video-specific gestures: double-tap and long-press.
         overlayVideoGestureDetector = new GestureDetector(this,
                 new GestureDetector.SimpleOnGestureListener() {
 
@@ -403,7 +400,9 @@ public class GalleryActivity extends AppCompatActivity {
 
                     @Override
                     public boolean onSingleTapConfirmed(MotionEvent e) {
-                        onFullscreenTap();
+                        // Video surface itself does NOT toggle chrome here —
+                        // the volume/brightness handler detects a "real tap"
+                        // (no movement) and calls onFullscreenTap().
                         return true;
                     }
 
@@ -432,7 +431,6 @@ public class GalleryActivity extends AppCompatActivity {
                     public void onLongPress(MotionEvent e) {
                         if (!currentFullscreenPageIsVideo || currentFullscreenVideo == null) return;
                         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
-                        // Only boost speed while the video is playing.
                         try {
                             if (!currentFullscreenVideo.isPlaying()) return;
                         } catch (Exception ex) { return; }
@@ -447,28 +445,28 @@ public class GalleryActivity extends AppCompatActivity {
                             }
                             params.setSpeed(LONG_PRESS_SPEED);
                             currentFullscreenVideo.setPlaybackParams(params);
-                            // No toast — per your request.
                         } catch (Exception ex) {
                             Log.w(LOG_TAG, "long-press speed failed", ex);
                         }
                     }
                 });
 
+// Overlay surface gets its own listener (no-op tap; volume/brightness
+// handler below replaces it once installed).
+        fullscreenOverlay.setOnTouchListener((v, event) -> false);
+
         setupOverlayVideoControls();
 
-        // ── Fullscreen adapter ──
+// ── Fullscreen adapter ──
         fullscreenAdapter = new FullscreenAdapter(fullscreenMediaPaths, this);
         log("fullscreenAdapter created: " + Integer.toHexString(System.identityHashCode(fullscreenAdapter)));
         fullscreenAdapter.setTapCallback(this::onFullscreenTap);
 
-        // ★ NEW: forward video touches to the gesture detector
+// Forward video touches through BOTH detectors + the volume/brightness handler.
         fullscreenAdapter.setVideoTouchForwarder(event -> {
-            // Gesture detector: single-tap, double-tap, long-press
             if (overlayVideoGestureDetector != null) {
                 overlayVideoGestureDetector.onTouchEvent(event);
             }
-            // Volume / brightness: route through the shared handler.
-            // We need a fake "source view" so the handler can read its width.
             if (volumeBrightnessHandler != null) {
                 volumeBrightnessHandler.onTouch(fullscreenOverlay, event);
             }
@@ -477,7 +475,8 @@ public class GalleryActivity extends AppCompatActivity {
                 resetPlaybackSpeed();
             }
         });
-        setupVolumeAndBrightnessGestures();
+
+// Install the volume/brightness handler (it also drives single-tap chrome toggle).
         setupVolumeAndBrightnessGestures();
 
         fullscreenAdapter.setPageTypeCallback(new FullscreenAdapter.PageTypeCallback() {
@@ -746,7 +745,6 @@ public class GalleryActivity extends AppCompatActivity {
             videoControlContainer.setVisibility(View.VISIBLE);
             overlayControlsVisible = true;
         } else {
-            // Not a video → do not show the video controls row.
             if (videoControlContainer != null) {
                 videoControlContainer.setVisibility(View.GONE);
             }
@@ -756,6 +754,7 @@ public class GalleryActivity extends AppCompatActivity {
         overlayHideControlsRunnable = () -> {
             if (!userIsSwiping) hideAllControls();
         };
+        // Reset the hide timer to start AFTER the tap completes.
         videoHandler.postDelayed(overlayHideControlsRunnable, OVERLAY_CONTROLS_TIMEOUT);
     }
     private void hideAllControls() {
@@ -1229,20 +1228,14 @@ public class GalleryActivity extends AppCompatActivity {
         }
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
     }
-
     /**
-     * Right-half vertical swipe  → adjust system music volume
-     * Left-half  vertical swipe  → adjust screen brightness
-     * Runs on the fullscreen overlay itself, so it works on both
-     * images and videos.
-     */
-    /**
-     * Right-half vertical swipe  → adjust system music volume
-     * Left-half  vertical swipe  → adjust screen brightness
+     * Right-half vertical swipe  → system music volume
+     * Left-half  vertical swipe  → screen brightness
      *
-     * Attached to the fullscreen overlay. Because the CustomVideoView
-     * sits on top of the overlay when a video plays, we ALSO forward
-     * video touches into this same handler (see onVideoSwipe()).
+     * Also detects "real taps" (no movement) to toggle the chrome.
+     *
+     * When the user reverses swipe direction, we re-anchor the baseline
+     * so both directions work smoothly — even after hitting an edge.
      */
     private void setupVolumeAndBrightnessGestures() {
         if (fullscreenOverlay == null) return;
@@ -1254,34 +1247,46 @@ public class GalleryActivity extends AppCompatActivity {
                 ? audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
                 : 15;
 
-        // State shared between the overlay and the video view
+        // Gesture state
         final float[] gestureStartY = {0f};
+        final float[] gestureStartX = {0f};
         final int[]   gestureStartVolume = {0};
         final float[] gestureStartBrightness = {0f};
         final boolean[] isVolumeGesture = {false};
         final boolean[] isBrightnessGesture = {false};
+        final boolean[] fingerMoved = {false};
 
-        // Shared handler — used by both the overlay and the video view.
+        // After this many pixels of movement, we commit to being a
+        // volume/brightness gesture and never treat the touch as a tap.
+        final int MOVE_THRESHOLD_PX = 30;
+
         final android.view.View.OnTouchListener handler = (v, event) -> {
 
-            // Keep the chrome-toggle tap working
-            if (overlayTapDetector != null) {
-                overlayTapDetector.onTouchEvent(event);
-            }
-
             switch (event.getActionMasked()) {
+
                 case MotionEvent.ACTION_DOWN: {
                     gestureStartY[0] = event.getY();
+                    gestureStartX[0] = event.getX();
                     isVolumeGesture[0] = false;
                     isBrightnessGesture[0] = false;
+                    fingerMoved[0] = false;
                     break;
                 }
-                case MotionEvent.ACTION_MOVE: {
-                    float dy = gestureStartY[0] - event.getY(); // up = positive
-                    if (Math.abs(dy) < 40) break;               // dead zone
 
+                case MotionEvent.ACTION_MOVE: {
+                    float dyTotal = Math.abs(event.getY() - gestureStartY[0]);
+                    float dxTotal = Math.abs(event.getX() - gestureStartX[0]);
+
+                    // Commit to gesture mode once movement exceeds threshold.
+                    if (!fingerMoved[0]
+                            && (dyTotal > MOVE_THRESHOLD_PX || dxTotal > MOVE_THRESHOLD_PX)) {
+                        fingerMoved[0] = true;
+                    }
+                    if (!fingerMoved[0]) break;
+
+                    float dy = event.getY() - gestureStartY[0]; // positive = finger down
                     float screenW = v.getWidth();
-                    boolean onRightSide = event.getX() >= screenW / 2f;
+                    boolean onRightSide = gestureStartX[0] >= screenW / 2f;
 
                     if (onRightSide) {
                         // ── VOLUME ──
@@ -1289,20 +1294,58 @@ public class GalleryActivity extends AppCompatActivity {
                             isVolumeGesture[0] = true;
                             isBrightnessGesture[0] = false;
                             gestureStartY[0] = event.getY();
-                            if (audioManager != null) {
-                                gestureStartVolume[0] = audioManager.getStreamVolume(
-                                        android.media.AudioManager.STREAM_MUSIC);
+                            gestureStartVolume[0] = audioManager != null
+                                    ? audioManager.getStreamVolume(
+                                    android.media.AudioManager.STREAM_MUSIC)
+                                    : 0;
+                            break;
+                        }
+                        if (audioManager == null) break;
+
+                        // A downward finger = volume down, upward = volume up.
+                        // Since we track from gestureStartY, we want the delta
+                        // relative to where the gesture re-anchored.
+                        float deltaY = gestureStartY[0] - event.getY(); // up = positive
+                        float fraction = deltaY / (v.getHeight() * 0.6f);
+                        int target = Math.round(gestureStartVolume[0] + fraction * maxVolume);
+                        target = Math.max(0, Math.min(maxVolume, target));
+
+                        int currentVol = audioManager.getStreamVolume(
+                                android.media.AudioManager.STREAM_MUSIC);
+
+                        // ★ Interactive fix: if the user reverses direction and
+                        //    we're pinned at an edge, re-anchor to the current
+                        //    volume so the next movement immediately takes effect.
+                        if (target == currentVol) {
+                            boolean pushingUp = fraction > 0;
+                            boolean atEdge = (pushingUp && currentVol >= maxVolume)
+                                    || (!pushingUp && currentVol <= 0);
+                            if (atEdge) {
+                                // Re-anchor — user must "unstick" from the edge.
+                                gestureStartY[0] = event.getY();
+                                gestureStartVolume[0] = currentVol;
+                                break;
                             }
+                            // Otherwise it's just a small in-range nudge; still
+                            // apply (harmless) but re-anchor whenever the
+                            // computed target equals current — keeps things
+                            // responsive on the very next pixel.
+                            if (Math.abs(deltaY) < 8) break;
+                            gestureStartY[0] = event.getY();
+                            gestureStartVolume[0] = currentVol;
+                            break;
                         }
-                        if (audioManager != null) {
-                            float fraction = dy / (v.getHeight() * 0.6f);
-                            int target = Math.round(gestureStartVolume[0]
-                                    + fraction * maxVolume);
-                            target = Math.max(0, Math.min(maxVolume, target));
-                            audioManager.setStreamVolume(
-                                    android.media.AudioManager.STREAM_MUSIC,
-                                    target, 0);
-                        }
+
+                        audioManager.setStreamVolume(
+                                android.media.AudioManager.STREAM_MUSIC,
+                                target, 0);
+
+                        // ★ Re-anchor every time we successfully apply a change.
+                        //    This makes the gesture fully responsive and
+                        //    unaffected by edge saturation.
+                        gestureStartY[0] = event.getY();
+                        gestureStartVolume[0] = target;
+
                     } else {
                         // ── BRIGHTNESS ──
                         if (!isBrightnessGesture[0]) {
@@ -1312,20 +1355,43 @@ public class GalleryActivity extends AppCompatActivity {
                             WindowManager.LayoutParams lp = getWindow().getAttributes();
                             gestureStartBrightness[0] =
                                     lp.screenBrightness < 0 ? 0.5f : lp.screenBrightness;
+                            break;
                         }
-                        float fraction = dy / (v.getHeight() * 0.6f);
+
+                        float deltaY = gestureStartY[0] - event.getY();
+                        float fraction = deltaY / (v.getHeight() * 0.6f);
                         float target = gestureStartBrightness[0] + fraction;
                         target = Math.max(0.02f, Math.min(1f, target));
+
                         WindowManager.LayoutParams lp = getWindow().getAttributes();
+                        float current = lp.screenBrightness < 0 ? 0.5f : lp.screenBrightness;
+
+                        if (Math.abs(target - current) < 0.005f) {
+                            // At/near saturation — re-anchor so reversing works.
+                            gestureStartY[0] = event.getY();
+                            gestureStartBrightness[0] = current;
+                            break;
+                        }
+
                         lp.screenBrightness = target;
                         getWindow().setAttributes(lp);
+
+                        // ★ Re-anchor on every successful change.
+                        gestureStartY[0] = event.getY();
+                        gestureStartBrightness[0] = target;
                     }
                     break;
                 }
+
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL: {
+                    // If the finger never moved meaningfully → it was a tap.
+                    if (!fingerMoved[0]) {
+                        onFullscreenTap();
+                    }
                     isVolumeGesture[0] = false;
                     isBrightnessGesture[0] = false;
+                    fingerMoved[0] = false;
                     break;
                 }
             }
@@ -1333,8 +1399,6 @@ public class GalleryActivity extends AppCompatActivity {
         };
 
         fullscreenOverlay.setOnTouchListener(handler);
-
-        // ★ Store it so the video view can also route its touches through it.
         this.volumeBrightnessHandler = handler;
     }
 
