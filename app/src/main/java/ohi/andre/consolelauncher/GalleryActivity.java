@@ -1,7 +1,6 @@
 package ohi.andre.consolelauncher;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
@@ -10,6 +9,7 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
+import android.media.AudioManager;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -150,7 +150,6 @@ public class GalleryActivity extends AppCompatActivity {
     private Runnable overlayProgressRunnable;
     private GestureDetector overlayTapDetector;
 
-    // ★ NEW: gesture fields for double-tap and long-press
     private GestureDetector overlayVideoGestureDetector;
     private android.view.View.OnTouchListener volumeBrightnessHandler;
     private float playbackSpeedBeforeLongPress = 1.0f;
@@ -334,10 +333,7 @@ public class GalleryActivity extends AppCompatActivity {
             if (pos >= 0 && pos < fullscreenMediaPaths.size()) {
                 String path = fullscreenMediaPaths.get(pos);
                 for (MediaItem item : mediaItems) {
-                    if (item.path.equals(path)) {
-                        moveToTrash(item);
-                        break;
-                    }
+                    if (item.path.equals(path)) { moveToTrash(item); break; }
                 }
                 closeFullscreenViewer();
                 scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
@@ -377,32 +373,23 @@ public class GalleryActivity extends AppCompatActivity {
             }
         });
 
-        // ── Tap detector for fullscreen overlay (single tap toggles chrome) ──
+        // ── Gesture detectors ──
         overlayTapDetector = new GestureDetector(this,
                 new GestureDetector.SimpleOnGestureListener() {
-                    @Override
-                    public boolean onDown(MotionEvent e) { return true; }
-
-                    @Override
-                    public boolean onSingleTapUp(MotionEvent e) {
-                        // Fires immediately on finger-up — no 300ms delay.
+                    @Override public boolean onDown(MotionEvent e) { return true; }
+                    @Override public boolean onSingleTapUp(MotionEvent e) {
                         onFullscreenTap();
                         return true;
                     }
                 });
 
-// Video-specific gestures: double-tap and long-press.
         overlayVideoGestureDetector = new GestureDetector(this,
                 new GestureDetector.SimpleOnGestureListener() {
 
-                    @Override
-                    public boolean onDown(MotionEvent e) { return true; }
+                    @Override public boolean onDown(MotionEvent e) { return true; }
 
                     @Override
                     public boolean onSingleTapConfirmed(MotionEvent e) {
-                        // Video surface itself does NOT toggle chrome here —
-                        // the volume/brightness handler detects a "real tap"
-                        // (no movement) and calls onFullscreenTap().
                         return true;
                     }
 
@@ -451,18 +438,13 @@ public class GalleryActivity extends AppCompatActivity {
                     }
                 });
 
-// Overlay surface gets its own listener (no-op tap; volume/brightness
-// handler below replaces it once installed).
-        fullscreenOverlay.setOnTouchListener((v, event) -> false);
-
         setupOverlayVideoControls();
 
-// ── Fullscreen adapter ──
+        // ── Fullscreen adapter ──
         fullscreenAdapter = new FullscreenAdapter(fullscreenMediaPaths, this);
         log("fullscreenAdapter created: " + Integer.toHexString(System.identityHashCode(fullscreenAdapter)));
         fullscreenAdapter.setTapCallback(this::onFullscreenTap);
 
-// Forward video touches through BOTH detectors + the volume/brightness handler.
         fullscreenAdapter.setVideoTouchForwarder(event -> {
             if (overlayVideoGestureDetector != null) {
                 overlayVideoGestureDetector.onTouchEvent(event);
@@ -476,14 +458,11 @@ public class GalleryActivity extends AppCompatActivity {
             }
         });
 
-// Install the volume/brightness handler (it also drives single-tap chrome toggle).
         setupVolumeAndBrightnessGestures();
 
         fullscreenAdapter.setPageTypeCallback(new FullscreenAdapter.PageTypeCallback() {
             @Override
             public void onImageVisible(int position) {
-                log("★★ onImageVisible pos=" + position
-                        + " current=" + fullscreenCurrentPosition);
                 if (position != fullscreenCurrentPosition) return;
 
                 currentFullscreenPageIsVideo = false;
@@ -498,26 +477,17 @@ public class GalleryActivity extends AppCompatActivity {
 
             @Override
             public void onVideoVisible(CustomVideoView videoView, int position) {
-                log("★★ onVideoVisible pos=" + position
-                        + " current=" + fullscreenCurrentPosition
-                        + " videoView=" + Integer.toHexString(System.identityHashCode(videoView)));
-
                 if (position == fullscreenCurrentPosition) {
                     currentFullscreenPageIsVideo = true;
                     currentFullscreenVideo = videoView;
                     currentFullscreenVideoPosition = position;
                     isOverlayVideoPlaying = true;
                     overlayPendingSeekMs = -1;
-                    try {
-                        videoView.start();
-                    } catch (Exception e) {
-                        Log.e(LOG_TAG, src() + " videoView.start() threw", e);
-                    }
+                    try { videoView.start(); } catch (Exception ignored) {}
                     updateOverlayTitle();
                     updateOverlaySeekBar();
                     startOverlayProgressUpdate();
 
-                    // ★ Show the video controls immediately — do not wait for a tap.
                     if (!userIsSwiping) {
                         if (videoControlContainer != null) {
                             videoControlContainer.setVisibility(View.VISIBLE);
@@ -541,8 +511,6 @@ public class GalleryActivity extends AppCompatActivity {
 
             @Override
             public void onPageSelected(int position) {
-                log("onPageSelected: " + position + " (was " + fullscreenCurrentPosition + ")");
-
                 if (currentFullscreenVideo != null
                         && currentFullscreenVideoPosition != position) {
                     try { currentFullscreenVideo.pause(); } catch (Exception ignored) {}
@@ -553,7 +521,7 @@ public class GalleryActivity extends AppCompatActivity {
                     videoHandler.removeCallbacks(overlayProgressRunnable);
                 }
 
-                overlayPendingSeekMs = -1;   // ★ clear stale seek
+                overlayPendingSeekMs = -1;
                 fullscreenCurrentPosition = position;
                 fullscreenCurrentIndex = position;
 
@@ -562,7 +530,6 @@ public class GalleryActivity extends AppCompatActivity {
                 if (position >= 0 && position < fullscreenMediaPaths.size()) {
                     String path = fullscreenMediaPaths.get(position);
                     if (isVideoPath(path)) {
-                        log("  new page is video — starting");
                         findAndStartVideoForPosition(position);
                     }
                 }
@@ -607,11 +574,8 @@ public class GalleryActivity extends AppCompatActivity {
     private int getEffectivePositionMs() {
         if (currentFullscreenVideo == null) return 0;
         if (overlayPendingSeekMs >= 0) return overlayPendingSeekMs;
-        try {
-            return currentFullscreenVideo.getCurrentPosition();
-        } catch (Exception e) {
-            return 0;
-        }
+        try { return currentFullscreenVideo.getCurrentPosition(); }
+        catch (Exception e) { return 0; }
     }
 
     private void skipByMs(int deltaMs) {
@@ -628,19 +592,17 @@ public class GalleryActivity extends AppCompatActivity {
         try { currentFullscreenVideo.seekTo(target); }
         catch (Exception ignored) {}
 
-        if (videoTimeCurrent != null)
-            videoTimeCurrent.setText(formatTime(target));
+        if (videoTimeCurrent != null) videoTimeCurrent.setText(formatTime(target));
         if (videoSeekBar != null)
             videoSeekBar.setProgress((int) ((target / (float) dur) * 1000));
 
         videoHandler.postDelayed(() -> overlayPendingSeekMs = -1, 350);
         showAllControlsWithTimeout();
     }
+
     private void resetPlaybackSpeed() {
         if (currentFullscreenVideo == null) return;
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
-        // Only reset if the player is still active — setPlaybackParams on a
-        // paused MediaPlayer can resume it on some ROMs.
         if (!currentFullscreenVideo.isPlaying()) {
             playbackSpeedBeforeLongPress = 1.0f;
             return;
@@ -723,7 +685,6 @@ public class GalleryActivity extends AppCompatActivity {
             if (item.path.equals(path)) { fav = item.isFavorite; break; }
         }
         if (!fav && loadFavoritePaths().contains(path)) fav = true;
-
         applyStarIcon(fsBtnFavoriteIcon, fav);
         applyStarIcon(btnFavoriteOverlay, fav);
     }
@@ -732,11 +693,8 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void onFullscreenTap() {
         boolean newVisible = !fullscreenChromeVisible;
-        if (newVisible) {
-            showAllControlsWithTimeout();
-        } else {
-            hideAllControls();
-        }
+        if (newVisible) showAllControlsWithTimeout();
+        else hideAllControls();
     }
 
     private void showAllControlsWithTimeout() {
@@ -754,9 +712,9 @@ public class GalleryActivity extends AppCompatActivity {
         overlayHideControlsRunnable = () -> {
             if (!userIsSwiping) hideAllControls();
         };
-        // Reset the hide timer to start AFTER the tap completes.
         videoHandler.postDelayed(overlayHideControlsRunnable, OVERLAY_CONTROLS_TIMEOUT);
     }
+
     private void hideAllControls() {
         setFullscreenChromeVisible(false);
         if (videoControlContainer != null)
@@ -784,15 +742,8 @@ public class GalleryActivity extends AppCompatActivity {
 
     private boolean renameFileRobust(File src, File dst) {
         if (src == null || dst == null) return false;
-        if (!src.exists()) {
-            Log.e(LOG_TAG, "renameFileRobust: src does not exist: " + src);
-            return false;
-        }
-        try {
-            if (src.renameTo(dst)) return true;
-        } catch (Exception e) {
-            Log.w(LOG_TAG, "renameFileRobust: renameTo threw", e);
-        }
+        if (!src.exists()) return false;
+        try { if (src.renameTo(dst)) return true; } catch (Exception ignored) {}
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
                 java.nio.file.Files.move(
@@ -800,9 +751,7 @@ public class GalleryActivity extends AppCompatActivity {
                         dst.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 return true;
-            } catch (Exception e) {
-                Log.e(LOG_TAG, "renameFileRobust: Files.move failed", e);
-            }
+            } catch (Exception ignored) {}
         }
         return false;
     }
@@ -821,9 +770,8 @@ public class GalleryActivity extends AppCompatActivity {
                     @Override
                     public void onMediaScannerConnected() {
                         for (String p : toScan) {
-                            try {
-                                connHolder[0].scanFile(p, null);
-                            } catch (Exception e) {
+                            try { connHolder[0].scanFile(p, null); }
+                            catch (Exception e) {
                                 if (remaining.decrementAndGet() == 0) finish();
                             }
                         }
@@ -876,8 +824,7 @@ public class GalleryActivity extends AppCompatActivity {
                     boolean nowFav = toggleFavoriteForPath(path);
                     updateFullscreenFavoriteIcon(path);
                     applyFilter();
-                    Toast.makeText(this,
-                            nowFav ? "⭐ Added" : "Removed",
+                    Toast.makeText(this, nowFav ? "⭐ Added" : "Removed",
                             Toast.LENGTH_SHORT).show();
                 }
             });
@@ -972,7 +919,7 @@ public class GalleryActivity extends AppCompatActivity {
     private void updateOverlaySeekBar() {
         if (currentFullscreenVideo == null) return;
         try {
-            int cur = getEffectivePositionMs();   // ★ use effective position
+            int cur = getEffectivePositionMs();
             int dur = currentFullscreenVideo.getDuration();
             if (dur > 0) {
                 if (videoTimeCurrent != null) videoTimeCurrent.setText(formatTime(cur));
@@ -1025,7 +972,6 @@ public class GalleryActivity extends AppCompatActivity {
                                 ? CustomVideoView.Fit.LARGER
                                 : CustomVideoView.Fit.SMALLER);
 
-                        // ★ Auto-loop when the video reaches the end
                         vv.setOnCompletionListener(mp -> {
                             try {
                                 mp.seekTo(0);
@@ -1087,6 +1033,7 @@ public class GalleryActivity extends AppCompatActivity {
             Log.e(LOG_TAG, src() + " findAndStartVideo threw", e);
         }
     }
+
     // ===================== ORIENTATION =====================
 
     private void toggleOrientation() {
@@ -1150,7 +1097,9 @@ public class GalleryActivity extends AppCompatActivity {
     // ===================== FULLSCREEN OPEN/CLOSE =====================
 
     private void openFullscreenViewer(String path) {
-        log("openFullscreenViewer: " + path);
+        if (fullscreenViewPager != null) {
+            fullscreenViewPager.setUserInputEnabled(true);
+        }
 
         fullscreenMediaPaths.clear();
         int currentIndex = 0;
@@ -1189,12 +1138,8 @@ public class GalleryActivity extends AppCompatActivity {
 
         updateFullscreenInfo(currentIndex);
 
-        // ★ Always show chrome first. Video controls row will appear
-        //    automatically the moment onVideoVisible fires.
         setFullscreenChromeVisible(true);
         if (videoControlContainer != null) {
-            // Pre-show if this page is a video so the row is visible from
-            // the very first frame.
             String initialPath = fullscreenMediaPaths.get(currentIndex);
             if (isVideoPath(initialPath)) {
                 videoControlContainer.setVisibility(View.VISIBLE);
@@ -1215,199 +1160,9 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
-    private void showAllControls() {
-        setFullscreenChromeVisible(true);
-        if (currentFullscreenPageIsVideo && videoControlContainer != null) {
-            videoControlContainer.setVisibility(View.VISIBLE);
-            overlayControlsVisible = true;
-        } else {
-            if (videoControlContainer != null) {
-                videoControlContainer.setVisibility(View.GONE);
-            }
-            overlayControlsVisible = false;
-        }
-        videoHandler.removeCallbacks(overlayHideControlsRunnable);
-    }
-    /**
-     * Right-half vertical swipe  → system music volume
-     * Left-half  vertical swipe  → screen brightness
-     *
-     * Also detects "real taps" (no movement) to toggle the chrome.
-     *
-     * When the user reverses swipe direction, we re-anchor the baseline
-     * so both directions work smoothly — even after hitting an edge.
-     */
-    private void setupVolumeAndBrightnessGestures() {
-        if (fullscreenOverlay == null) return;
-
-        final android.media.AudioManager audioManager =
-                (android.media.AudioManager) getSystemService(Context.AUDIO_SERVICE);
-
-        final int maxVolume = audioManager != null
-                ? audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-                : 15;
-
-        // Gesture state
-        final float[] gestureStartY = {0f};
-        final float[] gestureStartX = {0f};
-        final int[]   gestureStartVolume = {0};
-        final float[] gestureStartBrightness = {0f};
-        final boolean[] isVolumeGesture = {false};
-        final boolean[] isBrightnessGesture = {false};
-        final boolean[] fingerMoved = {false};
-
-        // After this many pixels of movement, we commit to being a
-        // volume/brightness gesture and never treat the touch as a tap.
-        final int MOVE_THRESHOLD_PX = 30;
-
-        final android.view.View.OnTouchListener handler = (v, event) -> {
-
-            switch (event.getActionMasked()) {
-
-                case MotionEvent.ACTION_DOWN: {
-                    gestureStartY[0] = event.getY();
-                    gestureStartX[0] = event.getX();
-                    isVolumeGesture[0] = false;
-                    isBrightnessGesture[0] = false;
-                    fingerMoved[0] = false;
-                    break;
-                }
-
-                case MotionEvent.ACTION_MOVE: {
-                    float dyTotal = Math.abs(event.getY() - gestureStartY[0]);
-                    float dxTotal = Math.abs(event.getX() - gestureStartX[0]);
-
-                    // Commit to gesture mode once movement exceeds threshold.
-                    if (!fingerMoved[0]
-                            && (dyTotal > MOVE_THRESHOLD_PX || dxTotal > MOVE_THRESHOLD_PX)) {
-                        fingerMoved[0] = true;
-                    }
-                    if (!fingerMoved[0]) break;
-
-                    float dy = event.getY() - gestureStartY[0]; // positive = finger down
-                    float screenW = v.getWidth();
-                    boolean onRightSide = gestureStartX[0] >= screenW / 2f;
-
-                    if (onRightSide) {
-                        // ── VOLUME ──
-                        if (!isVolumeGesture[0]) {
-                            isVolumeGesture[0] = true;
-                            isBrightnessGesture[0] = false;
-                            gestureStartY[0] = event.getY();
-                            gestureStartVolume[0] = audioManager != null
-                                    ? audioManager.getStreamVolume(
-                                    android.media.AudioManager.STREAM_MUSIC)
-                                    : 0;
-                            break;
-                        }
-                        if (audioManager == null) break;
-
-                        // A downward finger = volume down, upward = volume up.
-                        // Since we track from gestureStartY, we want the delta
-                        // relative to where the gesture re-anchored.
-                        float deltaY = gestureStartY[0] - event.getY(); // up = positive
-                        float fraction = deltaY / (v.getHeight() * 0.6f);
-                        int target = Math.round(gestureStartVolume[0] + fraction * maxVolume);
-                        target = Math.max(0, Math.min(maxVolume, target));
-
-                        int currentVol = audioManager.getStreamVolume(
-                                android.media.AudioManager.STREAM_MUSIC);
-
-                        // ★ Interactive fix: if the user reverses direction and
-                        //    we're pinned at an edge, re-anchor to the current
-                        //    volume so the next movement immediately takes effect.
-                        if (target == currentVol) {
-                            boolean pushingUp = fraction > 0;
-                            boolean atEdge = (pushingUp && currentVol >= maxVolume)
-                                    || (!pushingUp && currentVol <= 0);
-                            if (atEdge) {
-                                // Re-anchor — user must "unstick" from the edge.
-                                gestureStartY[0] = event.getY();
-                                gestureStartVolume[0] = currentVol;
-                                break;
-                            }
-                            // Otherwise it's just a small in-range nudge; still
-                            // apply (harmless) but re-anchor whenever the
-                            // computed target equals current — keeps things
-                            // responsive on the very next pixel.
-                            if (Math.abs(deltaY) < 8) break;
-                            gestureStartY[0] = event.getY();
-                            gestureStartVolume[0] = currentVol;
-                            break;
-                        }
-
-                        audioManager.setStreamVolume(
-                                android.media.AudioManager.STREAM_MUSIC,
-                                target, 0);
-
-                        // ★ Re-anchor every time we successfully apply a change.
-                        //    This makes the gesture fully responsive and
-                        //    unaffected by edge saturation.
-                        gestureStartY[0] = event.getY();
-                        gestureStartVolume[0] = target;
-
-                    } else {
-                        // ── BRIGHTNESS ──
-                        if (!isBrightnessGesture[0]) {
-                            isBrightnessGesture[0] = true;
-                            isVolumeGesture[0] = false;
-                            gestureStartY[0] = event.getY();
-                            WindowManager.LayoutParams lp = getWindow().getAttributes();
-                            gestureStartBrightness[0] =
-                                    lp.screenBrightness < 0 ? 0.5f : lp.screenBrightness;
-                            break;
-                        }
-
-                        float deltaY = gestureStartY[0] - event.getY();
-                        float fraction = deltaY / (v.getHeight() * 0.6f);
-                        float target = gestureStartBrightness[0] + fraction;
-                        target = Math.max(0.02f, Math.min(1f, target));
-
-                        WindowManager.LayoutParams lp = getWindow().getAttributes();
-                        float current = lp.screenBrightness < 0 ? 0.5f : lp.screenBrightness;
-
-                        if (Math.abs(target - current) < 0.005f) {
-                            // At/near saturation — re-anchor so reversing works.
-                            gestureStartY[0] = event.getY();
-                            gestureStartBrightness[0] = current;
-                            break;
-                        }
-
-                        lp.screenBrightness = target;
-                        getWindow().setAttributes(lp);
-
-                        // ★ Re-anchor on every successful change.
-                        gestureStartY[0] = event.getY();
-                        gestureStartBrightness[0] = target;
-                    }
-                    break;
-                }
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL: {
-                    // If the finger never moved meaningfully → it was a tap.
-                    if (!fingerMoved[0]) {
-                        onFullscreenTap();
-                    }
-                    isVolumeGesture[0] = false;
-                    isBrightnessGesture[0] = false;
-                    fingerMoved[0] = false;
-                    break;
-                }
-            }
-            return true;
-        };
-
-        fullscreenOverlay.setOnTouchListener(handler);
-        this.volumeBrightnessHandler = handler;
-    }
-
-    /** Reused by the video view's touch forwarder. */
-
     private void closeFullscreenViewer() {
-        log("closeFullscreenViewer");
-
         if (currentFullscreenVideo != null) {
+            fullscreenViewPager.setUserInputEnabled(true);
             try { currentFullscreenVideo.stopPlayback(); } catch (Exception ignored) {}
             currentFullscreenVideo = null;
         }
@@ -1430,9 +1185,7 @@ public class GalleryActivity extends AppCompatActivity {
                     }
                 }
             }
-        } catch (Exception e) {
-            Log.e(LOG_TAG, src() + " error stopping videos", e);
-        }
+        } catch (Exception ignored) {}
 
         if (videoControlContainer != null) videoControlContainer.setVisibility(View.GONE);
         fullscreenOverlay.setVisibility(View.GONE);
@@ -1612,12 +1365,8 @@ public class GalleryActivity extends AppCompatActivity {
                         if (path != null && new File(path).exists()) {
                             boolean isTrashed = path.contains(".trashed.");
                             String parentPath = new File(path).getParent();
-                            String albumKey;
-                            if (parentPath != null) {
-                                albumKey = getCachedCanonical(parentPath);
-                            } else {
-                                albumKey = album;
-                            }
+                            String albumKey = parentPath != null
+                                    ? getCachedCanonical(parentPath) : album;
                             newItems.add(new MediaItem(path, name, MediaItem.TYPE_IMAGE, date, isTrashed, albumKey));
                         }
                     }
@@ -1652,12 +1401,8 @@ public class GalleryActivity extends AppCompatActivity {
                         if (path != null && new File(path).exists()) {
                             boolean isTrashed = path.contains(".trashed.");
                             String parentPath = new File(path).getParent();
-                            String albumKey;
-                            if (parentPath != null) {
-                                albumKey = getCachedCanonical(parentPath);
-                            } else {
-                                albumKey = album;
-                            }
+                            String albumKey = parentPath != null
+                                    ? getCachedCanonical(parentPath) : album;
                             newItems.add(new MediaItem(path, name, MediaItem.TYPE_VIDEO, date, isTrashed, albumKey));
                         }
                     }
@@ -2508,8 +2253,7 @@ public class GalleryActivity extends AppCompatActivity {
                         File parent = new File(path).getParentFile();
                         if (parent == null) continue;
                         String parentPath = getCachedCanonical(parent.getAbsolutePath());
-                        String display = (name != null && !name.isEmpty())
-                                ? name : parent.getName();
+                        String display = (name != null && !name.isEmpty()) ? name : parent.getName();
                         if (!albums.containsKey(parentPath)) albums.put(parentPath, display);
                     }
                 }
@@ -2536,8 +2280,7 @@ public class GalleryActivity extends AppCompatActivity {
                         File parent = new File(path).getParentFile();
                         if (parent == null) continue;
                         String parentPath = getCachedCanonical(parent.getAbsolutePath());
-                        String display = (name != null && !name.isEmpty())
-                                ? name : parent.getName();
+                        String display = (name != null && !name.isEmpty()) ? name : parent.getName();
                         if (!albums.containsKey(parentPath)) albums.put(parentPath, display);
                     }
                 }
@@ -2736,7 +2479,6 @@ public class GalleryActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        log("onDestroy");
         isVideoPlaying = false;
         if (videoView != null) videoView.stopPlayback();
         if (currentFullscreenVideo != null) {
@@ -2752,7 +2494,179 @@ public class GalleryActivity extends AppCompatActivity {
         pendingMediaRefresh = null;
         executor.shutdown();
     }
+    /**
+     * Volume / brightness gesture — continuous relative model.
+     *
+     * Left half  → screen brightness
+     * Right half → system music volume
+     *
+     * While a vertical gesture is committed (finger moved past the dead
+     * zone in a mostly-vertical direction), ViewPager2's user input is
+     * disabled so that horizontal drift does NOT hijack the touch into a
+     * page swipe. Input is restored on finger-up.
+     */
+    private void setupVolumeAndBrightnessGestures() {
+        if (fullscreenOverlay == null) return;
 
+        final AudioManager audioManager =
+                (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+
+        final int maxVolume = audioManager != null
+                ? audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                : 15;
+
+        // ── Gesture state ──
+        final float[] lastY = {0f};
+        final float[] startX = {0f};
+        final float[] startY = {0f};
+        final boolean[] isVolumeSide = {false};
+        final boolean[] committed = {false};
+        final boolean[] pagerLocked = {false};
+        final int[]   lastAppliedVolume = {-1};
+        final float[] lastAppliedBrightness = {-1f};
+
+        final float PIXELS_FOR_FULL_RANGE = 600f;
+        final int DEAD_ZONE_PX = 12;
+
+        // Helper to lock/unlock the ViewPager2 cleanly.
+        final Runnable lockPager = () -> {
+            if (fullscreenViewPager != null && !pagerLocked[0]) {
+                fullscreenViewPager.setUserInputEnabled(false);
+                pagerLocked[0] = true;
+            }
+        };
+        final Runnable unlockPager = () -> {
+            if (fullscreenViewPager != null && pagerLocked[0]) {
+                fullscreenViewPager.setUserInputEnabled(true);
+                pagerLocked[0] = false;
+            }
+        };
+
+        final View.OnTouchListener handler = (v, event) -> {
+            switch (event.getActionMasked()) {
+
+                case MotionEvent.ACTION_DOWN: {
+                    startY[0] = event.getY();
+                    startX[0] = event.getX();
+                    lastY[0] = event.getY();
+                    committed[0] = false;
+                    lastAppliedVolume[0] = -1;
+                    lastAppliedBrightness[0] = -1f;
+
+                    float w = v.getWidth();
+                    isVolumeSide[0] = (w > 0) && (event.getX() >= w / 2f);
+                    return true;
+                }
+
+                case MotionEvent.ACTION_MOVE: {
+                    float currentY = event.getY();
+                    float currentX = event.getX();
+
+                    float dyTotal = Math.abs(currentY - startY[0]);
+                    float dxTotal = Math.abs(currentX - startX[0]);
+
+                    // ── Commit decision (once per gesture) ──
+                    // Once the finger has moved past the dead zone, decide
+                    // whether this is a VERTICAL (volume/brightness) gesture
+                    // or a HORIZONTAL (page swipe) gesture.
+                    if (!committed[0]) {
+                        if (dyTotal < DEAD_ZONE_PX && dxTotal < DEAD_ZONE_PX) {
+                            return true; // not yet a real move
+                        }
+
+                        if (dyTotal >= dxTotal) {
+                            // Vertical wins → lock the pager for the rest
+                            // of this gesture so horizontal drift can't
+                            // steal the touch.
+                            committed[0] = true;
+                            lockPager.run();
+                        } else {
+                            // Horizontal wins → let ViewPager2 do its thing.
+                            // We bail out of the gesture entirely for this
+                            // touch sequence.
+                            committed[0] = false;
+                            // Do NOT consume any further events from this
+                            // gesture — return false so ViewPager2 gets them.
+                            unlockPager.run();
+                            return false;
+                        }
+                    }
+
+                    // From here on: it's a vertical gesture. We consume events.
+                    float dyPixels = lastY[0] - currentY;   // up = positive
+                    lastY[0] = currentY;
+
+                    float valueDelta = dyPixels / PIXELS_FOR_FULL_RANGE;
+
+                    if (isVolumeSide[0]) {
+                        if (audioManager == null) return true;
+
+                        int currentVol;
+                        try {
+                            currentVol = audioManager.getStreamVolume(
+                                    AudioManager.STREAM_MUSIC);
+                        } catch (Exception e) { return true; }
+
+                        int base = lastAppliedVolume[0] >= 0
+                                ? lastAppliedVolume[0] : currentVol;
+
+                        int target = base + Math.round(valueDelta * maxVolume);
+                        target = Math.max(0, Math.min(maxVolume, target));
+
+                        if (target == lastAppliedVolume[0]) return true;
+                        lastAppliedVolume[0] = target;
+
+                        try {
+                            audioManager.setStreamVolume(
+                                    AudioManager.STREAM_MUSIC, target, 0);
+                        } catch (Exception ignored) {}
+                    } else {
+                        WindowManager.LayoutParams lp = getWindow().getAttributes();
+                        float currentBright = lp.screenBrightness < 0
+                                ? 0.5f : lp.screenBrightness;
+
+                        float base = lastAppliedBrightness[0] >= 0
+                                ? lastAppliedBrightness[0] : currentBright;
+
+                        float target = base + valueDelta;
+                        target = Math.max(0.02f, Math.min(1f, target));
+
+                        if (Math.abs(target - lastAppliedBrightness[0]) < 0.002f) return true;
+                        lastAppliedBrightness[0] = target;
+
+                        try {
+                            lp.screenBrightness = target;
+                            getWindow().setAttributes(lp);
+                        } catch (Exception ignored) {}
+                    }
+                    return true;
+                }
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL: {
+                    // Always restore pager input, regardless of how the
+                    // gesture ended.
+                    unlockPager.run();
+
+                    // If the finger never meaningfully moved → it's a tap.
+                    if (!committed[0]
+                            && Math.abs(event.getY() - startY[0]) < DEAD_ZONE_PX
+                            && Math.abs(event.getX() - startX[0]) < DEAD_ZONE_PX) {
+                        onFullscreenTap();
+                    }
+
+                    committed[0] = false;
+                    lastAppliedVolume[0] = -1;
+                    lastAppliedBrightness[0] = -1f;
+                    return true;
+                }
+            }
+            return true;
+        };
+
+        fullscreenOverlay.setOnTouchListener(handler);
+        this.volumeBrightnessHandler = handler;
+    }
     public static class MediaItem {
         public static final int TYPE_IMAGE = 0;
         public static final int TYPE_VIDEO = 1;
