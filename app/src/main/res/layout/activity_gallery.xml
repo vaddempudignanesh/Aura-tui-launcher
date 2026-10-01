@@ -447,6 +447,59 @@
             </LinearLayout>
 
         </LinearLayout>
+        <!-- ═══ Volume / Brightness HUD ═══ -->
+        <LinearLayout
+            android:id="@+id/mediaHudContainer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerInParent="true"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#CC000000"
+            android:paddingStart="28dp"
+            android:paddingEnd="28dp"
+            android:paddingTop="20dp"
+            android:paddingBottom="20dp"
+            android:elevation="40dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/mediaHudIcon"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:src="@android:drawable/ic_lock_silent_mode_off"
+                app:tint="#FFFFFF" />
+
+            <TextView
+                android:id="@+id/mediaHudLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Volume"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/mediaHudValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="50%"
+                android:textColor="#FFFFFF"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <ProgressBar
+                android:id="@+id/mediaHudBar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="180dp"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:max="100"
+                android:progress="50"
+                android:progressTint="#FFFFFF" />
+        </LinearLayout>
 
 
     </RelativeLayout>

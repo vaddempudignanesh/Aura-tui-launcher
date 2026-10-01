@@ -29,6 +29,7 @@ import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.RelativeLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -85,6 +86,15 @@ public class GalleryActivity extends AppCompatActivity {
     private RecyclerView recyclerView;
     private RecyclerView albumRecycler;
     private GalleryAdapter adapter;
+
+    // ═══ Volume / Brightness HUD ═══
+    private LinearLayout mediaHudContainer;
+    private ImageView mediaHudIcon;
+    private TextView mediaHudLabel;
+    private TextView mediaHudValue;
+    private ProgressBar mediaHudBar;
+    private Runnable mediaHudHideRunnable;
+    private static final long MEDIA_HUD_VISIBLE_MS = 800L;
 
     private View fullscreenInfoHeader;
     private TextView fullscreenInfoName;
@@ -312,8 +322,11 @@ public class GalleryActivity extends AppCompatActivity {
         btnSkipBackwardOverlay = findViewById(R.id.btnSkipBackward);
         videoTimeCurrent = findViewById(R.id.videoTimeCurrent);
         videoTimeTotal = findViewById(R.id.videoTimeTotal);
-        videoTitleOverlay = findViewById(R.id.videoTitle);
-        videoSeekBar = findViewById(R.id.videoSeekBar);
+        mediaHudContainer = findViewById(R.id.mediaHudContainer);
+        mediaHudIcon = findViewById(R.id.mediaHudIcon);
+        mediaHudLabel = findViewById(R.id.mediaHudLabel);
+        mediaHudValue = findViewById(R.id.mediaHudValue);
+        mediaHudBar = findViewById(R.id.mediaHudBar);        videoSeekBar = findViewById(R.id.videoSeekBar);
         videoControlsOverlay = findViewById(R.id.videoControlsOverlay);
         fullscreenBottomBar = findViewById(R.id.fullscreenBottomBar);
         fsBtnBin = findViewById(R.id.fsBtnBin);
@@ -570,6 +583,52 @@ public class GalleryActivity extends AppCompatActivity {
         if (topNavBar != null) updateTopNavBar();
     }
 
+
+    // ═════════════════════════════════════════════════════════════
+//  Volume / Brightness HUD
+// ═════════════════════════════════════════════════════════════
+
+    private void showMediaHud(boolean isVolume, int percent) {
+        if (mediaHudContainer == null) return;
+
+        // Label + icon
+        if (isVolume) {
+            mediaHudLabel.setText("Volume");
+            if (percent == 0) {
+                mediaHudIcon.setImageResource(android.R.drawable.ic_lock_silent_mode);
+            } else {
+                mediaHudIcon.setImageResource(android.R.drawable.ic_lock_silent_mode_off);
+            }
+        } else {
+            mediaHudLabel.setText("Brightness");
+            mediaHudIcon.setImageResource(android.R.drawable.ic_menu_view);
+        }
+
+        // Value text + bar
+        mediaHudValue.setText(percent + "%");
+        if (mediaHudBar != null) {
+            mediaHudBar.setProgress(percent);
+        }
+
+        // Show the HUD
+        mediaHudContainer.setVisibility(View.VISIBLE);
+        mediaHudContainer.bringToFront();
+
+        // Schedule auto-hide
+        videoHandler.removeCallbacks(mediaHudHideRunnable);
+        mediaHudHideRunnable = () -> {
+            if (mediaHudContainer != null) {
+                mediaHudContainer.setVisibility(View.GONE);
+            }
+        };
+        videoHandler.postDelayed(mediaHudHideRunnable, MEDIA_HUD_VISIBLE_MS);
+    }
+
+    private void hideMediaHudImmediately() {
+        if (mediaHudContainer == null) return;
+        videoHandler.removeCallbacks(mediaHudHideRunnable);
+        mediaHudContainer.setVisibility(View.GONE);
+    }
     // ===================== EFFECTIVE SEEK POSITION =====================
 
     private int getEffectivePositionMs() {
@@ -1174,6 +1233,7 @@ public class GalleryActivity extends AppCompatActivity {
         isOverlayVideoPlaying = false;
         overlayControlsVisible = false;
         overlayPendingSeekMs = -1;
+        hideMediaHudImmediately();
         videoHandler.removeCallbacks(overlayProgressRunnable);
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
 
@@ -2494,6 +2554,7 @@ public class GalleryActivity extends AppCompatActivity {
         videoHandler.removeCallbacks(overlayProgressRunnable);
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
         mediaRefreshHandler.removeCallbacksAndMessages(null);
+        hideMediaHudImmediately();
         pendingMediaRefresh = null;
         executor.shutdown();
     }
@@ -2515,7 +2576,6 @@ public class GalleryActivity extends AppCompatActivity {
         final float BRIGHTNESS_STEP_VALUE = 1.0f / BRIGHTNESS_STEPS;
         final int DEAD_ZONE_PX = 12;
 
-        // ── Tap / double-tap timing ──
         final long DOUBLE_TAP_TIMEOUT =
                 android.view.ViewConfiguration.getDoubleTapTimeout();
 
@@ -2530,12 +2590,8 @@ public class GalleryActivity extends AppCompatActivity {
         final int[]   appliedVolume = {-1};
         final float[] appliedBrightness = {-1f};
 
-        // Tap deferral
         final boolean[] tapPending = {false};
         final Runnable[] pendingTap = {null};
-
-        // ★ NEW: If true, the current DOWN is part of a double-tap and
-        //    the following UP must NOT schedule a deferred single-tap.
         final boolean[] suppressNextUpTap = {false};
 
         final Runnable lockPager = () -> {
@@ -2555,13 +2611,10 @@ public class GalleryActivity extends AppCompatActivity {
             switch (event.getActionMasked()) {
 
                 case MotionEvent.ACTION_DOWN: {
-                    // ── Did a single-tap toggle get scheduled recently?
-                    //    If yes, this DOWN is the second tap of a double-tap. ──
                     if (tapPending[0] && pendingTap[0] != null) {
                         videoHandler.removeCallbacks(pendingTap[0]);
                         tapPending[0] = false;
                         pendingTap[0] = null;
-                        // ★ Mark this DOWN so its UP doesn't reschedule.
                         suppressNextUpTap[0] = true;
                     } else {
                         suppressNextUpTap[0] = false;
@@ -2598,8 +2651,6 @@ public class GalleryActivity extends AppCompatActivity {
                     float dyTotal = Math.abs(currentY - startY[0]);
                     float dxTotal = Math.abs(currentX - startX[0]);
 
-                    // Movement past dead zone cancels BOTH pending tap AND the
-                    // suppress flag (it wasn't a tap after all, it was a swipe).
                     if (dyTotal > DEAD_ZONE_PX || dxTotal > DEAD_ZONE_PX) {
                         if (tapPending[0] && pendingTap[0] != null) {
                             videoHandler.removeCallbacks(pendingTap[0]);
@@ -2632,15 +2683,18 @@ public class GalleryActivity extends AppCompatActivity {
                     if (isVolumeSide[0]) {
                         if (audioManager == null) return true;
 
+                        boolean changed = false;
                         while (accumulator[0] >= STEP_PX_VOLUME) {
                             accumulator[0] -= STEP_PX_VOLUME;
                             appliedVolume[0] = Math.min(maxVolume,
                                     Math.max(0, appliedVolume[0] + 1));
+                            changed = true;
                         }
                         while (accumulator[0] <= -STEP_PX_VOLUME) {
                             accumulator[0] += STEP_PX_VOLUME;
                             appliedVolume[0] = Math.min(maxVolume,
                                     Math.max(0, appliedVolume[0] - 1));
+                            changed = true;
                         }
 
                         try {
@@ -2648,6 +2702,16 @@ public class GalleryActivity extends AppCompatActivity {
                                     AudioManager.STREAM_MUSIC,
                                     appliedVolume[0], 0);
                         } catch (Exception ignored) {}
+
+                        if (changed) {
+                            // ★ Update HUD with the current volume
+                            int percent = maxVolume > 0
+                                    ? (int) Math.round(
+                                    (appliedVolume[0] * 100.0) / maxVolume)
+                                    : 0;
+                            percent = Math.max(0, Math.min(100, percent));
+                            showMediaHud(true, percent);
+                        }
 
                     } else {
                         int stepAdvances = 0;
@@ -2670,6 +2734,11 @@ public class GalleryActivity extends AppCompatActivity {
                                 lp.screenBrightness = appliedBrightness[0];
                                 getWindow().setAttributes(lp);
                             } catch (Exception ignored) {}
+
+                            // ★ Update HUD with the current brightness
+                            int percent = (int) Math.round(appliedBrightness[0] * 100);
+                            percent = Math.max(0, Math.min(100, percent));
+                            showMediaHud(false, percent);
                         }
                     }
                     return true;
@@ -2685,8 +2754,6 @@ public class GalleryActivity extends AppCompatActivity {
 
                     if (wasTap) {
                         if (suppressNextUpTap[0]) {
-                            // ★ This UP belonged to the second half of a
-                            //    double-tap. Do NOT schedule the toggle.
                             suppressNextUpTap[0] = false;
                         } else {
                             final Runnable[] holder = new Runnable[1];
