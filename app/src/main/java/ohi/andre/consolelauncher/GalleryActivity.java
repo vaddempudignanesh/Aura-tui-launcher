@@ -25,6 +25,7 @@ import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.animation.AnimationUtils;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.ImageView;
@@ -58,6 +59,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -97,9 +99,13 @@ public class GalleryActivity extends AppCompatActivity {
     private TextView fullscreenInfoDetails;
 
     // ── Drag-to-select state ──
+    //  "anchorPath" is the item that was long-pressed. Its selection state
+    //  is decided ONCE by the initial press and never toggled again by the
+    //  drag path. Only other items are toggled as the finger moves.
     private boolean dragSelectActive = false;
     private boolean dragSelectDeselectMode = false;
-    private final java.util.Set<Integer> dragVisitedPositions = new java.util.HashSet<>();
+    private String dragAnchorPath = null;
+    private final Set<Integer> dragVisitedPositions = new HashSet<>();
     private TextView fullscreenInfoPath;
     private boolean fullscreenChromeVisible = false;
 
@@ -116,6 +122,21 @@ public class GalleryActivity extends AppCompatActivity {
 
     private final HashMap<String, String> canonicalAlbumCache = new HashMap<>();
     private boolean albumsCacheValid = false;
+
+    // ═══ Fast bin cache ═══
+    //  Scanning the filesystem for ".trashed." files takes a long time on
+    //  big SD cards. We cache the result and refresh it lazily.
+    private List<MediaItem> cachedTrashedItems = null;
+    private long cachedTrashedTimestamp = 0L;
+    private static final long TRASHED_CACHE_TTL_MS = 2000L;
+
+    // ── Range-select rectangle math ──
+    private static final int GRID_COLUMNS = 3;
+    // Snapshot of what was selected BEFORE this drag started. Used to
+// recompute the entire rectangle each time the finger moves.
+    private final Set<String> selectionBeforeDrag = new HashSet<>();
+    // Set of items the current rectangle covers. Recomputed on every move.
+    private final Set<String> dragRectanglePaths = new HashSet<>();
 
     // ── Fullscreen ──
     private RelativeLayout fullscreenOverlay;
@@ -207,6 +228,9 @@ public class GalleryActivity extends AppCompatActivity {
 
     private boolean isActivityAlive() { return !isFinishing() && !isDestroyed(); }
 
+    // ═════════════════════════════════════════════════════════════
+    //  onCreate
+    // ═════════════════════════════════════════════════════════════
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -251,8 +275,14 @@ public class GalleryActivity extends AppCompatActivity {
         if (binBottomBar != null) {
             TextView btnRestore = findViewById(R.id.btnRestore);
             TextView btnDeletePermanent = findViewById(R.id.btnDeletePermanent);
-            if (btnRestore != null) btnRestore.setOnClickListener(v -> restoreSelectedItems());
-            if (btnDeletePermanent != null) btnDeletePermanent.setOnClickListener(v -> deletePermanentlySelectedItems());
+            if (btnRestore != null) btnRestore.setOnClickListener(v -> {
+                animateButtonBounce(v);
+                restoreSelectedItems();
+            });
+            if (btnDeletePermanent != null) btnDeletePermanent.setOnClickListener(v -> {
+                animateButtonBounce(v);
+                deletePermanentlySelectedItems();
+            });
         }
 
         ImageButton btnCloseSelection = findViewById(R.id.btnCloseSelection);
@@ -542,27 +572,43 @@ public class GalleryActivity extends AppCompatActivity {
             }
         });
 
-        btnBinSelected.setOnClickListener(v -> moveSelectedToTrash());
-        btnShareSelected.setOnClickListener(v -> shareSelectedItems());
-        btnInfoSelected.setOnClickListener(v -> showSelectedItemInfo());
-        btnFavoriteSelected.setOnClickListener(v -> addSelectedToFavorites());
+        btnBinSelected.setOnClickListener(v -> {
+            animateButtonBounce(v);
+            moveSelectedToTrash();
+        });
+        btnShareSelected.setOnClickListener(v -> {
+            animateButtonBounce(v);
+            shareSelectedItems();
+        });
+        btnInfoSelected.setOnClickListener(v -> {
+            animateButtonBounce(v);
+            showSelectedItemInfo();
+        });
+        btnFavoriteSelected.setOnClickListener(v -> {
+            animateButtonBounce(v);
+            addSelectedToFavorites();
+        });
 
         sortImages.setOnClickListener(v -> {
+            animateButtonBounce(v);
             currentFilter = FilterMode.IMAGES; currentAlbum = null;
             titleView.setText("📷 Images"); applyFilter();
             sortOptions.setVisibility(View.GONE); updateBarsVisibility();
         });
         sortVideos.setOnClickListener(v -> {
+            animateButtonBounce(v);
             currentFilter = FilterMode.VIDEOS; currentAlbum = null;
             titleView.setText("🎬 Videos"); applyFilter();
             sortOptions.setVisibility(View.GONE); updateBarsVisibility();
         });
         sortFavorites.setOnClickListener(v -> {
+            animateButtonBounce(v);
             currentFilter = FilterMode.FAVORITES; currentAlbum = null;
             titleView.setText("⭐ Favorites"); applyFilter();
             sortOptions.setVisibility(View.GONE); updateBarsVisibility();
         });
         sortBin.setOnClickListener(v -> {
+            animateButtonBounce(v);
             currentFilter = FilterMode.BIN; currentAlbum = null;
             titleView.setText("🗑️ Bin"); applyFilter();
             sortOptions.setVisibility(View.GONE); updateBarsVisibility();
@@ -576,7 +622,7 @@ public class GalleryActivity extends AppCompatActivity {
     }
 
     // ═════════════════════════════════════════════════════════════
-    //  Volume / Brightness HUD — transparent percentage only
+    //  Volume / Brightness HUD
     // ═════════════════════════════════════════════════════════════
 
     private void showMediaHud(boolean isVolume, int percent) {
@@ -585,15 +631,12 @@ public class GalleryActivity extends AppCompatActivity {
         TextView target = isVolume ? mediaHudVolume : mediaHudBrightness;
         TextView other  = isVolume ? mediaHudBrightness : mediaHudVolume;
 
-        // Hide the opposite side's value — only one at a time.
         other.setVisibility(View.GONE);
 
-        // Update and show the target with just the percentage.
         target.setText(percent + "%");
         target.setVisibility(View.VISIBLE);
         target.bringToFront();
 
-        // Schedule auto-hide.
         videoHandler.removeCallbacks(mediaHudHideRunnable);
         mediaHudHideRunnable = () -> {
             if (mediaHudVolume != null) mediaHudVolume.setVisibility(View.GONE);
@@ -833,6 +876,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
         pendingMediaRefresh = () -> {
             albumsCacheValid = false;
+            cachedTrashedItems = null;
             loadMedia();
             pendingMediaRefresh = null;
         };
@@ -1371,18 +1415,27 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
-    // ===================== MEDIA LOADING =====================
+    // ===================== MEDIA LOADING — FULL DEVICE SCAN =====================
 
+    /**
+     * Loads ALL media on the device.
+     *
+     * Previously we only read MediaStore.Images and MediaStore.Video, which
+     * silently skip files that the user added via adb / file manager / other
+     * apps that didn't trigger the media scanner. To catch those, we ALSO do
+     * a recursive filesystem scan of every mounted storage root and merge
+     * anything that MediaStore missed.
+     */
     private void loadMedia() {
         executor.execute(() -> {
+            // ── 1. MediaStore (fast, includes app-added files) ──
             List<MediaItem> newItems = new ArrayList<>();
+            Set<String> knownPaths = new HashSet<>();
 
             String[] imageProjection = {
-                    MediaStore.Images.Media._ID,
                     MediaStore.Images.Media.DATA,
                     MediaStore.Images.Media.DISPLAY_NAME,
-                    MediaStore.Images.Media.DATE_MODIFIED,
-                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+                    MediaStore.Images.Media.DATE_MODIFIED
             };
             Cursor imageCursor = null;
             try {
@@ -1393,32 +1446,31 @@ public class GalleryActivity extends AppCompatActivity {
                     int dataIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.DATA);
                     int nameIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME);
                     int dateIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED);
-                    int albumIndex = imageCursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
                     while (imageCursor.moveToNext()) {
                         String path = dataIndex >= 0 ? imageCursor.getString(dataIndex) : null;
                         String name = nameIndex >= 0 ? imageCursor.getString(nameIndex) : "image";
                         long date = dateIndex >= 0 ? imageCursor.getLong(dateIndex) : 0;
-                        String album = albumIndex >= 0 ? imageCursor.getString(albumIndex) : "";
                         if (path != null && new File(path).exists()) {
                             boolean isTrashed = path.contains(".trashed.");
                             String parentPath = new File(path).getParent();
                             String albumKey = parentPath != null
-                                    ? getCachedCanonical(parentPath) : album;
-                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_IMAGE, date, isTrashed, albumKey));
+                                    ? getCachedCanonical(parentPath) : "";
+                            newItems.add(new MediaItem(path, name,
+                                    MediaItem.TYPE_IMAGE, date, isTrashed, albumKey));
+                            knownPaths.add(path);
                         }
                     }
                 }
             } catch (SecurityException e) {
-                runOnUiThread(() -> { if (isActivityAlive()) { applyFilter(); setupRecyclerView(); } });
-                return;
-            } finally { if (imageCursor != null) imageCursor.close(); }
+                // ignore
+            } finally {
+                if (imageCursor != null) imageCursor.close();
+            }
 
             String[] videoProjection = {
-                    MediaStore.Video.Media._ID,
                     MediaStore.Video.Media.DATA,
                     MediaStore.Video.Media.DISPLAY_NAME,
-                    MediaStore.Video.Media.DATE_MODIFIED,
-                    MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+                    MediaStore.Video.Media.DATE_MODIFIED
             };
             Cursor videoCursor = null;
             try {
@@ -1429,53 +1481,163 @@ public class GalleryActivity extends AppCompatActivity {
                     int dataIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.DATA);
                     int nameIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME);
                     int dateIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED);
-                    int albumIndex = videoCursor.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME);
                     while (videoCursor.moveToNext()) {
                         String path = dataIndex >= 0 ? videoCursor.getString(dataIndex) : null;
                         String name = nameIndex >= 0 ? videoCursor.getString(nameIndex) : "video";
                         long date = dateIndex >= 0 ? videoCursor.getLong(dateIndex) : 0;
-                        String album = albumIndex >= 0 ? videoCursor.getString(albumIndex) : "";
                         if (path != null && new File(path).exists()) {
                             boolean isTrashed = path.contains(".trashed.");
                             String parentPath = new File(path).getParent();
                             String albumKey = parentPath != null
-                                    ? getCachedCanonical(parentPath) : album;
-                            newItems.add(new MediaItem(path, name, MediaItem.TYPE_VIDEO, date, isTrashed, albumKey));
+                                    ? getCachedCanonical(parentPath) : "";
+                            newItems.add(new MediaItem(path, name,
+                                    MediaItem.TYPE_VIDEO, date, isTrashed, albumKey));
+                            knownPaths.add(path);
                         }
                     }
                 }
             } catch (SecurityException e) {
-                runOnUiThread(() -> {
-                    Toast.makeText(this, "Cannot access media files", Toast.LENGTH_SHORT).show();
-                    finish();
-                });
-                return;
-            } finally { if (videoCursor != null) videoCursor.close(); }
+                // ignore
+            } finally {
+                if (videoCursor != null) videoCursor.close();
+            }
 
+            // ── 2. Filesystem fallback — catch what MediaStore missed ──
+            List<File> roots = getStorageDirectoriesProper();
+            for (File root : roots) {
+                if (root != null && root.exists()) {
+                    scanFilesystemForMedia(root, newItems, knownPaths, 0, 6);
+                }
+            }
+
+            // ── 3. Sort newest first ──
             Collections.sort(newItems, (a, b) -> Long.compare(b.dateModified, a.dateModified));
 
-            mediaItems.clear();
-            mediaItems.addAll(newItems);
-
+            // ── 4. Apply favorites ──
             Set<String> favs = loadFavoritePaths();
-            for (MediaItem item : mediaItems) {
+            for (MediaItem item : newItems) {
                 item.isFavorite = favs.contains(item.path);
             }
 
-            runOnUiThread(() -> { applyFilter(); setupRecyclerView(); showEmptyState(); });
+            // ── 5. Hand the result to the UI thread ──
+            final List<MediaItem> result = newItems;
+            runOnMain(() -> {
+                if (!isActivityAlive()) return;
+                mediaItems.clear();
+                mediaItems.addAll(result);
+                applyFilter();
+                setupRecyclerView();
+                showEmptyState();
+            });
         });
     }
+    /**
+     * Recursively scans a directory for media files that aren't already in
+     * `knownPaths`. Adds found items directly to `out`.
+     */
+    private void scanFilesystemForMedia(File directory, List<MediaItem> out,
+                                        Set<String> knownPaths, int depth, int maxDepth) {
+        if (depth > maxDepth || directory == null
+                || !directory.exists() || !directory.isDirectory()) return;
 
-    // ===================== BIN SCAN =====================
+        String dirName = directory.getName().toLowerCase(Locale.ROOT);
+        // Skip noisy system / cache directories
+        if (dirName.equals("android") || dirName.equals("system")
+                || dirName.equals("cache") || dirName.equals("tmp")
+                || dirName.equals("lost+found") || dirName.equals("obb")) return;
 
-    private List<MediaItem> scanForTrashedFiles() {
-        List<MediaItem> trashedItems = new ArrayList<>();
-        List<File> directories = getStorageDirectoriesProper();
-        for (File dir : directories) {
-            if (dir != null && dir.exists())
-                scanDirectoryForTrashedFiles(dir, trashedItems, 0, 6);
+        File[] files;
+        try { files = directory.listFiles(); }
+        catch (Exception e) { return; }
+        if (files == null) return;
+
+        for (File f : files) {
+            if (f.isDirectory()) {
+                if (!f.getName().startsWith(".")) {
+                    scanFilesystemForMedia(f, out, knownPaths, depth + 1, maxDepth);
+                }
+            } else if (f.isFile()) {
+                String name = f.getName();
+                if (name.startsWith(".")) continue;   // hidden
+                if (name.contains(".trashed.")) {
+                    // trashed files are surfaced through the Bin scan
+                    continue;
+                }
+                if (!isMediaFile(name)) continue;
+
+                String path;
+                try { path = f.getCanonicalPath(); }
+                catch (Exception e) { path = f.getAbsolutePath(); }
+
+                if (knownPaths.contains(path)) continue;
+                knownPaths.add(path);
+
+                boolean isVideo = isVideoPath(name);
+                long date = f.lastModified() / 1000;
+                String parent = f.getParent();
+                String albumKey = parent != null ? getCachedCanonical(parent) : "";
+                out.add(new MediaItem(path, name,
+                        isVideo ? MediaItem.TYPE_VIDEO : MediaItem.TYPE_IMAGE,
+                        date, false, albumKey));
+            }
         }
-        return trashedItems;
+    }
+
+    // ===================== BIN SCAN — CACHED =====================
+
+    /**
+     * Returns the trashed files. Uses an in-memory cache valid for
+     * TRASHED_CACHE_TTL_MS milliseconds so that switching to the Bin tab
+     * and back feels instant.
+     */
+    /**
+     * Returns the trashed files. Runs the scan on a background thread and
+     * delivers the result on the main thread.
+     *
+     * Safe to call from applyFilter() on the main thread.
+     */
+    private void getTrashedFilesAsync(boolean forceRescan, OnTrashedFilesReady callback) {
+        if (callback == null) return;
+
+        long now = System.currentTimeMillis();
+        if (!forceRescan && cachedTrashedItems != null
+                && (now - cachedTrashedTimestamp) < TRASHED_CACHE_TTL_MS) {
+            final List<MediaItem> snapshot = cachedTrashedItems;
+            runOnMain(() -> {
+                if (isActivityAlive()) callback.onReady(snapshot);
+            });
+            return;
+        }
+
+        executor.execute(() -> {
+            List<MediaItem> trashedItems = new ArrayList<>();
+            Set<String> seen = new HashSet<>();
+
+            for (MediaItem item : new ArrayList<>(mediaItems)) {
+                if (item.path != null && item.path.contains(".trashed.")) {
+                    if (seen.add(item.path)) trashedItems.add(item);
+                }
+            }
+
+            List<File> directories = getStorageDirectoriesProper();
+            for (File dir : directories) {
+                if (dir != null && dir.exists()) {
+                    scanDirectoryForTrashedFiles(dir, trashedItems, seen, 0, 6);
+                }
+            }
+
+            cachedTrashedItems = trashedItems;
+            cachedTrashedTimestamp = System.currentTimeMillis();
+
+            final List<MediaItem> result = trashedItems;
+            runOnMain(() -> {
+                if (isActivityAlive()) callback.onReady(result);
+            });
+        });
+    }
+    /** Callback interface for async bin scans. */
+    public interface OnTrashedFilesReady {
+        void onReady(List<MediaItem> trashedItems);
     }
 
     private List<File> getStorageDirectoriesProper() {
@@ -1574,7 +1736,8 @@ public class GalleryActivity extends AppCompatActivity {
         return unique;
     }
 
-    private void scanDirectoryForTrashedFiles(File directory, List<MediaItem> items, int depth, int maxDepth) {
+    private void scanDirectoryForTrashedFiles(File directory, List<MediaItem> items,
+                                              Set<String> seen, int depth, int maxDepth) {
         if (depth > maxDepth || directory == null || !directory.exists() || !directory.isDirectory()) return;
 
         try {
@@ -1594,90 +1757,113 @@ public class GalleryActivity extends AppCompatActivity {
                             && !name.equals("cache") && !name.equals("tmp") && !name.equals("lost+found")
                             && !name.equals("app") && !name.equals("data") && !name.equals("obb")
                             && !name.equals("media")) {
-                        scanDirectoryForTrashedFiles(file, items, depth + 1, maxDepth);
+                        scanDirectoryForTrashedFiles(file, items, seen, depth + 1, maxDepth);
                     }
-                } else {
+                } else if (file.getName().contains(".trashed.")) {
                     String fileName = file.getName().toLowerCase();
-                    if (file.getName().contains(".trashed.")) {
-                        boolean isImage = fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")
-                                || fileName.endsWith(".png") || fileName.endsWith(".gif")
-                                || fileName.endsWith(".bmp") || fileName.endsWith(".webp")
-                                || fileName.endsWith(".heic") || fileName.endsWith(".heif");
-                        boolean isVideo = fileName.endsWith(".mp4") || fileName.endsWith(".avi")
-                                || fileName.endsWith(".mkv") || fileName.endsWith(".mov")
-                                || fileName.endsWith(".wmv") || fileName.endsWith(".flv")
-                                || fileName.endsWith(".3gp") || fileName.endsWith(".m4v")
-                                || fileName.endsWith(".webm");
+                    boolean isImage = fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")
+                            || fileName.endsWith(".png") || fileName.endsWith(".gif")
+                            || fileName.endsWith(".bmp") || fileName.endsWith(".webp")
+                            || fileName.endsWith(".heic") || fileName.endsWith(".heif");
+                    boolean isVideo = fileName.endsWith(".mp4") || fileName.endsWith(".avi")
+                            || fileName.endsWith(".mkv") || fileName.endsWith(".mov")
+                            || fileName.endsWith(".wmv") || fileName.endsWith(".flv")
+                            || fileName.endsWith(".3gp") || fileName.endsWith(".m4v")
+                            || fileName.endsWith(".webm");
 
-                        if (isImage || isVideo) {
-                            String path = file.getAbsolutePath();
-                            boolean exists = false;
-                            for (MediaItem item : items) {
-                                if (item.path.equals(path)) { exists = true; break; }
-                            }
-                            if (!exists) {
-                                String album = file.getParentFile() != null ? file.getParentFile().getName() : "";
-                                long dateModified = file.lastModified() / 1000;
-                                int type = isImage ? MediaItem.TYPE_IMAGE : MediaItem.TYPE_VIDEO;
-                                items.add(new MediaItem(path, file.getName(), type, dateModified, true, album));
-                            }
-                        }
+                    if (isImage || isVideo) {
+                        String path;
+                        try { path = file.getCanonicalPath(); }
+                        catch (Exception e) { path = file.getAbsolutePath(); }
+                        if (!seen.add(path)) continue;
+
+                        String album = file.getParentFile() != null ? file.getParentFile().getName() : "";
+                        long dateModified = file.lastModified() / 1000;
+                        int type = isImage ? MediaItem.TYPE_IMAGE : MediaItem.TYPE_VIDEO;
+                        items.add(new MediaItem(path, file.getName(), type, dateModified, true, album));
                     }
                 }
             }
         } catch (Exception ignored) {}
     }
 
-    // ===================== FILTER =====================
-
     private void applyFilter() {
         if (!isActivityAlive()) return;
         displayedItems.clear();
 
         if (currentFilter == FilterMode.BIN) {
-            List<MediaItem> trashed = scanForTrashedFiles();
-            for (MediaItem item : mediaItems) {
-                if (item.path.contains(".trashed.")) {
-                    boolean exists = false;
-                    for (MediaItem e : trashed) {
-                        if (e.path.equals(item.path)) { exists = true; break; }
+            if (cachedTrashedItems != null) {
+                displayedItems.addAll(cachedTrashedItems);
+                runOnMain(() -> {
+                    if (adapter != null) {
+                        adapter.updateItems(displayedItems);
+                        adapter.updateSelectedItems(selectedItems);
+                        updateSelectionUI();
+                        showEmptyState();
+                        updateTopNavBar();
+                    } else {
+                        setupRecyclerView();
                     }
-                    if (!exists) trashed.add(item);
-                }
+                });
+            } else {
+                runOnMain(this::showEmptyState);
             }
-            displayedItems.addAll(trashed);
-        } else {
-            final String targetCanon = currentAlbum == null ? null : getCachedCanonical(currentAlbum);
-            for (MediaItem item : mediaItems) {
-                boolean matchesAlbum;
-                if (targetCanon == null) {
-                    matchesAlbum = true;
-                } else {
-                    String itemCanon = getCachedCanonical(item.album);
-                    matchesAlbum = itemCanon != null && itemCanon.equals(targetCanon);
-                }
-                if (!matchesAlbum) continue;
 
-                boolean isCurrentlyTrashed = item.path.contains(".trashed.");
-                item.isTrashed = isCurrentlyTrashed;
+            getTrashedFilesAsync(false, trashed -> {
+                if (!isActivityAlive()) return;
+                if (currentFilter != FilterMode.BIN) return;
 
-                switch (currentFilter) {
-                    case ALL: if (!isCurrentlyTrashed) displayedItems.add(item); break;
-                    case IMAGES: if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_IMAGE) displayedItems.add(item); break;
-                    case VIDEOS: if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_VIDEO) displayedItems.add(item); break;
-                    case FAVORITES: if (!isCurrentlyTrashed && item.isFavorite) displayedItems.add(item); break;
-                    default: break;
-                }
+                displayedItems.clear();
+                displayedItems.addAll(trashed);
+
+                runOnMain(() -> {
+                    if (adapter != null) {
+                        adapter.updateItems(displayedItems);
+                        adapter.updateSelectedItems(selectedItems);
+                        updateSelectionUI();
+                        showEmptyState();
+                        updateTopNavBar();
+                    } else {
+                        setupRecyclerView();
+                    }
+                });
+            });
+            return;
+        }
+
+        // ── Normal filters ──
+        final String targetCanon = currentAlbum == null ? null : getCachedCanonical(currentAlbum);
+        for (MediaItem item : mediaItems) {
+            boolean matchesAlbum;
+            if (targetCanon == null) {
+                matchesAlbum = true;
+            } else {
+                String itemCanon = getCachedCanonical(item.album);
+                matchesAlbum = itemCanon != null && itemCanon.equals(targetCanon);
+            }
+            if (!matchesAlbum) continue;
+
+            boolean isCurrentlyTrashed = item.path.contains(".trashed.");
+            item.isTrashed = isCurrentlyTrashed;
+
+            switch (currentFilter) {
+                case ALL: if (!isCurrentlyTrashed) displayedItems.add(item); break;
+                case IMAGES: if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_IMAGE) displayedItems.add(item); break;
+                case VIDEOS: if (!isCurrentlyTrashed && item.type == MediaItem.TYPE_VIDEO) displayedItems.add(item); break;
+                case FAVORITES: if (!isCurrentlyTrashed && item.isFavorite) displayedItems.add(item); break;
+                default: break;
             }
         }
 
-        if (isActivityAlive() && adapter != null) {
-            adapter.updateItems(displayedItems);
-            adapter.updateSelectedItems(selectedItems);
-            updateSelectionUI();
-            showEmptyState();
-            updateTopNavBar();
-        }
+        runOnMain(() -> {
+            if (adapter != null) {
+                adapter.updateItems(displayedItems);
+                adapter.updateSelectedItems(selectedItems);
+                updateSelectionUI();
+                showEmptyState();
+                updateTopNavBar();
+            }
+        });
     }
 
     // ===================== PERMISSIONS =====================
@@ -1750,28 +1936,52 @@ public class GalleryActivity extends AppCompatActivity {
         setupDragToSelect();
     }
 
+    /**
+     * Called when an item is long-pressed.
+     *
+     * Behavior:
+     *  • If we're not in selection mode → enter it and select this item.
+     *  • If we're already in selection mode:
+     *      - If the item is already selected → this is a "deselect drag" anchor.
+     *      - If not selected → this is a "select drag" anchor.
+     *  The anchor's state is committed ONCE and never toggled again while the
+     *  finger is down, regardless of how many times the finger passes over it.
+     */
     private void startLongPressDrag(String path) {
         if (!isActivityAlive()) return;
-        if (!selectedItems.contains(path)) {
-            selectedItems.add(path);
+
+        int anchorIdx = indexOfPath(path);
+        if (anchorIdx < 0) return;
+
+        boolean alreadySelected = selectedItems.contains(path);
+
+        // ── Snapshot the pre-drag selection ──
+        selectionBeforeDrag.clear();
+        selectionBeforeDrag.addAll(selectedItems);
+
+        // Determine the mode of the rectangle:
+        //   • If the anchor was already selected → the rectangle will DESELECT.
+        //   • Otherwise → the rectangle will SELECT.
+        if (!selectionMode) {
+            // First long-press → enter selection mode.
+            selectionMode = true;
+            dragSelectDeselectMode = false;
+        } else {
+            dragSelectDeselectMode = alreadySelected;
         }
-        updateSelectionUI();
-        dragSelectDeselectMode = false;
+
+        dragAnchorPath = path;
         dragSelectActive = true;
         dragVisitedPositions.clear();
-
-        int idx = indexOfPath(path);
-        if (idx >= 0) {
-            dragVisitedPositions.add(idx);
-            if (adapter != null) adapter.notifyItemChanged(idx, "selection");
-        }
+        dragRectanglePaths.clear();
 
         dragLastX = -1f;
         dragLastY = -1f;
 
-        if (recyclerView != null) {
-            recyclerView.requestDisallowInterceptTouchEvent(false);
-        }
+        // Apply the initial single-cell rectangle (just the anchor).
+        applyDragRectangle(anchorIdx, anchorIdx);
+
+        updateSelectionUI();
     }
 
     private int indexOfPath(String path) {
@@ -1780,7 +1990,6 @@ public class GalleryActivity extends AppCompatActivity {
         }
         return -1;
     }
-
     private void setupDragToSelect() {
         if (recyclerView == null) return;
 
@@ -1791,18 +2000,20 @@ public class GalleryActivity extends AppCompatActivity {
                 if (!dragSelectActive) return false;
 
                 switch (e.getActionMasked()) {
-                    case MotionEvent.ACTION_MOVE: {
+                    case MotionEvent.ACTION_MOVE:
                         handleDragMove(rv, e.getX(), e.getY());
                         return true;
-                    }
+
                     case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL: {
+                    case MotionEvent.ACTION_CANCEL:
                         dragSelectActive = false;
                         dragVisitedPositions.clear();
+                        dragRectanglePaths.clear();
+                        selectionBeforeDrag.clear();
+                        dragAnchorPath = null;
                         dragLastX = -1f;
                         dragLastY = -1f;
                         return true;
-                    }
                 }
                 return false;
             }
@@ -1815,10 +2026,12 @@ public class GalleryActivity extends AppCompatActivity {
                     case MotionEvent.ACTION_MOVE:
                         handleDragMove(rv, e.getX(), e.getY());
                         break;
+
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
                         dragSelectActive = false;
                         dragVisitedPositions.clear();
+                        dragAnchorPath = null;
                         dragLastX = -1f;
                         dragLastY = -1f;
                         break;
@@ -1828,18 +2041,24 @@ public class GalleryActivity extends AppCompatActivity {
     }
 
     private void handleDragMove(RecyclerView rv, float x, float y) {
-        if (Math.abs(x - dragLastX) < 4 && Math.abs(y - dragLastY) < 4) return;
+        // Skip redundant work on tiny movements
+        if (Math.abs(x - dragLastX) < 2 && Math.abs(y - dragLastY) < 2) return;
         dragLastX = x;
         dragLastY = y;
 
+        // Find the cell under the finger
         View child = rv.findChildViewUnder(x, y);
         if (child != null) {
             int pos = rv.getChildAdapterPosition(child);
             if (pos != RecyclerView.NO_POSITION) {
-                handleDragTouch(pos);
+                int anchorIdx = indexOfPath(dragAnchorPath);
+                if (anchorIdx >= 0) {
+                    applyDragRectangle(anchorIdx, pos);
+                }
             }
         }
 
+        // Auto-scroll near edges
         int threshold = dpToPx(60);
         if (y < threshold) {
             rv.scrollBy(0, -dpToPx(8));
@@ -1847,28 +2066,113 @@ public class GalleryActivity extends AppCompatActivity {
             rv.scrollBy(0, dpToPx(8));
         }
     }
+    /**
+     * Applies a rectangular selection from the anchor cell to the current
+     * finger cell.
+     *
+     * Grid is 3 columns wide. A cell at index i lives at:
+     *   row = i / 3   col = i % 3
+     *
+     * The rectangle spans every cell whose row is between the two rows and
+     * whose col is between the two cols, inclusive.
+     */
+    private void applyDragRectangle(int anchorIndex, int currentIndex) {
+        int anchorRow = anchorIndex / GRID_COLUMNS;
+        int anchorCol = anchorIndex % GRID_COLUMNS;
+        int currentRow = currentIndex / GRID_COLUMNS;
+        int currentCol = currentIndex % GRID_COLUMNS;
 
-    private void handleDragTouch(int position) {
-        if (dragVisitedPositions.contains(position)) return;
-        if (position < 0 || position >= displayedItems.size()) return;
+        int minRow = Math.min(anchorRow, currentRow);
+        int maxRow = Math.max(anchorRow, currentRow);
+        int minCol = Math.min(anchorCol, currentCol);
+        int maxCol = Math.max(anchorCol, currentCol);
 
-        dragVisitedPositions.add(position);
-        MediaItem item = displayedItems.get(position);
+        // Recompute the rectangle's path set
+        Set<String> newRectangle = new HashSet<>();
+        int total = displayedItems.size();
 
-        if (dragSelectDeselectMode) {
-            selectedItems.remove(item.path);
-        } else {
-            if (!selectedItems.contains(item.path)) {
-                selectedItems.add(item.path);
+        for (int r = minRow; r <= maxRow; r++) {
+            for (int c = minCol; c <= maxCol; c++) {
+                int idx = r * GRID_COLUMNS + c;
+                if (idx >= 0 && idx < total) {
+                    newRectangle.add(displayedItems.get(idx).path);
+                }
             }
         }
 
-        updateSelectionUI();
-        if (adapter != null) {
-            adapter.notifyItemChanged(position, "selection");
-        }
-    }
+        // Determine what the selection should be *after* applying this
+        // rectangle, based on the mode decided at long-press time.
+        Set<String> desiredSelection = new HashSet<>(selectionBeforeDrag);
 
+        if (dragSelectDeselectMode) {
+            // Deselect everything in the rectangle.
+            desiredSelection.removeAll(newRectangle);
+        } else {
+            // Select everything in the rectangle.
+            desiredSelection.addAll(newRectangle);
+        }
+
+        // Now apply the difference to the live selectedItems set and notify
+        // only the affected cells (keeps RecyclerView updates cheap).
+        List<String> toAdd = new ArrayList<>();
+        List<String> toRemove = new ArrayList<>();
+
+        for (String p : desiredSelection) {
+            if (!selectedItems.contains(p)) toAdd.add(p);
+        }
+        for (String p : selectedItems) {
+            if (!desiredSelection.contains(p)) toRemove.add(p);
+        }
+
+        if (toAdd.isEmpty() && toRemove.isEmpty()) {
+            dragRectanglePaths.clear();
+            dragRectanglePaths.addAll(newRectangle);
+            return;   // nothing changed
+        }
+
+        selectedItems.clear();
+        selectedItems.addAll(desiredSelection);
+
+        // Refresh the affected rows in the RecyclerView
+        Set<Integer> affectedPositions = new HashSet<>();
+        for (int i = 0; i < displayedItems.size(); i++) {
+            MediaItem item = displayedItems.get(i);
+            boolean nowSelected = selectedItems.contains(item.path);
+            boolean wasSelected = selectionBeforeDrag.contains(item.path);
+            // If state changed vs. what the view may still think, notify it.
+            if (nowSelected != wasSelected) {
+                affectedPositions.add(i);
+            }
+        }
+        // Always notify the rectangle cells so the checkbox state is fresh.
+        for (int r = minRow; r <= maxRow; r++) {
+            for (int c = minCol; c <= maxCol; c++) {
+                int idx = r * GRID_COLUMNS + c;
+                if (idx >= 0 && idx < displayedItems.size()) {
+                    affectedPositions.add(idx);
+                }
+            }
+        }
+        // Also notify cells that were in the previous rectangle and are no
+        // longer in it — they should revert to their pre-drag state.
+        for (String prev : dragRectanglePaths) {
+            if (!newRectangle.contains(prev)) {
+                int idx = indexOfPath(prev);
+                if (idx >= 0) affectedPositions.add(idx);
+            }
+        }
+
+        if (adapter != null) {
+            for (int p : affectedPositions) {
+                adapter.notifyItemChanged(p, "selection");
+            }
+        }
+
+        dragRectanglePaths.clear();
+        dragRectanglePaths.addAll(newRectangle);
+
+        updateSelectionUI();
+    }
     private int dpToPx(int dp) {
         return Math.round(dp * getResources().getDisplayMetrics().density);
     }
@@ -1924,6 +2228,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
 
         albumsCacheValid = false;
+        cachedTrashedItems = null;
         applyFilter();
     }
 
@@ -1965,6 +2270,7 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
+        cachedTrashedItems = null;
         scanPathsAndThen(
                 Arrays.asList(restoredFile.getAbsolutePath(), oldPath),
                 () -> scheduleMediaRefresh(0L));
@@ -1972,77 +2278,97 @@ public class GalleryActivity extends AppCompatActivity {
         return true;
     }
 
+    /**
+     * Move all selected items to Bin — asynchronous so the UI never freezes.
+     * Progress toast is shown; UI refreshes after all renames complete.
+     */
     private void moveSelectedToTrash() {
         if (selectedItems.isEmpty()) return;
 
-        List<String> paths = new ArrayList<>(selectedItems);
-        int moved = 0, failed = 0;
+        final List<String> paths = new ArrayList<>(selectedItems);
+        final Toast progressToast = Toast.makeText(this, "Moving...", Toast.LENGTH_SHORT);
+        progressToast.show();
 
-        for (String path : paths) {
-            File f = new File(path);
-            if (!f.exists()) { failed++; continue; }
+        executor.execute(() -> {
+            int moved = 0, failed = 0;
 
-            MediaItem item = new MediaItem(path, f.getName(),
-                    MediaItem.TYPE_IMAGE, 0, false, "");
-            String lower = path.toLowerCase(Locale.ROOT);
-            if (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
-                    || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
-                    || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv")) {
-                item.type = MediaItem.TYPE_VIDEO;
+            for (String path : paths) {
+                File f = new File(path);
+                if (!f.exists()) { failed++; continue; }
+
+                MediaItem item = new MediaItem(path, f.getName(),
+                        isVideoPath(path) ? MediaItem.TYPE_VIDEO : MediaItem.TYPE_IMAGE,
+                        0, false, "");
+
+                if (!f.getName().startsWith(".trashed.")) {
+                    moveToTrash(item);
+                    moved++;
+                } else {
+                    moved++;
+                }
             }
 
-            if (!f.getName().startsWith(".trashed.")) {
-                moveToTrash(item);
-                moved++;
-            } else {
-                moved++;
-            }
-        }
-
-        clearSelection();
-        applyFilter();
-        scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
-        Toast.makeText(this, "Moved " + moved + " item(s) to Bin"
-                        + (failed > 0 ? " (" + failed + " failed)" : ""),
-                Toast.LENGTH_SHORT).show();
+            final int fm = moved, ff = failed;
+            runOnUiThread(() -> {
+                if (progressToast != null) progressToast.cancel();
+                if (!isActivityAlive()) return;
+                clearSelection();
+                cachedTrashedItems = null;
+                applyFilter();
+                scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
+                Toast.makeText(this, "Moved " + fm + " item(s) to Bin"
+                                + (ff > 0 ? " (" + ff + " failed)" : ""),
+                        Toast.LENGTH_SHORT).show();
+            });
+        });
     }
 
+    /**
+     * Restore all selected items — asynchronous.
+     */
     private void restoreSelectedItems() {
         if (selectedItems.isEmpty()) return;
 
-        List<String> paths = new ArrayList<>(selectedItems);
-        int restored = 0, failed = 0;
+        final List<String> paths = new ArrayList<>(selectedItems);
+        final Toast progressToast = Toast.makeText(this, "Restoring...", Toast.LENGTH_SHORT);
+        progressToast.show();
 
-        for (String path : paths) {
-            File file = new File(path);
-            if (!file.exists()) { failed++; continue; }
+        executor.execute(() -> {
+            int restored = 0, failed = 0;
 
-            MediaItem item = new MediaItem(path, file.getName(),
-                    MediaItem.TYPE_IMAGE, 0, true, "");
-            String lower = path.toLowerCase(Locale.ROOT);
-            if (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
-                    || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
-                    || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv")) {
-                item.type = MediaItem.TYPE_VIDEO;
+            for (String path : paths) {
+                File file = new File(path);
+                if (!file.exists()) { failed++; continue; }
+
+                MediaItem item = new MediaItem(path, file.getName(),
+                        isVideoPath(path) ? MediaItem.TYPE_VIDEO : MediaItem.TYPE_IMAGE,
+                        0, true, "");
+
+                if (restoreFromTrash(item)) restored++;
+                else failed++;
             }
 
-            if (restoreFromTrash(item)) restored++;
-            else failed++;
-        }
-
-        clearSelection();
-        applyFilter();
-
-        if (restored > 0) scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
-
-        if (failed == 0) {
-            Toast.makeText(this, "Restored " + restored + " item(s)", Toast.LENGTH_SHORT).show();
-        } else {
-            Toast.makeText(this, "Restored " + restored + ", failed " + failed,
-                    Toast.LENGTH_LONG).show();
-        }
+            final int r = restored, f = failed;
+            runOnUiThread(() -> {
+                if (progressToast != null) progressToast.cancel();
+                if (!isActivityAlive()) return;
+                clearSelection();
+                cachedTrashedItems = null;
+                applyFilter();
+                if (r > 0) scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
+                if (f == 0) {
+                    Toast.makeText(this, "Restored " + r + " item(s)", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "Restored " + r + ", failed " + f,
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+        });
     }
 
+    /**
+     * Permanently delete selected items — asynchronous.
+     */
     private void deletePermanentlySelectedItems() {
         if (selectedItems.isEmpty()) return;
 
@@ -2053,43 +2379,51 @@ public class GalleryActivity extends AppCompatActivity {
                 .setMessage("Are you sure you want to permanently delete "
                         + paths.size() + " item(s)? This cannot be undone.")
                 .setPositiveButton("Delete", (d, w) -> {
-                    int deleted = 0, failed = 0;
+                    final Toast progressToast = Toast.makeText(this, "Deleting...", Toast.LENGTH_SHORT);
+                    progressToast.show();
 
-                    for (String path : paths) {
-                        File f = new File(path);
-                        boolean ok = false;
+                    executor.execute(() -> {
+                        int deleted = 0, failed = 0;
 
-                        if (f.exists()) {
-                            try { ok = f.delete(); }
-                            catch (Exception e) { Log.e(LOG_TAG, "delete failed: " + path, e); }
-                        } else {
-                            ok = true;
+                        for (String path : paths) {
+                            File f = new File(path);
+                            boolean ok = false;
+                            if (f.exists()) {
+                                try { ok = f.delete(); }
+                                catch (Exception e) { Log.e(LOG_TAG, "delete failed: " + path, e); }
+                            } else ok = true;
+
+                            if (ok) deleted++;
+                            else failed++;
                         }
 
-                        if (ok) {
-                            deleted++;
-                            for (int i = mediaItems.size() - 1; i >= 0; i--) {
-                                if (mediaItems.get(i).path.equals(path)) {
-                                    mediaItems.remove(i);
-                                    break;
+                        final int delCount = deleted, failCount = failed;
+                        runOnUiThread(() -> {
+                            if (progressToast != null) progressToast.cancel();
+                            if (!isActivityAlive()) return;
+                            // Remove deleted entries from in-memory list
+                            for (String path : paths) {
+                                for (int i = mediaItems.size() - 1; i >= 0; i--) {
+                                    if (mediaItems.get(i).path.equals(path)) {
+                                        mediaItems.remove(i);
+                                        break;
+                                    }
                                 }
                             }
-                        } else failed++;
-                    }
-
-                    albumsCacheValid = false;
-                    clearSelection();
-                    applyFilter();
-
-                    if (deleted > 0) scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
-
-                    if (failed == 0) {
-                        Toast.makeText(this, "Deleted " + deleted + " item(s)",
-                                Toast.LENGTH_SHORT).show();
-                    } else {
-                        Toast.makeText(this, "Deleted " + deleted + ", failed " + failed,
-                                Toast.LENGTH_LONG).show();
-                    }
+                            albumsCacheValid = false;
+                            cachedTrashedItems = null;
+                            clearSelection();
+                            applyFilter();
+                            if (delCount > 0) scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
+                            if (failCount == 0) {
+                                Toast.makeText(this, "Deleted " + delCount + " item(s)",
+                                        Toast.LENGTH_SHORT).show();
+                            } else {
+                                Toast.makeText(this, "Deleted " + delCount + ", failed " + failCount,
+                                        Toast.LENGTH_LONG).show();
+                            }
+                        });
+                    });
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -2133,6 +2467,16 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
+    /** Guarantees the given Runnable runs on the main thread. */
+    private void runOnMain(Runnable r) {
+        if (r == null) return;
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            r.run();
+        } else {
+            runOnUiThread(r);
+        }
+    }
+
     private void clearSelection() {
         selectedItems.clear();
         selectionMode = false;
@@ -2143,6 +2487,9 @@ public class GalleryActivity extends AppCompatActivity {
         if (adapter != null) adapter.updateSelectedItems(selectedItems);
         dragSelectActive = false;
         dragVisitedPositions.clear();
+        dragRectanglePaths.clear();
+        selectionBeforeDrag.clear();
+        dragAnchorPath = null;
         dragLastX = -1f;
         dragLastY = -1f;
     }
@@ -2436,7 +2783,7 @@ public class GalleryActivity extends AppCompatActivity {
             displayList.add(d);
         }
 
-        albumAdapter = new AlbumAdapter(this, displayList, displayName -> {
+        albumAdapter = new AlbumAdapter(this, displayList, albumPathList(), displayName -> {
             String chosenPath = null;
             for (String p : albumList) {
                 String d = albumDisplayNames.get(p);
@@ -2460,6 +2807,10 @@ public class GalleryActivity extends AppCompatActivity {
         albumRecycler.setAdapter(albumAdapter);
         albumRecycler.setVisibility(View.VISIBLE);
         titleView.setText("Albums");
+    }
+
+    private List<String> albumPathList() {
+        return new ArrayList<>(albumList);
     }
 
     // ===================== UTIL =====================
@@ -2543,7 +2894,6 @@ public class GalleryActivity extends AppCompatActivity {
                 ? audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                 : 15;
 
-        // ── Tunables ──
         final float STEP_PX_VOLUME     = 45f;
         final float STEP_PX_BRIGHTNESS = 45f;
         final float BRIGHTNESS_STEPS = 20f;
@@ -2553,7 +2903,6 @@ public class GalleryActivity extends AppCompatActivity {
         final long DOUBLE_TAP_TIMEOUT =
                 android.view.ViewConfiguration.getDoubleTapTimeout();
 
-        // ── Gesture state ──
         final float[] startY = {0f};
         final float[] startX = {0f};
         final float[] lastY  = {0f};

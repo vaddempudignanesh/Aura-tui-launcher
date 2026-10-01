@@ -7,6 +7,7 @@ import android.os.Looper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.AnimationUtils;
 import android.widget.ImageView;
 import android.widget.RelativeLayout;
 
@@ -34,7 +35,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         void onFavoriteToggle(GalleryActivity.MediaItem item);
         void onDelete(GalleryActivity.MediaItem item);
         void onItemClick(String path);
-        void onItemLongPress(String path);   // ★ NEW
+        void onItemLongPress(String path);
         boolean isSelectionMode();
         void onRestore(GalleryActivity.MediaItem item);
     }
@@ -113,32 +114,30 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
 
         loadThumbnail(holder, item);
 
-        if (item.isTrashed) {
-            holder.itemView.setOnClickListener(v -> {
+        // ★ Click animation (scale bounce) + click dispatch
+        holder.itemView.setOnClickListener(v -> {
+            animateClickBounce(v);
+            if (item.isTrashed) {
                 if (listener.isSelectionMode()) {
                     listener.onItemClick(item.path);
                 } else {
                     listener.onRestore(item);
                 }
-            });
-            holder.videoIcon.setVisibility(View.GONE);
-        } else {
-            holder.itemView.setOnClickListener(v -> {
-                if (listener.isSelectionMode()) {
-                    listener.onItemClick(item.path);
+                return;
+            }
+            if (listener.isSelectionMode()) {
+                listener.onItemClick(item.path);
+            } else {
+                if (item.type == GalleryActivity.MediaItem.TYPE_IMAGE) {
+                    listener.onImageClick(item.path);
                 } else {
-                    if (item.type == GalleryActivity.MediaItem.TYPE_IMAGE) {
-                        listener.onImageClick(item.path);
-                    } else {
-                        listener.onVideoClick(item.path);
-                    }
+                    listener.onVideoClick(item.path);
                 }
-            });
-        }
+            }
+        });
 
-        // ★ Long-press → dedicated callback so the activity can start
-        //   drag-select properly.
         holder.itemView.setOnLongClickListener(v -> {
+            animateClickBounce(v);
             listener.onItemLongPress(item.path);
             return true;
         });
@@ -154,7 +153,18 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
             holder.checkIcon.setVisibility(View.GONE);
         }
 
-        holder.favIcon.setOnClickListener(v -> listener.onFavoriteToggle(item));
+        holder.favIcon.setOnClickListener(v -> {
+            animateClickBounce(v);
+            listener.onFavoriteToggle(item);
+        });
+    }
+
+    private void animateClickBounce(View v) {
+        if (v == null) return;
+        try {
+            v.startAnimation(AnimationUtils.loadAnimation(
+                    v.getContext(), R.anim.bounce_animation));
+        } catch (Exception ignored) {}
     }
 
     private void loadThumbnail(ViewHolder holder, GalleryActivity.MediaItem item) {
