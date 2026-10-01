@@ -312,6 +312,40 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
     //  MediaPlayer lifecycle
     // ═════════════════════════════════════════════════════════════
 
+    /**
+     * Returns the current playback speed parameters, or null if unavailable
+     * (pre-API 23, or the player isn't prepared).
+     */
+    public android.media.PlaybackParams getPlaybackParams() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.M) return null;
+        if (mediaPlayer != null && prepared) {
+            try {
+                return mediaPlayer.getPlaybackParams();
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    /**
+     * Sets the playback speed. The MediaPlayer must be prepared and
+     * playing/paused (not stopped). Requires API 23+.
+     *
+     * @param params PlaybackParams with the desired speed, or null to reset to 1.0x
+     * @return true if the params were applied successfully
+     */
+    public boolean setPlaybackParams(android.media.PlaybackParams params) {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.M) return false;
+        if (mediaPlayer == null || !prepared) return false;
+        try {
+            if (params == null) params = new android.media.PlaybackParams();
+            if (params.getSpeed() == 0f) params.setSpeed(1.0f);
+            mediaPlayer.setPlaybackParams(params);
+            return true;
+        } catch (Exception e) {
+            Log.w(LOG_TAG, SRC + " [" + id + "] setPlaybackParams failed: " + e.getMessage());
+            return false;
+        }
+    }
     private void openVideoIfReady(String caller) {
         log("openVideoIfReady (from " + caller + ") surfaceReady=" + surfaceReady
                 + " videoPath=" + videoPath);

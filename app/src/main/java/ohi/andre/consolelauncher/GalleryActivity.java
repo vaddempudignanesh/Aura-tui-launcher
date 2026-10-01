@@ -89,14 +89,13 @@ public class GalleryActivity extends AppCompatActivity {
     private View fullscreenInfoHeader;
     private TextView fullscreenInfoName;
     private TextView fullscreenInfoDetails;
+
     // ── Drag-to-select state ──
     private boolean dragSelectActive = false;
-    private boolean dragSelectDeselectMode = false;   // true = drag removes from selection
+    private boolean dragSelectDeselectMode = false;
     private final java.util.Set<Integer> dragVisitedPositions = new java.util.HashSet<>();
     private TextView fullscreenInfoPath;
     private boolean fullscreenChromeVisible = false;
-
-
 
     private float dragLastY = -1f;
     private float dragLastX = -1f;
@@ -109,15 +108,15 @@ public class GalleryActivity extends AppCompatActivity {
     private final LinkedHashMap<String, String> albumDisplayNames = new LinkedHashMap<>();
     private boolean showAlbums = false;
 
-    // ★ Cache: album display name / full path → canonical path.
-    // Avoids calling File.getCanonicalPath() on every item during filter.
     private final HashMap<String, String> canonicalAlbumCache = new HashMap<>();
-    // ★ Cache the entire album map so re-opening the album list is instant
     private boolean albumsCacheValid = false;
 
     // ── Fullscreen ──
     private RelativeLayout fullscreenOverlay;
     private ViewPager2 fullscreenViewPager;
+
+    private int overlayPendingSeekMs = -1;
+
     private FullscreenAdapter fullscreenAdapter;
     private final List<String> fullscreenMediaPaths = new ArrayList<>();
     private int fullscreenCurrentPosition = 0;
@@ -137,7 +136,6 @@ public class GalleryActivity extends AppCompatActivity {
     private View fsBtnFavorite;
     private ImageView fsBtnFavoriteIcon;
     private View videoControlsOverlay;
-    // ★ These are kept for null-safety (may or may not exist in XML).
     private ImageButton btnFavoriteOverlay;
     private ImageButton btnInfoOverlay;
     private ImageButton btnDeleteOverlay;
@@ -151,6 +149,12 @@ public class GalleryActivity extends AppCompatActivity {
     private Runnable overlayHideControlsRunnable;
     private Runnable overlayProgressRunnable;
     private GestureDetector overlayTapDetector;
+
+    // ★ NEW: gesture fields for double-tap and long-press
+    private GestureDetector overlayVideoGestureDetector;
+    private float playbackSpeedBeforeLongPress = 1.0f;
+    private static final float LONG_PRESS_SPEED = 2.0f;
+
     private static final int OVERLAY_CONTROLS_TIMEOUT = 3000;
     private static final int SKIP_FORWARD_MS = 10000;
     private static final int SKIP_BACKWARD_MS = 10000;
@@ -318,7 +322,6 @@ public class GalleryActivity extends AppCompatActivity {
         fsBtnFavorite = findViewById(R.id.fsBtnFavorite);
         fsBtnFavoriteIcon = findViewById(R.id.fsBtnFavoriteIcon);
 
-        // These may be null if the XML no longer contains them.
         btnFavoriteOverlay = findViewById(R.id.btnFavorite);
         btnInfoOverlay = findViewById(R.id.btnInfo);
         btnDeleteOverlay = findViewById(R.id.btnDelete);
@@ -373,7 +376,7 @@ public class GalleryActivity extends AppCompatActivity {
             }
         });
 
-        // ── Tap detector for fullscreen overlay ──
+        // ── Tap detector for fullscreen overlay (single tap toggles chrome) ──
         overlayTapDetector = new GestureDetector(this,
                 new GestureDetector.SimpleOnGestureListener() {
                     @Override
@@ -391,12 +394,75 @@ public class GalleryActivity extends AppCompatActivity {
             return false;
         });
 
+        // ★ NEW: gesture detector for double-tap and long-press on the video
+        overlayVideoGestureDetector = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
+
+                    @Override
+                    public boolean onDown(MotionEvent e) { return true; }
+
+                    @Override
+                    public boolean onSingleTapConfirmed(MotionEvent e) {
+                        onFullscreenTap();
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onDoubleTap(MotionEvent e) {
+                        if (!currentFullscreenPageIsVideo || currentFullscreenVideo == null)
+                            return false;
+
+                        float tapX = e.getX();
+                        float w = fullscreenOverlay.getWidth();
+                        if (w <= 0) return false;
+                        float leftThird  = w / 3f;
+                        float rightThird = w * 2f / 3f;
+
+                        if (tapX < leftThird) {
+                            skipByMs(-SKIP_BACKWARD_MS);
+                        } else if (tapX > rightThird) {
+                            skipByMs(SKIP_FORWARD_MS);
+                        } else {
+                            toggleOverlayPlayPause();
+                        }
+                        return true;
+                    }
+
+                    @Override
+                    public void onLongPress(MotionEvent e) {
+                        if (!currentFullscreenPageIsVideo || currentFullscreenVideo == null) return;
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+                        try {
+                            android.media.PlaybackParams params = currentFullscreenVideo.getPlaybackParams();
+                            if (params != null) playbackSpeedBeforeLongPress = params.getSpeed();
+                            if (params == null) params = new android.media.PlaybackParams();
+                            params.setSpeed(LONG_PRESS_SPEED);
+                            currentFullscreenVideo.setPlaybackParams(params);
+                            Toast.makeText(GalleryActivity.this,
+                                    "▶▶ 2x speed", Toast.LENGTH_SHORT).show();
+                        } catch (Exception ex) {
+                            Log.w(LOG_TAG, "long-press speed failed", ex);
+                        }
+                    }
+                });
+
         setupOverlayVideoControls();
 
         // ── Fullscreen adapter ──
         fullscreenAdapter = new FullscreenAdapter(fullscreenMediaPaths, this);
         log("fullscreenAdapter created: " + Integer.toHexString(System.identityHashCode(fullscreenAdapter)));
         fullscreenAdapter.setTapCallback(this::onFullscreenTap);
+
+        // ★ NEW: forward video touches to the gesture detector
+        fullscreenAdapter.setVideoTouchForwarder(event -> {
+            if (overlayVideoGestureDetector != null) {
+                overlayVideoGestureDetector.onTouchEvent(event);
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_UP
+                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                resetPlaybackSpeed();
+            }
+        });
 
         fullscreenAdapter.setPageTypeCallback(new FullscreenAdapter.PageTypeCallback() {
             @Override
@@ -427,10 +493,9 @@ public class GalleryActivity extends AppCompatActivity {
                     currentFullscreenVideo = videoView;
                     currentFullscreenVideoPosition = position;
                     isOverlayVideoPlaying = true;
+                    overlayPendingSeekMs = -1;
                     try {
                         videoView.start();
-                        log("  isPlaying=" + videoView.isPlaying()
-                                + " duration=" + videoView.getDuration());
                     } catch (Exception e) {
                         Log.e(LOG_TAG, src() + " videoView.start() threw", e);
                     }
@@ -455,13 +520,11 @@ public class GalleryActivity extends AppCompatActivity {
             @Override
             public void onPageScrollStateChanged(int state) {
                 userIsSwiping = (state != ViewPager2.SCROLL_STATE_IDLE);
-                log("onPageScrollStateChanged: state=" + state + " userIsSwiping=" + userIsSwiping);
             }
 
             @Override
             public void onPageSelected(int position) {
-                log("onPageSelected: " + position
-                        + " (was " + fullscreenCurrentPosition + ")");
+                log("onPageSelected: " + position + " (was " + fullscreenCurrentPosition + ")");
 
                 if (currentFullscreenVideo != null
                         && currentFullscreenVideoPosition != position) {
@@ -473,6 +536,7 @@ public class GalleryActivity extends AppCompatActivity {
                     videoHandler.removeCallbacks(overlayProgressRunnable);
                 }
 
+                overlayPendingSeekMs = -1;   // ★ clear stale seek
                 fullscreenCurrentPosition = position;
                 fullscreenCurrentIndex = position;
 
@@ -521,6 +585,54 @@ public class GalleryActivity extends AppCompatActivity {
         if (topNavBar != null) updateTopNavBar();
     }
 
+    // ===================== EFFECTIVE SEEK POSITION =====================
+
+    private int getEffectivePositionMs() {
+        if (currentFullscreenVideo == null) return 0;
+        if (overlayPendingSeekMs >= 0) return overlayPendingSeekMs;
+        try {
+            return currentFullscreenVideo.getCurrentPosition();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private void skipByMs(int deltaMs) {
+        if (currentFullscreenVideo == null) return;
+        int dur;
+        try { dur = currentFullscreenVideo.getDuration(); }
+        catch (Exception e) { return; }
+        if (dur <= 0) return;
+
+        int current = getEffectivePositionMs();
+        int target = Math.max(0, Math.min(current + deltaMs, dur));
+
+        overlayPendingSeekMs = target;
+        try { currentFullscreenVideo.seekTo(target); }
+        catch (Exception ignored) {}
+
+        if (videoTimeCurrent != null)
+            videoTimeCurrent.setText(formatTime(target));
+        if (videoSeekBar != null)
+            videoSeekBar.setProgress((int) ((target / (float) dur) * 1000));
+
+        videoHandler.postDelayed(() -> overlayPendingSeekMs = -1, 350);
+        showAllControlsWithTimeout();
+    }
+
+    private void resetPlaybackSpeed() {
+        if (currentFullscreenVideo == null) return;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        try {
+            android.media.PlaybackParams params = currentFullscreenVideo.getPlaybackParams();
+            if (params == null) params = new android.media.PlaybackParams();
+            params.setSpeed(playbackSpeedBeforeLongPress > 0
+                    ? playbackSpeedBeforeLongPress : 1.0f);
+            currentFullscreenVideo.setPlaybackParams(params);
+        } catch (Exception ignored) {}
+        playbackSpeedBeforeLongPress = 1.0f;
+    }
+
     // ===================== CANONICAL PATH CACHE =====================
 
     private String getCachedCanonical(String path) {
@@ -547,7 +659,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
     }
 
-    // ===================== FAVORITES PERSISTENCE =====================
+    // ===================== FAVORITES =====================
 
     private Set<String> loadFavoritePaths() {
         if (prefs == null) return new HashSet<>();
@@ -647,10 +759,7 @@ public class GalleryActivity extends AppCompatActivity {
             return false;
         }
         try {
-            if (src.renameTo(dst)) {
-                Log.d(LOG_TAG, "renameFileRobust: renameTo OK " + src + " → " + dst);
-                return true;
-            }
+            if (src.renameTo(dst)) return true;
         } catch (Exception e) {
             Log.w(LOG_TAG, "renameFileRobust: renameTo threw", e);
         }
@@ -660,13 +769,11 @@ public class GalleryActivity extends AppCompatActivity {
                         src.toPath(),
                         dst.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                Log.d(LOG_TAG, "renameFileRobust: Files.move OK " + src + " → " + dst);
                 return true;
             } catch (Exception e) {
-                Log.e(LOG_TAG, "renameFileRobust: Files.move failed " + src + " → " + dst, e);
+                Log.e(LOG_TAG, "renameFileRobust: Files.move failed", e);
             }
         }
-        Log.e(LOG_TAG, "renameFileRobust: all attempts failed " + src + " → " + dst);
         return false;
     }
 
@@ -687,17 +794,14 @@ public class GalleryActivity extends AppCompatActivity {
                             try {
                                 connHolder[0].scanFile(p, null);
                             } catch (Exception e) {
-                                Log.e(LOG_TAG, "scanFile threw: " + p, e);
                                 if (remaining.decrementAndGet() == 0) finish();
                             }
                         }
                     }
-
                     @Override
                     public void onScanCompleted(String path, Uri uri) {
                         if (remaining.decrementAndGet() == 0) finish();
                     }
-
                     private void finish() {
                         try { connHolder[0].disconnect(); } catch (Exception ignored) {}
                         if (callback != null) mediaRefreshHandler.post(callback);
@@ -712,8 +816,7 @@ public class GalleryActivity extends AppCompatActivity {
             mediaRefreshHandler.removeCallbacks(pendingMediaRefresh);
         }
         pendingMediaRefresh = () -> {
-            log("scheduleMediaRefresh: running loadMedia()");
-            albumsCacheValid = false;   // ★ folder contents may have changed
+            albumsCacheValid = false;
             loadMedia();
             pendingMediaRefresh = null;
         };
@@ -727,25 +830,10 @@ public class GalleryActivity extends AppCompatActivity {
             btnCenterPlayPause.setOnClickListener(v -> toggleOverlayPlayPause());
 
         if (btnSkipForwardOverlay != null)
-            btnSkipForwardOverlay.setOnClickListener(v -> {
-                if (currentFullscreenVideo != null) {
-                    int cur = currentFullscreenVideo.getCurrentPosition();
-                    int dur = currentFullscreenVideo.getDuration();
-                    currentFullscreenVideo.seekTo(Math.min(cur + SKIP_FORWARD_MS, dur));
-                    updateOverlaySeekBar();
-                    showAllControlsWithTimeout();
-                }
-            });
+            btnSkipForwardOverlay.setOnClickListener(v -> skipByMs(SKIP_FORWARD_MS));
 
         if (btnSkipBackwardOverlay != null)
-            btnSkipBackwardOverlay.setOnClickListener(v -> {
-                if (currentFullscreenVideo != null) {
-                    int cur = currentFullscreenVideo.getCurrentPosition();
-                    currentFullscreenVideo.seekTo(Math.max(cur - SKIP_BACKWARD_MS, 0));
-                    updateOverlaySeekBar();
-                    showAllControlsWithTimeout();
-                }
-            });
+            btnSkipBackwardOverlay.setOnClickListener(v -> skipByMs(-SKIP_BACKWARD_MS));
 
         if (btnRotateOverlay != null)
             btnRotateOverlay.setOnClickListener(v -> toggleOrientation());
@@ -796,9 +884,11 @@ public class GalleryActivity extends AppCompatActivity {
                         int dur = currentFullscreenVideo.getDuration();
                         if (dur > 0) {
                             int targetMs = (int) ((progress / 1000.0) * dur);
+                            overlayPendingSeekMs = targetMs;
                             currentFullscreenVideo.seekTo(targetMs);
                             if (videoTimeCurrent != null)
                                 videoTimeCurrent.setText(formatTime(targetMs));
+                            videoHandler.postDelayed(() -> overlayPendingSeekMs = -1, 350);
                         }
                     }
                 }
@@ -814,6 +904,7 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void toggleOverlayPlayPause() {
         if (currentFullscreenVideo == null) return;
+        overlayPendingSeekMs = -1;   // ★ reset stale seek
         if (isOverlayVideoPlaying) {
             currentFullscreenVideo.pause();
             isOverlayVideoPlaying = false;
@@ -846,7 +937,7 @@ public class GalleryActivity extends AppCompatActivity {
     private void updateOverlaySeekBar() {
         if (currentFullscreenVideo == null) return;
         try {
-            int cur = currentFullscreenVideo.getCurrentPosition();
+            int cur = getEffectivePositionMs();   // ★ use effective position
             int dur = currentFullscreenVideo.getDuration();
             if (dur > 0) {
                 if (videoTimeCurrent != null) videoTimeCurrent.setText(formatTime(cur));
@@ -911,7 +1002,21 @@ public class GalleryActivity extends AppCompatActivity {
                         currentFullscreenVideoPosition = targetPosition;
                         currentFullscreenPageIsVideo = true;
                         isOverlayVideoPlaying = true;
+                        overlayPendingSeekMs = -1;
+
                         vv.setOnTapListener(this::onFullscreenTap);
+                        // ★ Attach touch forwarder to this video view too
+                        vv.setOnTouchListener((v, event) -> {
+                            if (overlayVideoGestureDetector != null) {
+                                overlayVideoGestureDetector.onTouchEvent(event);
+                            }
+                            if (event.getActionMasked() == MotionEvent.ACTION_UP
+                                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                                resetPlaybackSpeed();
+                            }
+                            return true;
+                        });
+
                         vv.start();
                         if (btnCenterPlayPause != null)
                             btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
@@ -945,8 +1050,6 @@ public class GalleryActivity extends AppCompatActivity {
             isLandscape = true;
         }
     }
-
-
 
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
@@ -1022,6 +1125,7 @@ public class GalleryActivity extends AppCompatActivity {
         currentFullscreenPageIsVideo = false;
         isOverlayVideoPlaying = false;
         overlayControlsVisible = false;
+        overlayPendingSeekMs = -1;
 
         fullscreenAdapter.notifyDataSetChanged();
         fullscreenViewPager.setCurrentItem(currentIndex, false);
@@ -1029,7 +1133,6 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenOverlay.setVisibility(View.VISIBLE);
         fullscreenOverlay.bringToFront();
 
-        // ★ Hide the top nav bar so no back arrow shows in fullscreen
         View topNav = findViewById(R.id.topNavBar);
         if (topNav != null) topNav.setVisibility(View.GONE);
         View selTop = findViewById(R.id.selectionTopBar);
@@ -1067,6 +1170,7 @@ public class GalleryActivity extends AppCompatActivity {
         currentFullscreenPageIsVideo = false;
         isOverlayVideoPlaying = false;
         overlayControlsVisible = false;
+        overlayPendingSeekMs = -1;
         videoHandler.removeCallbacks(overlayProgressRunnable);
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
 
@@ -1089,7 +1193,6 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenOverlay.setVisibility(View.GONE);
         bottomBar.setVisibility(View.VISIBLE);
 
-        // ★ Restore top nav bar
         View topNav = findViewById(R.id.topNavBar);
         if (topNav != null) topNav.setVisibility(View.VISIBLE);
         updateTopNavBar();
@@ -1620,28 +1723,13 @@ public class GalleryActivity extends AppCompatActivity {
         setupDragToSelect();
     }
 
-    /**
-     * Called when an item is long-pressed. Enters selection mode,
-     * selects the item, and enables drag-select so subsequent finger
-     * movement selects neighboring items.
-     */
     private void startLongPressDrag(String path) {
         if (!isActivityAlive()) return;
-
-        // Enter selection mode
         if (!selectedItems.contains(path)) {
             selectedItems.add(path);
         }
         updateSelectionUI();
-
-        // Determine the direction of the drag:
-        //   - If the item was already selected before long-press → deselect mode
-        //   - Otherwise → select mode
-        // NOTE: `toggleSelection` isn't called, so the item stays selected
-        //       regardless; we just decide what subsequent drags do.
-        dragSelectDeselectMode = false; // fresh press = add mode
-
-        // Set drag-active state
+        dragSelectDeselectMode = false;
         dragSelectActive = true;
         dragVisitedPositions.clear();
 
@@ -1666,14 +1754,6 @@ public class GalleryActivity extends AppCompatActivity {
         return -1;
     }
 
-    /**
-     * Enable drag-to-select on the main grid.
-     *   - Long-press on an item → selection mode (handled by adapter).
-     *   - While still holding, drag up/down/left/right → every item the
-     *     finger passes over is selected (or deselected if the drag started
-     *     on an already-selected item).
-     *   - Auto-scrolls when the finger nears the top or bottom edge.
-     */
     private void setupDragToSelect() {
         if (recyclerView == null) return;
 
@@ -1733,7 +1813,6 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        // Auto-scroll near edges
         int threshold = dpToPx(60);
         if (y < threshold) {
             rv.scrollBy(0, -dpToPx(8));
@@ -1747,7 +1826,6 @@ public class GalleryActivity extends AppCompatActivity {
         if (position < 0 || position >= displayedItems.size()) return;
 
         dragVisitedPositions.add(position);
-
         MediaItem item = displayedItems.get(position);
 
         if (dragSelectDeselectMode) {
@@ -1767,9 +1845,6 @@ public class GalleryActivity extends AppCompatActivity {
     private int dpToPx(int dp) {
         return Math.round(dp * getResources().getDisplayMetrics().density);
     }
-
-
-
 
     // ===================== TRASH =====================
 
@@ -1827,15 +1902,11 @@ public class GalleryActivity extends AppCompatActivity {
 
     private boolean restoreFromTrash(MediaItem item) {
         File file = new File(item.path);
-        if (!file.exists()) {
-            Log.e(LOG_TAG, "restoreFromTrash: file not found: " + item.path);
-            return false;
-        }
+        if (!file.exists()) return false;
 
         String parent = file.getParent();
         String name = file.getName();
         String cleanName = cleanFileName(name);
-
         File restoredFile = new File(parent, cleanName);
 
         if (restoredFile.exists()) {
@@ -1853,11 +1924,7 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        if (!renameFileRobust(file, restoredFile)) {
-            Log.e(LOG_TAG, "restoreFromTrash: renameFileRobust failed "
-                    + item.path + " → " + restoredFile.getAbsolutePath());
-            return false;
-        }
+        if (!renameFileRobust(file, restoredFile)) return false;
 
         String oldPath = item.path;
         item.path = restoredFile.getAbsolutePath();
@@ -1873,10 +1940,7 @@ public class GalleryActivity extends AppCompatActivity {
 
         scanPathsAndThen(
                 Arrays.asList(restoredFile.getAbsolutePath(), oldPath),
-                () -> {
-                    log("restoreFromTrash: scanner finished → refreshing list");
-                    scheduleMediaRefresh(0L);
-                });
+                () -> scheduleMediaRefresh(0L));
 
         return true;
     }
@@ -1885,9 +1949,7 @@ public class GalleryActivity extends AppCompatActivity {
         if (selectedItems.isEmpty()) return;
 
         List<String> paths = new ArrayList<>(selectedItems);
-
-        int moved = 0;
-        int failed = 0;
+        int moved = 0, failed = 0;
 
         for (String path : paths) {
             File f = new File(path);
@@ -1922,21 +1984,14 @@ public class GalleryActivity extends AppCompatActivity {
         if (selectedItems.isEmpty()) return;
 
         List<String> paths = new ArrayList<>(selectedItems);
-
-        int restored = 0;
-        int failed = 0;
+        int restored = 0, failed = 0;
 
         for (String path : paths) {
             File file = new File(path);
-            if (!file.exists()) {
-                Log.e(LOG_TAG, "restoreSelectedItems: file gone: " + path);
-                failed++;
-                continue;
-            }
+            if (!file.exists()) { failed++; continue; }
 
             MediaItem item = new MediaItem(path, file.getName(),
                     MediaItem.TYPE_IMAGE, 0, true, "");
-
             String lower = path.toLowerCase(Locale.ROOT);
             if (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm")
                     || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
@@ -1944,19 +1999,14 @@ public class GalleryActivity extends AppCompatActivity {
                 item.type = MediaItem.TYPE_VIDEO;
             }
 
-            if (restoreFromTrash(item)) {
-                restored++;
-            } else {
-                failed++;
-            }
+            if (restoreFromTrash(item)) restored++;
+            else failed++;
         }
 
         clearSelection();
         applyFilter();
 
-        if (restored > 0) {
-            scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
-        }
+        if (restored > 0) scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
 
         if (failed == 0) {
             Toast.makeText(this, "Restored " + restored + " item(s)", Toast.LENGTH_SHORT).show();
@@ -1976,19 +2026,15 @@ public class GalleryActivity extends AppCompatActivity {
                 .setMessage("Are you sure you want to permanently delete "
                         + paths.size() + " item(s)? This cannot be undone.")
                 .setPositiveButton("Delete", (d, w) -> {
-                    int deleted = 0;
-                    int failed = 0;
+                    int deleted = 0, failed = 0;
 
                     for (String path : paths) {
                         File f = new File(path);
                         boolean ok = false;
 
                         if (f.exists()) {
-                            try {
-                                ok = f.delete();
-                            } catch (Exception e) {
-                                Log.e(LOG_TAG, "delete failed: " + path, e);
-                            }
+                            try { ok = f.delete(); }
+                            catch (Exception e) { Log.e(LOG_TAG, "delete failed: " + path, e); }
                         } else {
                             ok = true;
                         }
@@ -2001,19 +2047,14 @@ public class GalleryActivity extends AppCompatActivity {
                                     break;
                                 }
                             }
-                        } else {
-                            failed++;
-                            Log.e(LOG_TAG, "Could not delete: " + path);
-                        }
+                        } else failed++;
                     }
 
                     albumsCacheValid = false;
                     clearSelection();
                     applyFilter();
 
-                    if (deleted > 0) {
-                        scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
-                    }
+                    if (deleted > 0) scheduleMediaRefresh(MEDIA_REFRESH_DEBOUNCE_MS);
 
                     if (failed == 0) {
                         Toast.makeText(this, "Deleted " + deleted + " item(s)",
@@ -2195,7 +2236,6 @@ public class GalleryActivity extends AppCompatActivity {
     // ===================== ALBUMS =====================
 
     private void loadAlbums() {
-        // ★ Reuse cached album map if still valid
         if (albumsCacheValid && !albumList.isEmpty()) {
             runOnUiThread(this::showAlbumGrid);
             return;
@@ -2204,7 +2244,6 @@ public class GalleryActivity extends AppCompatActivity {
         executor.execute(() -> {
             LinkedHashMap<String, String> albums = new LinkedHashMap<>();
 
-            // ── 1. MediaStore Images ──
             String[] imgProjection = {
                     MediaStore.Images.Media.DATA,
                     MediaStore.Images.Media.BUCKET_DISPLAY_NAME
@@ -2226,16 +2265,13 @@ public class GalleryActivity extends AppCompatActivity {
                         String parentPath = getCachedCanonical(parent.getAbsolutePath());
                         String display = (name != null && !name.isEmpty())
                                 ? name : parent.getName();
-                        if (!albums.containsKey(parentPath)) {
-                            albums.put(parentPath, display);
-                        }
+                        if (!albums.containsKey(parentPath)) albums.put(parentPath, display);
                     }
                 }
             } catch (Exception e) {
                 Log.e(LOG_TAG, "loadAlbums: image query failed", e);
             } finally { if (imgCursor != null) imgCursor.close(); }
 
-            // ── 2. MediaStore Videos ──
             String[] vidProjection = {
                     MediaStore.Video.Media.DATA,
                     MediaStore.Video.Media.BUCKET_DISPLAY_NAME
@@ -2257,16 +2293,13 @@ public class GalleryActivity extends AppCompatActivity {
                         String parentPath = getCachedCanonical(parent.getAbsolutePath());
                         String display = (name != null && !name.isEmpty())
                                 ? name : parent.getName();
-                        if (!albums.containsKey(parentPath)) {
-                            albums.put(parentPath, display);
-                        }
+                        if (!albums.containsKey(parentPath)) albums.put(parentPath, display);
                     }
                 }
             } catch (Exception e) {
                 Log.e(LOG_TAG, "loadAlbums: video query failed", e);
             } finally { if (vidCursor != null) vidCursor.close(); }
 
-            // ── 3. Filesystem scan of all storage roots ──
             List<File> roots = getStorageDirectoriesProper();
             for (File root : roots) {
                 if (root != null && root.exists()) {
@@ -2335,18 +2368,14 @@ public class GalleryActivity extends AppCompatActivity {
 
         if (hasMedia) {
             String path = getCachedCanonical(directory.getAbsolutePath());
-            if (!albums.containsKey(path)) {
-                albums.put(path, directory.getName());
-            }
+            if (!albums.containsKey(path)) albums.put(path, directory.getName());
         }
 
         String name = directory.getName().toLowerCase(Locale.ROOT);
         if (name.equals("android") || name.equals("system")
                 || name.equals("cache") || name.equals("tmp")
                 || name.equals("lost+found") || name.equals("app")
-                || name.equals("data") || name.equals("obb")) {
-            return;
-        }
+                || name.equals("data") || name.equals("obb")) return;
 
         for (File f : files) {
             if (f.isDirectory() && !f.getName().startsWith(".")) {
@@ -2433,14 +2462,10 @@ public class GalleryActivity extends AppCompatActivity {
     private void addSelectedToFavorites() {
         if (selectedItems.isEmpty()) return;
         Set<String> favs = loadFavoritePaths();
-        int added = 0;
         for (String path : selectedItems) {
             File f = new File(path);
             if (!f.exists()) continue;
-            if (!favs.contains(path)) {
-                favs.add(path);
-                added++;
-            }
+            favs.add(path);
             for (MediaItem item : mediaItems) {
                 if (item.path.equals(path)) { item.isFavorite = true; break; }
             }

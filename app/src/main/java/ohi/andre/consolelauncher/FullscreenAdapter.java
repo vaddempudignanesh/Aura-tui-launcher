@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ProgressBar;
@@ -28,10 +29,17 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         void onVideoVisible(CustomVideoView videoView, int position);
     }
 
+    /** ★ NEW: forwards raw touch events from the video surface to the activity
+     *  so double-tap and long-press gestures can be detected. */
+    public interface VideoTouchForwarder {
+        void onTouch(MotionEvent event);
+    }
+
     private final List<String> paths;
     private final Context context;
     private TapCallback tapCallback;
     private PageTypeCallback pageTypeCallback;
+    private VideoTouchForwarder videoTouchForwarder;   // ★ NEW
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
 
     public FullscreenAdapter(List<String> paths, Context context) {
@@ -46,6 +54,11 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
 
     public void setPageTypeCallback(PageTypeCallback cb) {
         this.pageTypeCallback = cb;
+    }
+
+    /** ★ NEW */
+    public void setVideoTouchForwarder(VideoTouchForwarder f) {
+        this.videoTouchForwarder = f;
     }
 
     private void log(String msg) { Log.d(LOG_TAG, src() + " " + msg); }
@@ -79,11 +92,9 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
 
         log("onBind pos=" + boundPosition + " path=" + path);
 
-        // ★ Get the current path this video view holds BEFORE we touch it.
         String previousVideoPath = null;
         try { previousVideoPath = holder.videoView.getVideoPath(); } catch (Exception ignored) {}
 
-        // Always reset visibility
         holder.videoView.setVisibility(View.GONE);
         holder.imageView.setVisibility(View.GONE);
         holder.progressBar.setVisibility(View.VISIBLE);
@@ -92,7 +103,6 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
             log("  → VIDEO page (previous=" + previousVideoPath + ")");
             holder.videoView.setVisibility(View.VISIBLE);
 
-            // ★ Only stop playback if the view is being reused for a different path
             boolean pathChanged = previousVideoPath == null
                     || !previousVideoPath.equals(path);
             if (pathChanged) {
@@ -102,7 +112,6 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 log("  same path → keeping playback state");
             }
 
-            // Clear old listener before setting new one
             holder.videoView.setOnPreparedListener(null);
 
             holder.videoView.setOnPreparedListener(mp -> {
@@ -124,9 +133,17 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 }
             });
 
-            // Forward taps from the video surface to the activity
+            // Legacy single-tap callback (kept for compatibility)
             holder.videoView.setOnTapListener(() -> {
                 if (tapCallback != null) tapCallback.onTap();
+            });
+
+            // ★ NEW: forward raw touches to activity for double-tap and long-press
+            holder.videoView.setOnTouchListener((v, event) -> {
+                if (videoTouchForwarder != null) {
+                    videoTouchForwarder.onTouch(event);
+                }
+                return true;   // consume — we handle taps ourselves
             });
 
             holder.videoView.setOnErrorListener((mp, what, extra) -> {
@@ -136,7 +153,6 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 return true;
             });
 
-            // setVideoPath is idempotent now — it skips if path is unchanged
             try {
                 log("  calling videoView.setVideoPath");
                 holder.videoView.setVideoPath(path);
@@ -150,12 +166,12 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         // IMAGE
         log("  → IMAGE page");
 
-        // If this view was previously a video, stop it
         if (previousVideoPath != null) {
             log("  recycled video view → stopping");
             try { holder.videoView.stopPlayback(); } catch (Exception ignored) {}
             holder.videoView.setOnPreparedListener(null);
             holder.videoView.setOnTapListener(null);
+            holder.videoView.setOnTouchListener(null);   // ★ NEW: clear forwarder
         }
 
         holder.imageView.setImageDrawable(null);
@@ -225,6 +241,7 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         holder.videoView.setVisibility(View.GONE);
         holder.videoView.setOnPreparedListener(null);
         holder.videoView.setOnTapListener(null);
+        holder.videoView.setOnTouchListener(null);   // ★ NEW
         holder.imageView.setVisibility(View.GONE);
         holder.imageView.setImageDrawable(null);
         holder.progressBar.setVisibility(View.GONE);

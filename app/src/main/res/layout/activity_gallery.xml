@@ -140,6 +140,27 @@
                 android:focusable="false"
                 android:visibility="gone">
 
+                <!-- TOP: video title -->
+                <TextView
+                    android:id="@+id/videoTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingTop="16dp"
+                    android:paddingBottom="8dp"
+                    android:text="Video"
+                    android:textColor="#FFFFFF"
+                    android:textStyle="bold"
+                    android:shadowColor="#80000000"
+                    android:shadowDx="1"
+                    android:shadowDy="1"
+                    android:shadowRadius="2"
+                    android:textSize="14sp"
+                    android:singleLine="true"
+                    android:ellipsize="end" />
+
+                <!-- MIDDLE: play / pause / skip -->
                 <FrameLayout
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
@@ -184,81 +205,53 @@
                     </LinearLayout>
                 </FrameLayout>
 
+                <!-- BOTTOM: seek bar — pushed up 80dp so it sits ABOVE the
+                     Bin/Fav/Share/Info bar, which is drawn on top with elevation -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="12dp"
-                    android:background="#00000000">
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="80dp">
 
-                    <LinearLayout
-                        android:layout_width="match_parent"
+                    <TextView
+                        android:id="@+id/videoTimeCurrent"
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical"
-                        android:paddingStart="8dp"
-                        android:paddingEnd="8dp">
+                        android:text="00:00"
+                        android:textColor="#FFFFFF"
+                        android:textStyle="bold"
+                        android:shadowColor="#80000000"
+                        android:shadowDx="1"
+                        android:shadowDy="1"
+                        android:shadowRadius="2"
+                        android:textSize="13sp" />
 
-                        <TextView
-                            android:id="@+id/videoTimeCurrent"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="00:00"
-                            android:textColor="#FFFFFF"
-                            android:textStyle="bold"
-                            android:shadowColor="#80000000"
-                            android:shadowDx="1"
-                            android:shadowDy="1"
-                            android:shadowRadius="2"
-                            android:textSize="13sp" />
-
-                        <SeekBar
-                            android:id="@+id/videoSeekBar"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:layout_marginStart="12dp"
-                            android:layout_marginEnd="12dp"
-                            android:progress="0"
-                            android:max="1000" />
-
-                        <TextView
-                            android:id="@+id/videoTimeTotal"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="00:00"
-                            android:textColor="#FFFFFF"
-                            android:textStyle="bold"
-                            android:shadowColor="#80000000"
-                            android:shadowDx="1"
-                            android:shadowDy="1"
-                            android:shadowRadius="2"
-                            android:textSize="13sp" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
+                    <SeekBar
+                        android:id="@+id/videoSeekBar"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical"
-                        android:padding="8dp">
+                        android:layout_weight="1"
+                        android:layout_marginStart="12dp"
+                        android:layout_marginEnd="12dp"
+                        android:progress="0"
+                        android:max="1000" />
 
-                        <TextView
-                            android:id="@+id/videoTitle"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="Video"
-                            android:textColor="#FFFFFF"
-                            android:textStyle="bold"
-                            android:shadowColor="#80000000"
-                            android:shadowDx="1"
-                            android:shadowDy="1"
-                            android:shadowRadius="2"
-                            android:textSize="14sp"
-                            android:singleLine="true"
-                            android:ellipsize="end" />
-                    </LinearLayout>
+                    <TextView
+                        android:id="@+id/videoTimeTotal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="00:00"
+                        android:textColor="#FFFFFF"
+                        android:textStyle="bold"
+                        android:shadowColor="#80000000"
+                        android:shadowDx="1"
+                        android:shadowDy="1"
+                        android:shadowRadius="2"
+                        android:textSize="13sp" />
                 </LinearLayout>
             </LinearLayout>
         </FrameLayout>
