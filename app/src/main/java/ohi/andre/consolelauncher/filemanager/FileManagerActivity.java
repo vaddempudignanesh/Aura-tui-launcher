@@ -123,6 +123,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private ImageView btnMore;
     private ImageView btnCloseSelection;
 
+
+    private volatile int searchGeneration = 0;
+
     // Footer
     private LinearLayout footerBar;
     private LinearLayout footerActions;
@@ -845,12 +848,13 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             if (imm != null) imm.showSoftInput(etSearch, InputMethodManager.SHOW_IMPLICIT);
         }, 100);
     }
-
     private void hideSearchBar() {
         hideKeyboard();
         searchBar.setVisibility(View.GONE);
         etSearch.setText("");
         currentSearchQuery = "";
+        searchGeneration++;                 // kill running search
+        adapter.setSearchResults(null);     // restore normal rendering
         applySearchFilter();
     }
 
@@ -861,36 +865,106 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         etSearch.clearFocus();
     }
 
-    /**
-     * Recompute the displayed list by applying the current search query
-     * on top of the sorted currentFileList. Directories stay visible so
-     * the user can navigate while searching (standard file-manager UX).
-     */
     private void applySearchFilter() {
-        List<File> result = new ArrayList<>();
+        // No query → just show the current directory, no recursion needed.
         if (currentSearchQuery.isEmpty()) {
-            result.addAll(currentFileList);
-        } else {
-            for (File f : currentFileList) {
-                if (f.getName().toLowerCase(Locale.US).contains(currentSearchQuery)) {
-                    result.add(f);
-                }
-            }
-        }
-        displayedFileList = result;
-        adapter.setFiles(result);
+            displayedFileList = new ArrayList<>(currentFileList);
+            adapter.setFiles(displayedFileList);
+            adapter.setSearchResults(null);
 
-        boolean empty = result.isEmpty();
-        recyclerFiles.setVisibility(empty ? View.GONE : View.VISIBLE);
-        tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
-
-        if (empty && !currentSearchQuery.isEmpty()) {
-            tvEmpty.setText("No matches for \"" + currentSearchQuery + "\"");
-        } else {
+            boolean empty = displayedFileList.isEmpty();
+            recyclerFiles.setVisibility(empty ? View.GONE : View.VISIBLE);
+            tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
             tvEmpty.setText("Empty folder");
+            return;
+        }
+
+        // Snapshot for the background thread.
+        final File root = currentDir;
+        final String query = currentSearchQuery;
+        final int generation = ++searchGeneration;
+
+        // Show a transient "Searching…" state without clearing the list.
+        tvEmpty.setVisibility(View.GONE);
+
+        executor.execute(() -> {
+            List<SearchResult> results = new ArrayList<>();
+            recursiveSearch(root, root, query, results, generation);
+
+            // Stale? Discard.
+            if (generation != searchGeneration) return;
+
+            // Sort: shorter relative path first, then alpha.
+            Collections.sort(results, (a, b) -> {
+                int cmp = Integer.compare(a.relativePath.length(), b.relativePath.length());
+                if (cmp != 0) return cmp;
+                return a.file.getName().compareToIgnoreCase(b.file.getName());
+            });
+
+            mainHandler.post(() -> {
+                if (generation != searchGeneration) return;
+
+                displayedFileList = new ArrayList<>();
+                for (SearchResult r : results) displayedFileList.add(r.file);
+
+                adapter.setSearchResults(results);
+
+                boolean empty = results.isEmpty();
+                recyclerFiles.setVisibility(empty ? View.GONE : View.VISIBLE);
+                tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
+                if (empty) {
+                    tvEmpty.setText("No matches for \"" + query + "\"");
+                }
+            });
+        });
+    }
+
+    /**
+     * Depth-first search for files whose name contains `query` (case-insensitive).
+     * Adds matches as SearchResult(file, relativePathFromRoot).
+     * Directories are traversed but not added to results themselves.
+     * Aborts early if the generation counter changes.
+     */
+    private void recursiveSearch(File root,
+                                 File current,
+                                 String query,
+                                 List<SearchResult> out,
+                                 int generation) {
+        if (generation != searchGeneration) return;
+        if (out.size() >= 2000) return; // hard cap to avoid runaway memory
+
+        File[] children = current.listFiles();
+        if (children == null) return;
+
+        for (File child : children) {
+            if (generation != searchGeneration) return;
+
+            String name = child.getName().toLowerCase(Locale.US);
+            if (name.contains(query)) {
+                String rel = relativize(root, child);
+                out.add(new SearchResult(child, rel));
+            }
+
+            if (child.isDirectory()) {
+                recursiveSearch(root, child, query, out, generation);
+            }
         }
     }
 
+    /**
+     * Returns the path of `child` relative to `root`, with forward slashes.
+     * Example: root=/sdcard, child=/sdcard/a/b.txt → "a/b.txt"
+     */
+    private static String relativize(File root, File child) {
+        String rootPath = root.getAbsolutePath();
+        String childPath = child.getAbsolutePath();
+        if (childPath.startsWith(rootPath)) {
+            String rel = childPath.substring(rootPath.length());
+            if (rel.startsWith("/")) rel = rel.substring(1);
+            return rel;
+        }
+        return childPath;
+    }
     private void setupStorageDrawer() {
         List<StorageAdapter.StorageItem> items = new ArrayList<>();
 
@@ -1043,6 +1117,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             currentSearchQuery = "";
             etSearch.setText("");
             searchBar.setVisibility(View.GONE);
+            searchGeneration++;             // ← NEW: kill any running search
+            adapter.setSearchResults(null); // ← NEW: restore normal rendering
         }
 
         final int sortModeSnapshot = currentSortMode;
@@ -1107,13 +1183,27 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         if (adapter.isSelectionMode()) {
             adapter.toggleSelection(file);
             updateSelectionUI();
-        } else {
-            if (file.isDirectory()) {
-                loadDirectory(file);
-            } else {
-                openFileWithMime(file, getMimeType(file));
+            return;
+        }
+
+        boolean isSearchActive = !currentSearchQuery.isEmpty();
+
+        if (file.isDirectory()) {
+            loadDirectory(file);
+            return;
+        }
+
+        if (isSearchActive) {
+            // Jump to the folder that contains the matched file.
+            File parent = file.getParentFile();
+            if (parent != null && parent.canRead()) {
+                hideSearchBar();            // clears query + generation
+                loadDirectory(parent);
+                return;
             }
         }
+
+        openFileWithMime(file, getMimeType(file));
     }
 
     @Override
@@ -2775,6 +2865,15 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
+    static class SearchResult {
+        final File file;
+        final String relativePath;   // e.g. "subdir/nested/deep.txt" or "" for top-level
+
+        SearchResult(File file, String relativePath) {
+            this.file = file;
+            this.relativePath = relativePath;
+        }
+    }
     private long getFolderSize(File dir) {
         long size = 0;
         File[] files = dir.listFiles();

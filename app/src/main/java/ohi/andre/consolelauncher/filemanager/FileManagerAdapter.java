@@ -22,6 +22,7 @@ import ohi.andre.consolelauncher.R;
 
 public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.FileViewHolder> {
 
+
     public interface OnFileClickListener {
         void onFileClick(File file, int position);
         void onFileLongClick(File file, int position);
@@ -32,6 +33,12 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
     private final Set<File> selectedFiles = new HashSet<>();
     private final OnFileClickListener listener;
     private boolean selectionMode = false;
+    private java.util.List<FileManagerActivity.SearchResult> searchResults = null;
+
+    public void setSearchResults(java.util.List<FileManagerActivity.SearchResult> results) {
+        this.searchResults = results;
+        notifyDataSetChanged();
+    }
 
     public FileManagerAdapter(Context context, OnFileClickListener listener) {
         this.context = context;
@@ -96,6 +103,25 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
         boolean isSelected = selectedFiles.contains(file);
 
         holder.tvName.setText(file.getName());
+        if (searchResults != null && position < searchResults.size()) {
+            FileManagerActivity.SearchResult r = searchResults.get(position);
+            String parentRel;
+            int slash = r.relativePath.lastIndexOf('/');
+            parentRel = (slash >= 0) ? r.relativePath.substring(0, slash) : "";
+            if (parentRel.isEmpty()) {
+                holder.tvSize.setText("•  current folder");
+            } else {
+                holder.tvSize.setText("📁 " + parentRel);
+            }
+        } else {
+            if (file.isDirectory()) {
+                holder.ivIcon.setImageResource(R.drawable.ic_folder);
+                holder.tvSize.setText(getDirectorySizeText(file));
+            } else {
+                holder.ivIcon.setImageResource(R.drawable.ic_file);
+                holder.tvSize.setText(formatSize(file.length()));
+            }
+        }
 
         if (file.isDirectory()) {
             holder.ivIcon.setImageResource(R.drawable.ic_folder);
