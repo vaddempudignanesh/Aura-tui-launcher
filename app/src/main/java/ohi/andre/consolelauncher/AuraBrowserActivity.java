@@ -62,10 +62,7 @@ import ohi.andre.consolelauncher.managers.xml.XMLPrefsManager;
 import ohi.andre.consolelauncher.managers.xml.options.Theme;
 import ohi.andre.consolelauncher.managers.xml.options.Ui;
 
-/**
- * AuraBrowser v8 — hardened against popups, popunders, and navigation hijacking.
- * v9 — adds long-press text selection (Copy / Select all / Share).
- */
+
 public class AuraBrowserActivity extends AppCompatActivity {
 
     public static final String EXTRA_URL       = "aura_url";
@@ -1053,44 +1050,159 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
 
     private void installLongPressMenu(WebView wv) {
+        // Do NOT set wv.setOnLongClickListener — its mere presence disables
+        // WebView's built-in text-selection pipeline.
         wv.setLongClickable(true);
         wv.setFocusable(true);
         wv.setFocusableInTouchMode(true);
         wv.setHapticFeedbackEnabled(true);
 
-        wv.setOnLongClickListener(v -> {
+        final Handler longPressHandler = new Handler(Looper.getMainLooper());
+        final Runnable[] pendingLongPress = {null};
+        final float[] downXY = new float[2];
+        final boolean[] longPressFired = {false};
+
+        final int longPressTimeout = android.view.ViewConfiguration.getLongPressTimeout();
+
+        wv.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+
+                case MotionEvent.ACTION_DOWN:
+                    downXY[0] = event.getX();
+                    downXY[1] = event.getY();
+                    longPressFired[0] = false;
+
+                    if (pendingLongPress[0] != null) {
+                        longPressHandler.removeCallbacks(pendingLongPress[0]);
+                    }
+                    pendingLongPress[0] = () -> {
+                        pendingLongPress[0] = null;
+                        longPressFired[0] = true;
+                        handleLongPressAt(wv, downXY[0], downXY[1]);
+                    };
+                    longPressHandler.postDelayed(pendingLongPress[0], longPressTimeout);
+                    // Let WebView handle the DOWN as usual.
+                    return false;
+
+                case MotionEvent.ACTION_MOVE: {
+                    float dx = Math.abs(event.getX() - downXY[0]);
+                    float dy = Math.abs(event.getY() - downXY[1]);
+                    int slop = android.view.ViewConfiguration.get(v.getContext())
+                            .getScaledTouchSlop();
+                    if ((dx > slop || dy > slop) && pendingLongPress[0] != null) {
+                        longPressHandler.removeCallbacks(pendingLongPress[0]);
+                        pendingLongPress[0] = null;
+                    }
+                    return false;
+                }
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (pendingLongPress[0] != null) {
+                        longPressHandler.removeCallbacks(pendingLongPress[0]);
+                        pendingLongPress[0] = null;
+                    }
+                    if (longPressFired[0]) {
+                        // We already showed our dialog — swallow the UP so
+                        // WebView's internal selection UI doesn't try to
+                        // start or end its own ActionMode on top of ours.
+                        longPressFired[0] = false;
+                        return true;
+                    }
+                    return false;
+            }
+            return false;
+        });
+    }
+
+    private void handleLongPressAt(WebView wv, float x, float y) {
+        try {
             WebView.HitTestResult hit = wv.getHitTestResult();
-            if (hit == null) return false;
+            int type = hit != null ? hit.getType() : WebView.HitTestResult.UNKNOWN_TYPE;
+            String extra = hit != null ? hit.getExtra() : null;
 
-            int type = hit.getType();
-            String extra = hit.getExtra(); // link URL or image URL, depending on type
-
+            // ── Link (or image-inside-link) long-press ──
             if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE
                     || type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
-                showLinkMenu(wv, extra);
-                return true;
+                if (extra != null && !extra.isEmpty()) {
+                    showLinkMenu(wv, extra);
+                    return;
+                }
             }
 
+            // ── Bare image long-press ──
             if (type == WebView.HitTestResult.IMAGE_TYPE) {
-                // Not a link, but a bare image — treat as "copy image URL" only.
-                showLinkMenu(wv, extra);
-                return true;
+                if (extra != null && !extra.isEmpty()) {
+                    showLinkMenu(wv, extra);
+                    return;
+                }
             }
 
-            // Otherwise — regular text. Ask the page what's selected.
-            wv.evaluateJavascript(
-                    "(function(){return window.getSelection().toString();})();",
-                    value -> {
-                        String text = decodeJsString(value);
-                        if (text != null && !text.isEmpty()) {
-                            showTextMenu(wv, text);
-                        } else {
-                            // Nothing selected — WebView's own word-pick will
-                            // run because we returned false above.
-                        }
-                    });
-            return true;
-        });
+            // ── Text long-press ──
+            //
+            // We must NOT rely on window.getSelection() because by the time
+            // our handler runs, WebView may not have updated the DOM selection
+            // yet. So we compute the word under (x, y) ourselves using
+            // caretRangeFromPoint, expand to word boundaries, select it
+            // visually, and return it. Then we show our own text menu.
+            String js =
+                    "(function(){" +
+                            "  try{" +
+                            "    var x=" + (int) x + ", y=" + (int) y + ";" +
+                            "    var r=null;" +
+                            "    if(document.caretRangeFromPoint){" +
+                            "      r=document.caretRangeFromPoint(x,y);" +
+                            "    } else if(document.caretPositionFromPoint){" +
+                            "      var cp=document.caretPositionFromPoint(x,y);" +
+                            "      if(cp){" +
+                            "        r=document.createRange();" +
+                            "        r.setStart(cp.offsetNode,cp.offset);" +
+                            "        r.setEnd(cp.offsetNode,cp.offset);" +
+                            "      }" +
+                            "    }" +
+                            "    if(!r) return '';" +
+                            "    var node=r.startContainer;" +
+                            "    if(!node) return '';" +
+                            "    if(node.nodeType!==3){" +
+                            "      if(node.firstChild && node.firstChild.nodeType===3) node=node.firstChild;" +
+                            "      else return '';" +
+                            "    }" +
+                            "    var text=node.textContent||'';" +
+                            "    var start=r.startOffset;" +
+                            "    if(start>text.length) start=text.length;" +
+                            "    var left=start,right=start;" +
+                            "    var isWord=function(c){return /[\\w'\\-\\u00C0-\\u024F]/i.test(c);};" +
+                            "    while(left>0 && isWord(text.charAt(left-1))) left--;" +
+                            "    while(right<text.length && isWord(text.charAt(right))) right++;" +
+                            "    var w=text.substring(left,right);" +
+                            "    if(!w || w.length===0){" +
+                            "      left=start; right=start+1;" +
+                            "      w=text.substring(left,right);" +
+                            "    }" +
+                            "    try{" +
+                            "      var sel=window.getSelection();" +
+                            "      var range=document.createRange();" +
+                            "      range.setStart(node,left);" +
+                            "      range.setEnd(node,right);" +
+                            "      sel.removeAllRanges();" +
+                            "      sel.addRange(range);" +
+                            "    }catch(e2){}" +
+                            "    return w || '';" +
+                            "  }catch(e){return '';}" +
+                            "})();";
+
+            wv.evaluateJavascript(js, value -> {
+                String text = decodeJsString(value);
+                if (text == null || text.trim().isEmpty()) {
+                    // Nothing under the finger → do nothing.
+                    return;
+                }
+                showTextMenu(wv, text);
+            });
+
+        } catch (Exception e) {
+            Log.w("AuraBrowser", "handleLongPressAt failed", e);
+        }
     }
 
     private String decodeJsString(String raw) {
@@ -1217,7 +1329,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return t;
     }
 
-    /** Safely encodes a Java string as a JavaScript string literal. */
+
     private String jsStringLiteral(String s) {
         if (s == null) return "''";
         StringBuilder sb = new StringBuilder(s.length() + 2);
