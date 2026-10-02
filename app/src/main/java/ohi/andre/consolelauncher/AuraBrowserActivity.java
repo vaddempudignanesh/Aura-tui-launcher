@@ -28,6 +28,7 @@ import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -63,6 +64,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -116,27 +118,155 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private ValueCallback<Uri[]> filePathCallback;
     private Uri cameraOutputUri;
     private File cameraOutputFile;
+    // ═══════════════════════════════════════════════════════════════════
+    // DarkReader — injected via addDocumentStartJavaScript so it runs
+    // BEFORE any page script, in every frame, on every page.
+    // ═══════════════════════════════════════════════════════════════════
+    private static final String DARKREADER_ASSET = "darkreader.min.js";
+    private static final String BRIDGE_NAME = "__AuraDarkReaderBridge";
+    private static final String APPLIED_MARKER = "data-aura-dr-applied";
+    private static final String IFRAME_APPLIED_MARKER = "data-aura-dr-iframe-applied";
 
-    // Cached DarkReader source so we don't re-read the asset per tab
-    private static String darkReaderSource = null;
+    private static volatile String darkReaderSource = "";
 
-    // ── DarkReader bootstrap options ──────────────────────────────────
-    private static final String DR_OPTS_JS =
-            "{" +
-                    "  brightness: 100," +
-                    "  contrast: 100," +
-                    "  sepia: 0," +
-                    "  grayscale: 0," +
-                    "  mode: 1," +
-                    "  useFont: false," +
-                    "  textStroke: 0," +
-                    "  engine: 'dynamicTheme'," +
-                    "  styleSystemControls: true," +
-                    "  darkSchemeBackgroundColor: '#181a1b'," +
-                    "  darkSchemeTextColor: '#e8e6e3'," +
-                    "  selectionColor: 'auto'," +
-                    "  scrollbarColor: ''" +
-                    "}";
+    private static final String DARKREADER_BOOTSTRAP =
+            "(function(){" +
+                    "'use strict';" +
+                    "if(window.__AURA_DR_BOOTSTRAP_DONE__)return;" +
+                    "try{Object.defineProperty(window,'__AURA_DR_BOOTSTRAP_DONE__',{" +
+                    "value:true,configurable:false,writable:false});}catch(e){}" +
+
+                    "var IS_IFRAME=false;" +
+                    "try{IS_IFRAME=(window.top!==window.self);}catch(e){IS_IFRAME=true;}" +
+                    "var MARKER=IS_IFRAME?'" + IFRAME_APPLIED_MARKER + "':'" + APPLIED_MARKER + "';" +
+
+                    "function applied(){" +
+                    "try{return document.documentElement&&document.documentElement.getAttribute(MARKER)==='1';}" +
+                    "catch(e){return false;}" +
+                    "}" +
+
+                    "function source(){" +
+                    "try{var b=window." + BRIDGE_NAME + ";return b?String(b.getSource()||''):'';}" +
+                    "catch(e){return '';}" +
+                    "}" +
+
+                    "function trustedEval(code){" +
+                    "try{" +
+                    "if(window.trustedTypes&&trustedTypes.createPolicy){" +
+                    "if(!window.__AURA_TRUSTED_POLICY__){" +
+                    "window.__AURA_TRUSTED_POLICY__=trustedTypes.createPolicy('aura-dark-reader',{" +
+                    "createScript:function(s){return s;}" +
+                    "});" +
+                    "}" +
+                    "return (0,eval)(window.__AURA_TRUSTED_POLICY__.createScript(code));" +
+                    "}" +
+                    "}catch(e){}" +
+                    "return (0,eval)(code);" +
+                    "}" +
+
+                    "function enable(){" +
+                    "if(applied())return true;" +
+                    "if(!document.documentElement)return false;" +
+                    "if(!window.DarkReader){" +
+                    "var code=source();" +
+                    "if(!code)return false;" +
+                    "try{trustedEval(code);}catch(e){return false;}" +
+                    "}" +
+                    "var DR=window.DarkReader;" +
+                    "if(!DR||typeof DR.enable!=='function')return false;" +
+                    "try{" +
+                    "DR.enable({" +
+                    "brightness:100," +
+                    "contrast:100," +
+                    "sepia:0," +
+                    "grayscale:0," +
+                    "darkSchemeBackgroundColor:'#181a1b'," +
+                    "darkSchemeTextColor:'#e8e6e3'," +
+                    "lightSchemeBackgroundColor:'#ffffff'," +
+                    "lightSchemeTextColor:'#181a1b'" +
+                    "});" +
+                    "document.documentElement.setAttribute(MARKER,'1');" +
+                    "return true;" +
+                    "}catch(e){return false;}" +
+                    "}" +
+
+                    "function disable(){" +
+                    "try{" +
+                    "if(window.DarkReader&&typeof window.DarkReader.disable==='function'){" +
+                    "window.DarkReader.disable();" +
+                    "}" +
+                    "var h=document.documentElement;" +
+                    "if(h)h.removeAttribute(MARKER);" +
+                    "}catch(e){}" +
+                    "}" +
+
+                    "window.__auraDarkReaderControl=function(mode){" +
+                    "if(mode){enable();}else{disable();}" +
+                    "};" +
+
+                    "function ready(fn){" +
+                    "if(document.documentElement&&(document.head||document.readyState!=='loading')){" +
+                    "fn();return;" +
+                    "}" +
+                    "var done=false;" +
+                    "function once(){if(done)return;done=true;fn();}" +
+                    "document.addEventListener('DOMContentLoaded',once,{once:true});" +
+                    "document.addEventListener('readystatechange',function(){" +
+                    "if(document.readyState!=='loading')once();" +
+                    "});" +
+                    "setTimeout(once,0);" +
+                    "}" +
+
+                    "function retry(){" +
+                    "var attempts=0;" +
+                    "var timer=setInterval(function(){" +
+                    "if(applied()||attempts>=24){" +
+                    "clearInterval(timer);return;" +
+                    "}" +
+                    "attempts++;" +
+                    "enable();" +
+                    "},500);" +
+                    "}" +
+
+                    "ready(function(){" +
+                    "if(window.__auraDarkReaderDesired!==false)enable();" +
+                    "retry();" +
+                    "});" +
+                    "})();";
+
+
+    private final class DarkReaderBridge {
+
+        @JavascriptInterface
+        public String getSource() {
+            String cached = darkReaderSource;
+            if (!cached.isEmpty()) return cached;
+
+            synchronized (DarkReaderBridge.class) {
+                cached = darkReaderSource;
+                if (!cached.isEmpty()) return cached;
+
+                try (InputStream input = getAssets().open(DARKREADER_ASSET)) {
+                    java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+                    byte[] buffer = new byte[16384];
+                    int read;
+                    while ((read = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, read);
+                    }
+                    String source = new String(output.toByteArray(), StandardCharsets.UTF_8);
+                    source = source.replaceAll("(?m)^//# sourceMappingURL=.*$", "");
+                    source = source.trim();
+                    darkReaderSource = source;
+                    return source;
+                } catch (Throwable t) {
+                    Log.e("AURA-DARK", "Failed to load DarkReader asset", t);
+                    darkReaderSource = "";
+                    return "";
+                }
+            }
+        }
+    }
+
 
     private static class Tab {
         WebView webView;
@@ -347,25 +477,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         etUrl.setText(url != null ? url : DEFAULT_HOME);
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // DARK MODE — DarkReader.js with Trusted Types bypass
-    // ═══════════════════════════════════════════════════════════════════
 
-    private static synchronized String getDarkReaderSource(Context ctx) {
-        if (darkReaderSource != null) return darkReaderSource;
-        try (InputStream is = ctx.getAssets().open("darkreader.min.js");
-             BufferedReader br = new BufferedReader(
-                     new InputStreamReader(is, StandardCharsets.UTF_8))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = br.readLine()) != null) sb.append(line).append('\n');
-            darkReaderSource = sb.toString();
-        } catch (Exception e) {
-            Log.e("AURA-DARK", "Failed to load darkreader.min.js", e);
-            darkReaderSource = "";
-        }
-        return darkReaderSource;
-    }
 
     private void toggleForceDark() {
         forceDark = !forceDark;
@@ -374,6 +486,23 @@ public class AuraBrowserActivity extends AppCompatActivity {
         updateDarkIconTint();
         applyDarkReaderToAllTabs();
     }
+
+    private void applyDarkReaderToAllTabs() {
+        for (Tab t : tabs) {
+            if (t.webView == null) continue;
+            final String js =
+                    "(function(){try{" +
+                            "window.__auraDarkReaderDesired=" + (forceDark ? "true" : "false") + ";" +
+                            "if(typeof window.__auraDarkReaderControl==='function'){" +
+                            "window.__auraDarkReaderControl(" + (forceDark ? "true" : "false") + ");" +
+                            "}" +
+                            "}catch(e){}})();";
+            try {
+                t.webView.evaluateJavascript(js, null);
+            } catch (Throwable ignored) {}
+        }
+    }
+
     private void updateDarkIconTint() {
         int tint = forceDark ? 0xFFFFAA00 : 0xFF33FF33;
         btnDarkMode.setColorFilter(tint);
@@ -382,119 +511,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 : R.drawable.aura_ic_moon); // showing moon means "tap to go dark"
     }
 
-    private void applyDarkReaderToAllTabs() {
-        for (Tab t : tabs) {
-            applyDarkReader(t.webView);
-        }
-    }
 
-    private void applyDarkReader(WebView wv) {
-        if (wv == null) return;
-
-        if (forceDark) {
-            final String src = getDarkReaderSource(getApplicationContext());
-            if (src.isEmpty()) {
-                Log.w("AURA-DARK", "darkreader.min.js missing from assets");
-                return;
-            }
-            final String escaped = jsStringLiteral(src);
-
-            // ★ Technique: run DarkReader inside a sandboxed iframe so it
-            //   is not subject to the host page's CSP. The iframe then
-            //   reports the generated stylesheet back to the parent, which
-            //   applies it via a <style> tag — a sink that is not policed
-            //   by script-src CSP (only by style-src, which most sites
-            //   leave open).
-            String bootstrapJs =
-                    "(function(){" +
-                            "  try {" +
-                            "    if (window.__auraDRInstalling) return;" +
-                            "    window.__auraDRInstalling = true;" +
-                            "    var SRC = " + escaped + ";" +
-
-                            // Idempotency: if already installed, just re-enable.
-                            "    if (window.__auraDRApi) {" +
-                            "      try { window.__auraDRApi.enable(); } catch(e) {}" +
-                            "      window.__auraDRInstalling = false;" +
-                            "      return;" +
-                            "    }" +
-
-                            // Build the sandboxed iframe.
-                            "    var html =" +
-                            "      '<!doctype html><html><head></head><body>' +" +
-                            "      '<scr'+'ipt>' + " +
-                            "        'window.__parentWin = parent;' +" +
-                            "        'window.__src = ' + JSON.stringify(SRC) + ';' +" +
-                            "        'window.__ready = function(){' +" +
-                            "          try {' +" +
-                            "            (new Function(window.__src))();' +" +
-                            "            if (!window.DarkReader) {' +" +
-                            "              parent.postMessage({__auraDR:1, ok:false, err:\"global missing\"}, \"*\");' +" +
-                            "              return;' +" +
-                            "            }' +" +
-                            "            window.DarkReader.enable(" + DR_OPTS_JS + ");' +" +
-                            "            parent.postMessage({__auraDR:1, ok:true}, \"*\");' +" +
-                            "          } catch(e) {' +" +
-                            "            parent.postMessage({__auraDR:1, ok:false, err:String(e)}, \"*\");' +" +
-                            "          }' +" +
-                            "        };' +" +
-                            "      </scr'+'ipt>' +" +
-                            "      '</body></html>';" +
-
-                            "    var iframe = document.createElement('iframe');" +
-                            "    iframe.style.display = 'none';" +
-                            "    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');" +
-                            "    iframe.srcdoc = html;" +
-
-                            // Listen for the iframe's success/failure report.
-                            "    window.addEventListener('message', function onMsg(ev) {" +
-                            "      var d = ev.data;" +
-                            "      if (!d || !d.__auraDR) return;" +
-                            "      window.removeEventListener('message', onMsg);" +
-                            "      window.__auraDRInstalling = false;" +
-                            "      if (d.ok) {" +
-                            "        window.__auraDRApi = {" +
-                            "          enable: function() {" +
-                            "            try { iframe.contentWindow.postMessage({__auraDRCmd:'enable'}, '*'); } catch(e){}" +
-                            "          }," +
-                            "          disable: function() {" +
-                            "            try { iframe.contentWindow.postMessage({__auraDRCmd:'disable'}, '*'); } catch(e){}" +
-                            "          }" +
-                            "        };" +
-                            "      } else {" +
-                            "        console.error('DarkReader iframe failed: ' + d.err);" +
-                            "      }" +
-                            "    }, false);" +
-
-                            // Append and trigger the iframe's load.
-                            "    (document.head || document.documentElement).appendChild(iframe);" +
-                            "    iframe.addEventListener('load', function(){" +
-                            "      try { iframe.contentWindow.__ready(); } catch(e) {" +
-                            "        window.__auraDRInstalling = false;" +
-                            "        console.error('DarkReader iframe call failed', e);" +
-                            "      }" +
-                            "    });" +
-                            "  } catch (e) {" +
-                            "    window.__auraDRInstalling = false;" +
-                            "    console.error('DarkReader bootstrap failed', e);" +
-                            "  }" +
-                            "})();";
-            wv.evaluateJavascript(bootstrapJs, null);
-        } else {
-            String js =
-                    "(function(){" +
-                            "  try {" +
-                            "    if (window.__auraDRApi) window.__auraDRApi.disable();" +
-                            "    else if (window.DarkReader && window.DarkReader.disable) window.DarkReader.disable();" +
-                            "  } catch(e) { console.error('DarkReader disable failed', e); }" +
-                            "})();";
-            wv.evaluateJavascript(js, null);
-        }
-    }
-
-    private void reapplyDarkReaderIfNeeded(WebView wv) {
-        if (forceDark) applyDarkReader(wv);
-    }
 
     // ═══════════════════════════════════════════════════════════════════
     // FILE / MEDIA / CAMERA PICKER
@@ -825,6 +842,30 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 FrameLayout.LayoutParams.MATCH_PARENT));
         wv.setBackgroundColor(0xFF000000);
 
+        // ★ Install the DarkReader bridge BEFORE any navigation.
+        try {
+            wv.addJavascriptInterface(new DarkReaderBridge(), BRIDGE_NAME);
+        } catch (Throwable t) {
+            Log.e("AURA-DARK", "Bridge install failed", t);
+        }
+
+        // ★ Register the bootstrap as a document-start script. WebView will
+        //   execute it in EVERY frame (top + iframes) BEFORE the page's own
+        //   scripts, BEFORE CSP is applied, BEFORE Trusted Types is enforced.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            try {
+                WebViewCompat.addDocumentStartJavaScript(
+                        wv,
+                        DARKREADER_BOOTSTRAP,
+                        Collections.singleton("*")
+                );
+            } catch (Throwable t) {
+                Log.w("AURA-DARK", "addDocumentStartJavaScript failed", t);
+            }
+        } else {
+            Log.w("AURA-DARK", "DOCUMENT_START_SCRIPT unsupported; dark mode may be partial");
+        }
+
         configureWebViewFor(wv, incognito);
 
         String startUrl = (url == null || url.trim().isEmpty()) ? DEFAULT_HOME : url;
@@ -835,10 +876,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         webContainer.addView(wv);
         wv.setVisibility(View.GONE);
-
-        if (forceDark) {
-            wv.postDelayed(() -> applyDarkReader(wv), 100);
-        }
 
         wv.loadUrl(normalized);
         switchToTab(tabs.size() - 1);
@@ -1856,7 +1893,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             @Override
             public void onPageCommitVisible(WebView view, String url) {
-                reapplyDarkReaderIfNeeded(view);
                 baseSecurity.onPageCommitVisible(view, url);
             }
 
@@ -1869,7 +1905,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
                 }
                 updateTabUrl(view, url);
-                reapplyDarkReaderIfNeeded(view);
                 baseSecurity.onPageFinished(view, url);
             }
         });
@@ -2274,7 +2309,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         super.onResume();
         for (Tab t : tabs) {
             t.webView.onResume();
-            if (forceDark) applyDarkReader(t.webView);
         }
     }
 
