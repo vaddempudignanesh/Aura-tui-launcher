@@ -84,6 +84,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private static final int REQ_FILE_CHOOSER          = 1001;
     private static final int REQ_CAMERA_CAPTURE        = 1002;
 
+    private volatile boolean pendingUserLoad = false;
+
     private LinearLayout topBar;
     private LinearLayout footerBar;
     private FrameLayout webContainer;
@@ -1830,28 +1832,35 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                // ★ Address-bar navigation — always allow, don't run hijack checks.
+                if (pendingUserLoad) {
+                    return false;
+                }
+
                 Uri u = request.getUrl();
                 String current = view.getUrl();
 
-                // ★ Allow same-registrable-domain redirects without going
-                //   through the hijack detector. Typing "youtube.com" then
-                //   being redirected to "www.youtube.com" must NOT be
-                //   flagged as a hijack.
                 if (u != null && current != null) {
                     try {
                         String fromHost = Uri.parse(current).getHost();
                         String toHost   = u.getHost();
                         if (isSameRegistrableDomain(fromHost, toHost)) {
-                            return false;   // let WebView handle it normally
+                            return false;
                         }
                     } catch (Exception ignored) {}
                 }
+
                 return baseSecurity.shouldOverrideUrlLoading(view, request);
             }
 
             @SuppressWarnings("deprecation")
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                // ★ Same bypass for the deprecated overload.
+                if (pendingUserLoad) {
+                    return false;
+                }
+
                 String current = view.getUrl();
                 if (url != null && current != null) {
                     try {
@@ -1886,6 +1895,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     setUrlBarText(url);
                     isPageLoading = true;
                     btnRefresh.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
+                }
+                if (pendingUserLoad) {
+                    pendingUserLoad = false;
                 }
                 updateTabUrl(view, url);
                 baseSecurity.onPageStarted(view, url, favicon);
@@ -1984,6 +1996,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (url.isEmpty()) return;
 
         String finalUrl = normalizeUrl(url);
+
+        // ★ Tell the security layer this navigation came from the user
+        //   typing in the address bar, not from a page-controlled redirect.
+        pendingUserLoad = true;
+
         t.hostTracker.reset();
         t.webView.loadUrl(finalUrl);
         t.url = finalUrl;
