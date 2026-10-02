@@ -981,8 +981,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         final File root = currentDir;
         final String query = currentSearchQuery;
         final int generation = ++searchGeneration;
+        final int sortModeAtStart = currentSortMode;
 
-        // Cancel any in-flight search and show "Searching…" briefly.
         tvEmpty.setText("Searching…");
         tvEmpty.setVisibility(View.VISIBLE);
         recyclerFiles.setVisibility(View.GONE);
@@ -993,9 +993,26 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
             if (generation != searchGeneration) return;
 
+            // Pre-compute directory sizes only if the active sort needs them.
+            if (sortModeAtStart == SORT_SIZE_BIG || sortModeAtStart == SORT_SIZE_SMALL) {
+                for (SearchResult r : results) {
+                    String key = r.file.getAbsolutePath();
+                    if (!sizeCache.containsKey(key)) {
+                        sizeCache.put(key, computeSizeRecursive(r.file));
+                    }
+                }
+            }
+
+            // Sort search results using the SAME comparator as the directory
+            // list, so the user's chosen sort mode is respected everywhere.
+            // Ties are broken by shorter relative path, then alpha, so nested
+            // matches stay grouped.
             Collections.sort(results, (a, b) -> {
-                int cmp = Integer.compare(a.relativePath.length(), b.relativePath.length());
+                int cmp = buildComparator().compare(a.file, b.file);
                 if (cmp != 0) return cmp;
+                int pathCmp = Integer.compare(
+                        a.relativePath.length(), b.relativePath.length());
+                if (pathCmp != 0) return pathCmp;
                 return a.file.getName().compareToIgnoreCase(b.file.getName());
             });
 
@@ -1005,8 +1022,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 displayedFileList = new ArrayList<>();
                 for (SearchResult r : results) displayedFileList.add(r.file);
 
-                // ORDER MATTERS: setFiles() triggers a rebind, so we must
-                // hand the adapter both lists before the rebind paints.
                 adapter.setFiles(displayedFileList);
                 adapter.setSearchResults(results);
 
@@ -1132,6 +1147,14 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     }
 
     private void applySortAndRefresh() {
+        // If a search is active, don't bother re-sorting the unfiltered
+        // directory list — applySearchFilter() will re-run the search and
+        // sort the results with the new comparator.
+        if (!currentSearchQuery.isEmpty()) {
+            applySearchFilter();
+            return;
+        }
+
         final List<File> snapshot = new ArrayList<>(currentFileList);
         final int sortModeSnapshot = currentSortMode;
 
@@ -1141,7 +1164,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             if (sortModeSnapshot == SORT_SIZE_BIG || sortModeSnapshot == SORT_SIZE_SMALL) {
                 precomputeSizes(snapshot);
             }
-
             Collections.sort(snapshot, buildComparator());
 
             mainHandler.post(() -> {
