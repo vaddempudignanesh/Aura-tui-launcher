@@ -46,6 +46,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import androidx.webkit.Profile;
 import androidx.webkit.ProfileStore;
@@ -57,7 +58,6 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -81,8 +81,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
     // ── File chooser request codes ────────────────────────────────────
     private static final int REQ_FILE_CHOOSER          = 1001;
     private static final int REQ_CAMERA_CAPTURE        = 1002;
-    private static final int REQ_PERMISSIONS_FILE      = 2001;
-    private static final int REQ_PERMISSIONS_CAMERA    = 2002;
 
     private LinearLayout topBar;
     private LinearLayout footerBar;
@@ -104,21 +102,23 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private ActionMode currentSelectionActionMode;
 
     // ── URL bar typing-lock ───────────────────────────────────────────
-    // When the EditText has focus, we suppress programmatic .setText()
-    // calls from onPageStarted/onPageFinished so the user's typing isn't
-    // clobbered by navigation events. The lock is released on focus loss.
     private boolean urlBarUserEditing = false;
-    private String  urlBarLastUserText = "";
+
+    // ── URL bar tap cycle: select-all → cursor → cursor ───────────────
+    // First tap on the address bar selects everything (browser-style).
+    // Second tap clears the selection and places a blinking cursor so
+    // the user can edit precisely.
+    private boolean urlBarJustSelectedAll = false;
 
     // ── File chooser callback state ───────────────────────────────────
     private ValueCallback<Uri[]> filePathCallback;
-    private Uri cameraOutputUri;          // where the camera writes its JPEG
-    private File cameraOutputFile;        // backing file
+    private Uri cameraOutputUri;
+    private File cameraOutputFile;
 
     // Cached DarkReader source so we don't re-read the asset per tab
     private static String darkReaderSource = null;
 
-    // ── DarkReader bootstrap options (inlined into the JS) ────────────
+    // ── DarkReader bootstrap options ──────────────────────────────────
     private static final String DR_OPTS_JS =
             "{" +
                     "  brightness: 100," +
@@ -197,31 +197,53 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnDownloads     = findViewById(R.id.aura_btn_downloads);
         tabCountView     = findViewById(R.id.aura_tab_count);
 
-        // ── URL bar: user-edit tracking ──────────────────────────────
-        // These listeners keep urlBarUserEditing in sync with real user
-        // interaction so navigation callbacks know when to NOT overwrite.
+        // ═══════════════════════════════════════════════════════════
+        // URL BAR — tap cycle + typing lock
+        //
+        // Tap #1 → focus + select-all (fast replace)
+        // Tap #2 → clear selection, place cursor for editing
+        // ═══════════════════════════════════════════════════════════
         etUrl.setOnClickListener(v -> {
             urlBarUserEditing = true;
-            etUrl.selectAll();
-            etUrl.requestFocus();
+
+            if (!etUrl.hasFocus()) {
+                // Focus will come via the focus listener → do nothing yet
+                return;
+            }
+
+            if (!urlBarJustSelectedAll) {
+                // First tap while focused: select everything for quick replace.
+                etUrl.selectAll();
+                urlBarJustSelectedAll = true;
+            } else {
+                // Second tap: drop selection, put blinking cursor at end.
+                int len = etUrl.getText().length();
+                etUrl.setSelection(len);
+                urlBarJustSelectedAll = false;
+            }
         });
+
         etUrl.setOnFocusChangeListener((v, hasFocus) -> {
             urlBarUserEditing = hasFocus;
             if (hasFocus) {
-                etUrl.selectAll();
+                // Fresh focus → select all so the first keystroke replaces.
+                etUrl.post(() -> {
+                    etUrl.selectAll();
+                    urlBarJustSelectedAll = true;
+                });
+            } else {
+                urlBarJustSelectedAll = false;
             }
         });
+
         etUrl.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) {
-                // Only treat changes as "user-typed" if the field has focus.
-                if (etUrl.hasFocus()) {
-                    urlBarUserEditing = true;
-                    urlBarLastUserText = s.toString();
-                }
+                if (etUrl.hasFocus()) urlBarUserEditing = true;
             }
             @Override public void afterTextChanged(android.text.Editable s) {}
         });
+
         etUrl.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_GO
                     || actionId == EditorInfo.IME_ACTION_DONE
@@ -314,16 +336,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
     // URL BAR — programmatic updates that respect user typing
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Set the URL bar to the given URL, but ONLY when the user is not
-     * actively editing the field. This prevents navigation events from
-     * clobbering the user's in-progress text.
-     */
     private void setUrlBarText(String url) {
-        if (urlBarUserEditing || etUrl.hasFocus()) {
-            // User is editing → leave the field alone.
-            return;
-        }
+        if (urlBarUserEditing || etUrl.hasFocus()) return;
         etUrl.setText(url != null ? url : DEFAULT_HOME);
     }
 
@@ -464,24 +478,15 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     private void reapplyDarkReaderIfNeeded(WebView wv) {
-        if (forceDark) {
-            applyDarkReader(wv);
-        }
+        if (forceDark) applyDarkReader(wv);
     }
 
     // ═══════════════════════════════════════════════════════════════════
     // FILE / MEDIA / CAMERA PICKER
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Called by WebView when a page invokes <input type="file" ...> or
-     * uses the File System Access API. We forward the request to the
-     * system picker. The page provides an acceptTypes[] array which we
-     * pass through so the picker filters correctly (images, video, etc.).
-     */
     private boolean handleFileChooser(ValueCallback<Uri[]> callback,
                                       WebChromeClient.FileChooserParams params) {
-        // Cancel any previous pending request (spec: only one at a time).
         if (filePathCallback != null) {
             filePathCallback.onReceiveValue(null);
             filePathCallback = null;
@@ -492,18 +497,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
             Intent chooserIntent;
 
             if (params != null && params.isCaptureEnabled()) {
-                // Page requested direct camera capture (<input capture>).
                 chooserIntent = buildCameraIntent();
-                if (chooserIntent == null) {
-                    // No camera app → fall back to a plain picker.
-                    chooserIntent = buildPickerIntent(params);
-                }
+                if (chooserIntent == null) chooserIntent = buildPickerIntent(params);
             } else {
                 chooserIntent = buildPickerIntent(params);
             }
 
             if (chooserIntent == null) {
-                // Nothing to launch — bail out cleanly.
                 callback.onReceiveValue(null);
                 filePathCallback = null;
                 return false;
@@ -522,15 +522,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    /**
-     * Build the ACTION_GET_CONTENT / ACTION_OPEN_DOCUMENT intent that
-     * respects the page's accept types and multi-select flag.
-     */
     private Intent buildPickerIntent(WebChromeClient.FileChooserParams params) {
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
 
-        // ── MIME filter ───────────────────────────────────────────────
         String[] acceptTypes = (params != null) ? params.getAcceptTypes() : null;
         String mimeFilter = "*/*";
         boolean hasAccept = false;
@@ -540,7 +535,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             for (String a : acceptTypes) {
                 if (a == null || a.trim().isEmpty()) continue;
                 String t = a.trim();
-                // Expand common shorthands like ".jpg" → "image/*"
                 if (t.startsWith(".")) {
                     String ext = t.substring(1).toLowerCase(Locale.US);
                     if (ext.equals("jpg") || ext.equals("jpeg") || ext.equals("png")
@@ -565,20 +559,16 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 }
             }
             if (sb.length() > 0) {
-                mimeFilter = sb.substring(0, sb.length() - 1);   // trim trailing comma
+                mimeFilter = sb.substring(0, sb.length() - 1);
             }
         }
 
-        if (hasAccept) {
-            intent.setType(mimeFilter);
-        } else {
-            intent.setType("*/*");
-        }
+        if (hasAccept) intent.setType(mimeFilter);
+        else intent.setType("*/*");
 
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,
                 params != null && params.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE);
 
-        // ── Offer camera as an extra source if page allows images ─────
         Intent cameraIntent = null;
         if (mimeFilter.contains("image") || mimeFilter.equals("*/*")) {
             cameraIntent = buildCameraIntent();
@@ -592,10 +582,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return Intent.createChooser(intent, "Select file");
     }
 
-    /**
-     * Build a MediaStore.ACTION_IMAGE_CAPTURE intent writing to a
-     * FileProvider-backed file.
-     */
     private Intent buildCameraIntent() {
         try {
             File dir = new File(getCacheDir(), "aura_camera");
@@ -615,10 +601,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             capture.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                     | Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
-            // Only offer camera if an app actually handles the intent.
-            if (capture.resolveActivity(getPackageManager()) == null) {
-                return null;
-            }
+            if (capture.resolveActivity(getPackageManager()) == null) return null;
             return capture;
         } catch (Exception e) {
             Log.w("AuraBrowser", "Camera intent unavailable", e);
@@ -628,7 +611,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        // Route file chooser results to the pending WebView callback.
         if (requestCode == REQ_FILE_CHOOSER) {
             if (filePathCallback == null) {
                 super.onActivityResult(requestCode, resultCode, data);
@@ -638,17 +620,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
             Uri[] results = null;
 
             if (resultCode == Activity.RESULT_OK) {
-                // Case 1: camera output (our URI was pre-set)
                 if (data == null || (data.getData() == null && data.getClipData() == null)) {
                     if (cameraOutputUri != null) {
                         results = new Uri[]{ cameraOutputUri };
                     }
                 } else {
-                    // Case 2: single pick
                     if (data.getData() != null) {
                         results = new Uri[]{ data.getData() };
                     } else if (data.getClipData() != null) {
-                        // Case 3: multi pick
                         int n = data.getClipData().getItemCount();
                         results = new Uri[n];
                         for (int i = 0; i < n; i++) {
@@ -949,37 +928,36 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     // ═════════════════════════════════════════════════════════════
-    //  DOWNLOADS
+    //  DOWNLOADS — native engine wired to AuraDownloadService
     // ═════════════════════════════════════════════════════════════
 
-    private void startAria2Download(String url, String userAgent,
-                                    String contentDisposition, String mimeType) {
-        String referer = currentTabWebView() != null
-                ? currentTabWebView().getUrl() : "";
+    /**
+     * Launch the native downloader foreground service for the given URL.
+     * This replaces the previous aria2c-based pipeline.
+     */
+    private void startNativeDownload(String url, String userAgent,
+                                     String contentDisposition, String mimeType) {
+        try {
+            Intent svc = new Intent(this, AuraDownloadService.class);
+            svc.putExtra(AuraDownloadService.EXTRA_DOWNLOAD_URL, url);
+            svc.putExtra(AuraDownloadService.EXTRA_USER_AGENT, userAgent);
+            svc.putExtra(AuraDownloadService.EXTRA_CONTENT_DISPOSITION, contentDisposition);
+            svc.putExtra(AuraDownloadService.EXTRA_MIME_TYPE, mimeType);
+            svc.putExtra(AuraDownloadService.EXTRA_REFERER,
+                    currentTabWebView() != null ? currentTabWebView().getUrl() : "");
 
-        Aria2Manager mgr = Aria2Manager.get(this);
-
-        new Thread(() -> {
-            boolean ok = mgr.ensureStarted();
-            if (!ok) {
-                final String err = mgr.getLastError();
-                runOnUiThread(() -> Toast.makeText(this,
-                        "aria2c failed: " + (err == null ? "unknown" : err),
-                        Toast.LENGTH_LONG).show());
-                return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(this, svc);
+            } else {
+                startService(svc);
             }
-            String gid = mgr.addDownload(url, userAgent, referer);
-            runOnUiThread(() -> {
-                if (gid != null) {
-                    Toast.makeText(this, "Download added",
-                            Toast.LENGTH_SHORT).show();
-                    showDownloadPanel();
-                } else {
-                    Toast.makeText(this, "Failed to add download",
-                            Toast.LENGTH_LONG).show();
-                }
-            });
-        }).start();
+
+            Toast.makeText(this, "Download started", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Log.e("AuraBrowser", "Failed to start download service", e);
+            Toast.makeText(this, "Could not start download: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     private void showDownloadPanel() {
@@ -1012,7 +990,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         clearBtn.setTextSize(12);
         clearBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
         clearBtn.setOnClickListener(v -> new Thread(() ->
-                Aria2Manager.get(this).clearStopped()).start());
+                AuraDownloadHistory.get(this).clearStopped()).start());
         header.addView(clearBtn);
         root.addView(header);
 
@@ -1046,7 +1024,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         Thread pollThread = new Thread(() -> {
             while (alive[0]) {
                 try {
-                    final JSONArray arr = Aria2Manager.get(this).listAll();
+                    final JSONArray arr = AuraDownloadHistory.get(this).listAll();
                     h.post(() -> {
                         if (!dialog.isShowing()) return;
                         renderDownloadList(list, dialog, arr);
@@ -1090,21 +1068,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         try {
             String gid = job.optString("gid", "");
             String status = job.optString("status", "unknown");
-
-            String name;
-            JSONArray files = job.optJSONArray("files");
-            if (files != null && files.length() > 0) {
-                JSONObject f = files.getJSONObject(0);
-                String path = f.optString("path", "");
-                if (!path.isEmpty()) {
-                    int slash = path.lastIndexOf('/');
-                    name = slash >= 0 ? path.substring(slash + 1) : path;
-                } else {
-                    name = "unknown";
-                }
-            } else {
-                name = "unknown";
-            }
+            String name = job.optString("name", "unknown");
 
             long completed = job.optLong("completedLength", 0);
             long total = job.optLong("totalLength", 0);
@@ -1149,10 +1113,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             if ("error".equals(status)) {
                 String errMsg = job.optString("errorMessage", "");
-                if (errMsg.isEmpty()) {
-                    JSONObject errObj = job.optJSONObject("error");
-                    if (errObj != null) errMsg = errObj.optString("message", "");
-                }
                 TextView tvErr = new TextView(this);
                 tvErr.setText("⚠ " + (errMsg.isEmpty() ? "Download failed" : errMsg));
                 tvErr.setTextColor(0xFFFF6666);
@@ -1170,18 +1130,20 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             if ("active".equals(s)) {
                 actions.addView(makeActionButton("⏸ Pause", () ->
-                        new Thread(() -> Aria2Manager.get(this).pause(g)).start()));
+                        new Thread(() -> AuraDownloadHistory.get(this).pause(g)).start()));
             } else if ("paused".equals(s)) {
                 actions.addView(makeActionButton("▶ Resume", () ->
-                        new Thread(() -> Aria2Manager.get(this).unpause(g)).start()));
+                        new Thread(() -> AuraDownloadHistory.get(this).unpause(g)).start()));
             } else if ("complete".equals(s)) {
-                actions.addView(makeActionButton("📂 Open", () ->
-                        openFile(new File(Aria2Manager.DOWNLOAD_DIR, name))));
+                actions.addView(makeActionButton("📂 Open", () -> {
+                    String path = job.optString("savePath", "");
+                    if (!path.isEmpty()) openFile(new File(path));
+                }));
             }
 
             if (!"removed".equals(s)) {
                 actions.addView(makeActionButton("✕ Remove", () ->
-                        new Thread(() -> Aria2Manager.get(this).remove(g)).start()));
+                        new Thread(() -> AuraDownloadHistory.get(this).remove(g)).start()));
             }
 
             row.addView(actions);
@@ -1217,7 +1179,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private void openFile(File f) {
         try {
             Intent i = new Intent(Intent.ACTION_VIEW);
-            Uri uri = androidx.core.content.FileProvider.getUriForFile(
+            Uri uri = FileProvider.getUriForFile(
                     this, getPackageName() + ".fileprovider", f);
             i.setDataAndType(uri, "*/*");
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -1305,7 +1267,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 if (view == currentTabWebView()) {
                     progressBar.setVisibility(View.VISIBLE);
-                    setUrlBarText(url);          // respects user typing
+                    setUrlBarText(url);
                     isPageLoading = true;
                     btnRefresh.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
                 }
@@ -1323,7 +1285,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 if (view == currentTabWebView()) {
                     progressBar.setVisibility(View.GONE);
-                    setUrlBarText(url);          // respects user typing
+                    setUrlBarText(url);
                     isPageLoading = false;
                     btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
                 }
@@ -1356,7 +1318,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 if (callback != null) callback.onCustomViewHidden();
             }
 
-            // ★ File chooser bridge ★
             @Override
             public boolean onShowFileChooser(WebView webView,
                                              ValueCallback<Uri[]> filePathCallback,
@@ -1374,13 +1335,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         installLongPressMenu(wv);
 
+        // ★ Wired to the new native downloader ★
         wv.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
             if (contentLength > 0 && contentLength < 4096
                     && mimeType != null && mimeType.startsWith("image/")) {
                 return;
             }
-            Toast.makeText(this, "Downloading via aria2c...", Toast.LENGTH_SHORT).show();
-            startAria2Download(url, userAgent, contentDisposition, mimeType);
+            Toast.makeText(this, "Starting download...", Toast.LENGTH_SHORT).show();
+            startNativeDownload(url, userAgent, contentDisposition, mimeType);
         });
     }
 
@@ -1412,9 +1374,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
         t.webView.loadUrl(finalUrl);
         t.url = finalUrl;
 
-        // User submitted → release the typing lock so subsequent
-        // navigation callbacks can update the field again.
         urlBarUserEditing = false;
+        urlBarJustSelectedAll = false;
 
         InputMethodManager imm =
                 (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -1561,9 +1522,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             wv.evaluateJavascript(js, value -> {
                 String text = decodeJsString(value);
-                if (text == null || text.trim().isEmpty()) {
-                    return;
-                }
+                if (text == null || text.trim().isEmpty()) return;
                 showTextMenu(wv, text);
             });
 
@@ -1613,6 +1572,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                                     "Open link",
                                     "Open in new tab",
                                     "Open in incognito",
+                                    "Download link",
                                     "Copy link URL",
                                     "Copy link text",
                                     "Share link"
@@ -1621,9 +1581,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
                                     case 0: wv.loadUrl(linkUrl); break;
                                     case 1: newTab(linkUrl, false); break;
                                     case 2: newTab(linkUrl, true); break;
-                                    case 3: copyToClipboard("URL", linkUrl); break;
-                                    case 4: copyToClipboard("Link text", finalText); break;
-                                    case 5: shareText(linkUrl); break;
+                                    case 3: startNativeDownload(linkUrl, null, null, null); break;
+                                    case 4: copyToClipboard("URL", linkUrl); break;
+                                    case 5: copyToClipboard("Link text", finalText); break;
+                                    case 6: shareText(linkUrl); break;
                                 }
                             })
                             .show();
@@ -1752,10 +1713,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             if (t.incognito) deleteIncognitoProfile(t.profileName);
         }
         tabs.clear();
-
-        if (isFinishing()) {
-            try { Aria2Manager.get(this).stop(); } catch (Exception ignored) {}
-        }
 
         super.onDestroy();
     }

@@ -72,6 +72,14 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
 
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- Specific type permission required for dataSync on Android 14+ -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- Needed to show the active progress bar notification on Android 13+ -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <permission
         android:name="ohi.andre.consolelauncher.permission.RECEIVE_CMD"
         android:protectionLevel="signature" />
@@ -143,6 +151,11 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_TYPE"
                 android:value="Maintains the launcher console state and provides persistent access to T-UI commands via notification."/>
         </service>
+
+        <service
+            android:name=".AuraDownloadService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
 
         <service
             android:name=".MusicPlaybackService"
