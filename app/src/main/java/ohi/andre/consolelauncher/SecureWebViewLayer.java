@@ -13,6 +13,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import android.webkit.WebResourceResponse;
 
 /**
  * Central security layer applied to every WebView created by AuraBrowser.
@@ -105,6 +106,7 @@ public final class SecureWebViewLayer {
                                boolean popupsAllowedForThisTab) {
 
         // ── Main-frame navigation filter ─────────────────────────
+        // ── Main-frame navigation filter ─────────────────────────
         WebViewClient client = new WebViewClient() {
 
             @Override
@@ -119,8 +121,29 @@ public final class SecureWebViewLayer {
                 return handleNavigation(view, Uri.parse(url),
                         true, true, hostTracker);
             }
+
+            // ── NEW: lightweight tracking / telemetry neutering ──────
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view,
+                                                              WebResourceRequest request) {
+                if (request != null && request.getUrl() != null) {
+                    WebResourceResponse neutered =
+                            TrackingFilter.maybeNeuter(request.getUrl().toString());
+                    if (neutered != null) return neutered;
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
+            @SuppressWarnings("deprecation")
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+                WebResourceResponse neutered = TrackingFilter.maybeNeuter(url);
+                if (neutered != null) return neutered;
+                return super.shouldInterceptRequest(view, url);
+            }
         };
         wv.setWebViewClient(client);
+
 
         // ── Popup / new-window suppression ───────────────────────
         wv.setWebChromeClient(new WebChromeClient() {

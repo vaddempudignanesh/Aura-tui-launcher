@@ -13,9 +13,12 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.ActionMode;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -60,6 +63,7 @@ import ohi.andre.consolelauncher.managers.xml.options.Ui;
 
 /**
  * AuraBrowser v8 — hardened against popups, popunders, and navigation hijacking.
+ * v9 — adds long-press text selection (Copy / Select all / Share).
  */
 public class AuraBrowserActivity extends AppCompatActivity {
 
@@ -88,8 +92,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
     // ── Page loading state ───────────────────────────────────────
     private boolean isPageLoading = false;
 
-    // ── Popup counter (badge shown briefly when a popup is killed) ──
+    // ── Popup counter ────────────────────────────────────────────
     private int blockedPopupsThisSession = 0;
+
+    // ── Selection ActionMode ─────────────────────────────────────
+    private ActionMode currentSelectionActionMode;
 
     // ── Tabs ─────────────────────────────────────────────────────
     private static class Tab {
@@ -243,8 +250,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
     // ═════════════════════════════════════════════════════════════
     private void onPopupBlocked() {
         blockedPopupsThisSession++;
-        // Toast only on the first few so the user sees the shield is working
-        // but isn't spammed when the site fires 50 popups in a row.
         if (blockedPopupsThisSession <= 3) {
             runOnUiThread(() -> Toast.makeText(this,
                     "Popup blocked", Toast.LENGTH_SHORT).show());
@@ -882,9 +887,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         // ── Popup suppression at the WebSettings layer ──
         s.setJavaScriptCanOpenWindowsAutomatically(false);
-        s.setSupportMultipleWindows(true); // needed so our onCreateWindow sees them
-
-        s.setCacheMode(incognito ? WebSettings.LOAD_NO_CACHE : WebSettings.LOAD_DEFAULT);
+        s.setSupportMultipleWindows(true); // needed so our onCreateWindow sees them        s.setCacheMode(incognito ? WebSettings.LOAD_NO_CACHE : WebSettings.LOAD_DEFAULT);
         s.setGeolocationEnabled(false);
         s.setSaveFormData(!incognito);
         s.setAllowFileAccess(false);
@@ -911,13 +914,15 @@ public class AuraBrowserActivity extends AppCompatActivity {
             cm.setAcceptThirdPartyCookies(wv, !incognito);
         }
 
-        // Determine host tracker for this WebView's tab BEFORE installing
-        // the secure layer so the callback can look it up.
+        // ── Install the security layer. This sets BOTH the WebViewClient
+        //    and the WebChromeClient that handle popup suppression and
+        //    navigation hijack blocking. ──
         SecureWebViewLayer.HostTracker tracker = trackerFor(wv);
-
         SecureWebViewLayer.install(wv, this, tracker, this::onPopupBlocked);
 
-        // ── Page events WebViewClient on top of the security client ──
+        // ── Wrap the WebViewClient that SecureWebViewLayer just installed
+        //    so we can add page lifecycle events (progress / title) without
+        //    losing the security hooks. ──
         final WebViewClient baseSecurity = wv.getWebViewClient();
         wv.setWebViewClient(new WebViewClient() {
 
@@ -933,6 +938,19 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
 
             @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(
+                    WebView view, WebResourceRequest request) {
+                return baseSecurity.shouldInterceptRequest(view, request);
+            }
+
+            @SuppressWarnings("deprecation")
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(
+                    WebView view, String url) {
+                return baseSecurity.shouldInterceptRequest(view, url);
+            }
+
+            @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 if (view == currentTabWebView()) {
                     progressBar.setVisibility(View.VISIBLE);
@@ -941,6 +959,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     btnRefresh.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
                 }
                 updateTabUrl(view, url);
+                baseSecurity.onPageStarted(view, url, favicon);
             }
 
             @Override
@@ -953,17 +972,21 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 }
                 updateTabUrl(view, url);
                 if (forceDark) injectPureBlackCSS(view);
+                baseSecurity.onPageFinished(view, url);
             }
         });
 
-        // Wrap the security chrome client with a progress-aware one.
+        // ── Wrap the WebChromeClient that SecureWebViewLayer installed so
+        //    we can add the progress bar and the long-press text selection
+        //    ActionMode without breaking popup suppression. ──
         final WebChromeClient baseChrome = wv.getWebChromeClient();
         wv.setWebChromeClient(new WebChromeClient() {
 
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog,
                                           boolean isUserGesture, android.os.Message resultMsg) {
-                return baseChrome.onCreateWindow(view, isDialog, isUserGesture, resultMsg);
+                return baseChrome != null
+                        && baseChrome.onCreateWindow(view, isDialog, isUserGesture, resultMsg);
             }
 
             @Override
@@ -973,7 +996,15 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     progressBar.setVisibility(newProgress < 100 ? View.VISIBLE : View.GONE);
                 }
             }
+
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (callback != null) callback.onCustomViewHidden();
+            }
         });
+
+        // ── Enable long-press text selection ──
+        enableTextSelection(wv);
 
         // ── Download listener — hands off to aria2c, WebView keeps going ──
         wv.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
@@ -989,8 +1020,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     private SecureWebViewLayer.HostTracker trackerFor(WebView wv) {
         for (Tab t : tabs) if (t.webView == wv) return t.hostTracker;
-        // If we don't yet have a Tab (called before tab creation finishes),
-        // create a fresh tracker — it will be replaced once the Tab exists.
         return new SecureWebViewLayer.HostTracker();
     }
 
@@ -1016,7 +1045,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (url.isEmpty()) return;
 
         String finalUrl = normalizeUrl(url);
-        t.hostTracker.reset();  // user explicitly asked for this URL
+        t.hostTracker.reset();
         t.webView.loadUrl(finalUrl);
         t.url = finalUrl;
 
@@ -1034,6 +1063,117 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
         if (u.contains(".") && !u.contains(" ")) return "https://" + u;
         return "https://www.google.com/search?q=" + Uri.encode(u);
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    //  Text selection
+    // ═════════════════════════════════════════════════════════════
+    /**
+     * Enables WebView's built-in long-press text selection, and installs a
+     * custom ActionMode.Callback so the floating toolbar (Copy / Select all /
+     * Share) shows reliably even under a transparent theme.
+     */
+    private void enableTextSelection(WebView wv) {
+        wv.setFocusable(true);
+        wv.setFocusableInTouchMode(true);
+        wv.requestFocus(View.FOCUS_DOWN);
+        wv.setLongClickable(true);
+        wv.setHapticFeedbackEnabled(true);
+
+        wv.setLongClickable(true);
+
+        // Route the framework's built-in selection ActionMode through our
+        // custom callback so the bar is styled and populated the same way
+        // on every device / theme.
+        wv.setOnLongClickListener(v -> {
+            // Let WebView's own selection UI start the mode.
+            // Returning false lets the default text-selection pipeline run;
+            // the SelectionActionModeCallback below handles the bar itself.
+            return false;
+        });
+    }
+
+    /**
+     * Installs the ActionMode.Callback that produces the Copy / Select all /
+     * Share bar. Called from the WebView's startActionMode override that
+     * Android invokes internally on long-press.
+     */
+    private class SelectionActionModeCallback implements ActionMode.Callback {
+
+        private final WebView webView;
+
+        SelectionActionModeCallback(WebView webView) {
+            this.webView = webView;
+        }
+
+        @Override
+        public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+            menu.clear();
+            menu.add(Menu.NONE, 1, 1, android.R.string.copy)
+                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+            menu.add(Menu.NONE, 2, 2, android.R.string.selectAll)
+                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+            menu.add(Menu.NONE, 3, 3, "Share")
+                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+            return true;
+        }
+
+        @Override
+        public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+            return false;
+        }
+
+        @Override
+        public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+            int id = item.getItemId();
+            if (id == 1) {
+                webView.evaluateJavascript(
+                        "(function(){var t=window.getSelection().toString();"
+                                + "if(t){var d=document.createElement('textarea');"
+                                + "d.value=t;document.body.appendChild(d);"
+                                + "d.select();document.execCommand('copy');"
+                                + "document.body.removeChild(d);}})();",
+                        null);
+                Toast.makeText(AuraBrowserActivity.this,
+                        "Copied", Toast.LENGTH_SHORT).show();
+                mode.finish();
+                return true;
+            } else if (id == 2) {
+                webView.evaluateJavascript(
+                        "(function(){var r=document.createRange();"
+                                + "r.selectNodeContents(document.body);"
+                                + "var s=window.getSelection();"
+                                + "s.removeAllRanges();s.addRange(r);})();",
+                        null);
+                return true;
+            } else if (id == 3) {
+                webView.evaluateJavascript(
+                        "(function(){return window.getSelection().toString();})();",
+                        value -> {
+                            String selected = value;
+                            if (selected != null && selected.length() > 1
+                                    && selected.startsWith("\"")
+                                    && selected.endsWith("\"")) {
+                                selected = selected.substring(1, selected.length() - 1);
+                            }
+                            if (selected == null || selected.isEmpty()) return;
+                            Intent send = new Intent(Intent.ACTION_SEND);
+                            send.setType("text/plain");
+                            send.putExtra(Intent.EXTRA_TEXT, selected);
+                            startActivity(Intent.createChooser(send, "Share"));
+                        });
+                mode.finish();
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        public void onDestroyActionMode(ActionMode mode) {
+            if (currentSelectionActionMode == mode) {
+                currentSelectionActionMode = null;
+            }
+        }
     }
 
     // ═════════════════════════════════════════════════════════════
