@@ -1,6 +1,7 @@
 package ohi.andre.consolelauncher;
 
 import android.annotation.SuppressLint;
+import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.Intent;
@@ -120,9 +121,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     private GestureDetector tabSwipeDetector;
 
-    // ═════════════════════════════════════════════════════════════
-    //  Lifecycle
-    // ═════════════════════════════════════════════════════════════
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -310,9 +308,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         wv.evaluateJavascript(css, null);
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  Tab sheet
-    // ═════════════════════════════════════════════════════════════
     private void showTabSheet() {
         if (tabs.isEmpty()) return;
 
@@ -439,9 +434,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return (int) (v * getResources().getDisplayMetrics().density);
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  Tab management
-    // ═════════════════════════════════════════════════════════════
     private Tab currentTab() {
         if (currentTabIndex < 0 || currentTabIndex >= tabs.size()) return null;
         return tabs.get(currentTabIndex);
@@ -868,9 +860,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  WebView configuration
-    // ═════════════════════════════════════════════════════════════
     @SuppressLint("SetJavaScriptEnabled")
     private void configureWebViewFor(WebView wv, boolean incognito) {
         WebSettings s = wv.getSettings();
@@ -1003,8 +992,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         });
 
-        // ── Enable long-press text selection ──
-        enableTextSelection(wv);
+        // ── Long-press context menu (link-aware) ──
+        installLongPressMenu(wv);
 
         // ── Download listener — hands off to aria2c, WebView keeps going ──
         wv.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
@@ -1034,9 +1023,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  URL handling
-    // ═════════════════════════════════════════════════════════════
     private void loadFromBar() {
         Tab t = currentTab();
         if (t == null) return;
@@ -1065,120 +1051,191 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return "https://www.google.com/search?q=" + Uri.encode(u);
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  Text selection
-    // ═════════════════════════════════════════════════════════════
-    /**
-     * Enables WebView's built-in long-press text selection, and installs a
-     * custom ActionMode.Callback so the floating toolbar (Copy / Select all /
-     * Share) shows reliably even under a transparent theme.
-     */
-    private void enableTextSelection(WebView wv) {
+
+    private void installLongPressMenu(WebView wv) {
+        wv.setLongClickable(true);
         wv.setFocusable(true);
         wv.setFocusableInTouchMode(true);
-        wv.requestFocus(View.FOCUS_DOWN);
-        wv.setLongClickable(true);
         wv.setHapticFeedbackEnabled(true);
 
-        wv.setLongClickable(true);
-
-        // Route the framework's built-in selection ActionMode through our
-        // custom callback so the bar is styled and populated the same way
-        // on every device / theme.
         wv.setOnLongClickListener(v -> {
-            // Let WebView's own selection UI start the mode.
-            // Returning false lets the default text-selection pipeline run;
-            // the SelectionActionModeCallback below handles the bar itself.
-            return false;
+            WebView.HitTestResult hit = wv.getHitTestResult();
+            if (hit == null) return false;
+
+            int type = hit.getType();
+            String extra = hit.getExtra(); // link URL or image URL, depending on type
+
+            if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE
+                    || type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
+                showLinkMenu(wv, extra);
+                return true;
+            }
+
+            if (type == WebView.HitTestResult.IMAGE_TYPE) {
+                // Not a link, but a bare image — treat as "copy image URL" only.
+                showLinkMenu(wv, extra);
+                return true;
+            }
+
+            // Otherwise — regular text. Ask the page what's selected.
+            wv.evaluateJavascript(
+                    "(function(){return window.getSelection().toString();})();",
+                    value -> {
+                        String text = decodeJsString(value);
+                        if (text != null && !text.isEmpty()) {
+                            showTextMenu(wv, text);
+                        } else {
+                            // Nothing selected — WebView's own word-pick will
+                            // run because we returned false above.
+                        }
+                    });
+            return true;
         });
     }
 
-    /**
-     * Installs the ActionMode.Callback that produces the Copy / Select all /
-     * Share bar. Called from the WebView's startActionMode override that
-     * Android invokes internally on long-press.
-     */
-    private class SelectionActionModeCallback implements ActionMode.Callback {
-
-        private final WebView webView;
-
-        SelectionActionModeCallback(WebView webView) {
-            this.webView = webView;
+    private String decodeJsString(String raw) {
+        if (raw == null || raw.length() < 2) return "";
+        if (raw.equals("null")) return "";
+        String s = raw;
+        if (s.startsWith("\"") && s.endsWith("\"")) {
+            s = s.substring(1, s.length() - 1);
         }
+        s = s.replace("\\n", "\n")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+                .replace("\\t", "\t")
+                .replace("\\r", "");
+        return s;
+    }
 
-        @Override
-        public boolean onCreateActionMode(ActionMode mode, Menu menu) {
-            menu.clear();
-            menu.add(Menu.NONE, 1, 1, android.R.string.copy)
-                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-            menu.add(Menu.NONE, 2, 2, android.R.string.selectAll)
-                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-            menu.add(Menu.NONE, 3, 3, "Share")
-                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-            return true;
-        }
+    private void showLinkMenu(WebView wv, String url) {
+        if (url == null || url.isEmpty()) return;
 
-        @Override
-        public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
-            return false;
-        }
+        final String linkUrl = url;
+        // Ask the page for the visible text of the anchor so we can offer
+        // "Copy link text". Fall back to the URL if the page doesn't cooperate.
+        wv.evaluateJavascript(
+                "(function(){try{"
+                        + "var a=document.activeElement;"
+                        + "if(!a||a.tagName!=='A'){"
+                        + "  var all=document.querySelectorAll('a[href]');"
+                        + "  for(var i=0;i<all.length;i++){"
+                        + "    if(all[i].href===" + jsStringLiteral(linkUrl) + "){a=all[i];break;}}"
+                        + "}"
+                        + "return a&&a.textContent?a.textContent.trim():'';"
+                        + "}catch(e){return '';}})();",
+                value -> {
+                    String linkText = decodeJsString(value);
+                    if (linkText == null || linkText.isEmpty()) linkText = linkUrl;
 
-        @Override
-        public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-            int id = item.getItemId();
-            if (id == 1) {
-                webView.evaluateJavascript(
-                        "(function(){var t=window.getSelection().toString();"
-                                + "if(t){var d=document.createElement('textarea');"
-                                + "d.value=t;document.body.appendChild(d);"
-                                + "d.select();document.execCommand('copy');"
-                                + "document.body.removeChild(d);}})();",
-                        null);
-                Toast.makeText(AuraBrowserActivity.this,
-                        "Copied", Toast.LENGTH_SHORT).show();
-                mode.finish();
-                return true;
-            } else if (id == 2) {
-                webView.evaluateJavascript(
-                        "(function(){var r=document.createRange();"
-                                + "r.selectNodeContents(document.body);"
-                                + "var s=window.getSelection();"
-                                + "s.removeAllRanges();s.addRange(r);})();",
-                        null);
-                return true;
-            } else if (id == 3) {
-                webView.evaluateJavascript(
-                        "(function(){return window.getSelection().toString();})();",
-                        value -> {
-                            String selected = value;
-                            if (selected != null && selected.length() > 1
-                                    && selected.startsWith("\"")
-                                    && selected.endsWith("\"")) {
-                                selected = selected.substring(1, selected.length() - 1);
-                            }
-                            if (selected == null || selected.isEmpty()) return;
-                            Intent send = new Intent(Intent.ACTION_SEND);
-                            send.setType("text/plain");
-                            send.putExtra(Intent.EXTRA_TEXT, selected);
-                            startActivity(Intent.createChooser(send, "Share"));
-                        });
-                mode.finish();
-                return true;
+                    final String finalText = linkText;
+
+                    new AlertDialog.Builder(AuraBrowserActivity.this)
+                            .setTitle(trimForMenu(linkUrl))
+                            .setItems(new CharSequence[]{
+                                    "Open link",
+                                    "Open in new tab",
+                                    "Open in incognito",
+                                    "Copy link URL",
+                                    "Copy link text",
+                                    "Share link"
+                            }, (d, which) -> {
+                                switch (which) {
+                                    case 0: wv.loadUrl(linkUrl); break;
+                                    case 1: newTab(linkUrl, false); break;
+                                    case 2: newTab(linkUrl, true); break;
+                                    case 3: copyToClipboard("URL", linkUrl); break;
+                                    case 4: copyToClipboard("Link text", finalText); break;
+                                    case 5: shareText(linkUrl); break;
+                                }
+                            })
+                            .show();
+                });
+    }
+
+    // ── Text menu (3 items) ───────────────────────────────────
+    private void showTextMenu(WebView wv, String text) {
+        if (text == null || text.isEmpty()) return;
+        final String body = text;
+
+        new AlertDialog.Builder(AuraBrowserActivity.this)
+                .setTitle(trimForMenu(body))
+                .setItems(new CharSequence[]{
+                        "Copy text",
+                        "Select all",
+                        "Share text"
+                }, (d, which) -> {
+                    switch (which) {
+                        case 0:
+                            copyToClipboard("Text", body);
+                            break;
+                        case 1:
+                            wv.evaluateJavascript(
+                                    "(function(){var r=document.createRange();"
+                                            + "r.selectNodeContents(document.body);"
+                                            + "var s=window.getSelection();"
+                                            + "s.removeAllRanges();s.addRange(r);})();",
+                                    null);
+                            break;
+                        case 2:
+                            shareText(body);
+                            break;
+                    }
+                })
+                .show();
+    }
+
+    // ── Helpers ────────────────────────────────────────────────
+    private void copyToClipboard(String label, String value) {
+        try {
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(android.content.ClipData.newPlainText(label, value));
+                Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
             }
-            return false;
-        }
-
-        @Override
-        public void onDestroyActionMode(ActionMode mode) {
-            if (currentSelectionActionMode == mode) {
-                currentSelectionActionMode = null;
-            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Copy failed", Toast.LENGTH_SHORT).show();
         }
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  Lifecycle
-    // ═════════════════════════════════════════════════════════════
+    private void shareText(String value) {
+        try {
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("text/plain");
+            send.putExtra(Intent.EXTRA_TEXT, value);
+            startActivity(Intent.createChooser(send, "Share"));
+        } catch (Exception e) {
+            Toast.makeText(this, "Share failed", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private String trimForMenu(String s) {
+        if (s == null) return "";
+        String t = s.trim();
+        if (t.length() > 80) t = t.substring(0, 80) + "…";
+        return t;
+    }
+
+    /** Safely encodes a Java string as a JavaScript string literal. */
+    private String jsStringLiteral(String s) {
+        if (s == null) return "''";
+        StringBuilder sb = new StringBuilder(s.length() + 2);
+        sb.append('\'');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '\'': sb.append("\\'"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:   sb.append(c);
+            }
+        }
+        sb.append('\'');
+        return sb.toString();
+    }
     @Override
     public void onBackPressed() {
         Tab t = currentTab();

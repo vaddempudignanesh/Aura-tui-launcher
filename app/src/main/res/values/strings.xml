@@ -439,4 +439,19 @@
     <string name="browser_label">AuraBrowser</string>
     <string name="help_filemanager">Opens the file manager</string>
     <string name="help_mplayer">Opens the built-in music player. It asks for audio permission on first launch, then lists every audio file on the device.</string>
+
+
+    <string-array name="aura_link_menu">
+        <item>Open link</item>
+        <item>Open in new tab</item>
+        <item>Open in incognito</item>
+        <item>Copy link URL</item>
+        <item>Copy link text</item>
+        <item>Share link</item>
+    </string-array>
+    <string-array name="aura_text_menu">
+        <item>Copy text</item>
+        <item>Select all</item>
+        <item>Share text</item>
+    </string-array>
 </resources>
