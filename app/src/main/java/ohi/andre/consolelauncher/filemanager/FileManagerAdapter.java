@@ -105,7 +105,6 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
             holder.tvSize.setText(formatSize(file.length()));
         }
 
-        // Apply colors - pure black bg, green text
         if (isSelected) {
             holder.itemContainer.setBackgroundColor(Color.parseColor("#FF003300"));
             holder.tvName.setTextColor(Color.parseColor("#FF00FF00"));
@@ -163,4 +162,4 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
             tvSize = itemView.findViewById(R.id.tv_size);
         }
     }
-}   
+}

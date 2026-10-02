@@ -44,6 +44,17 @@
                 android:ellipsize="start"
                 android:paddingStart="8dp" />
 
+            <!-- Search (NEW — left of sort) -->
+            <ImageView
+                android:id="@+id/btn_search"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_search"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Search"
+                android:padding="8dp"
+                app:tint="#00FF00" />
+
             <!-- Sort (always visible) -->
             <ImageView
                 android:id="@+id/btn_sort"
@@ -110,6 +121,48 @@
                 android:padding="8dp"
                 app:tint="#00FF00"
                 android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Search Bar (NEW — hidden by default, slides in when search tapped) -->
+        <LinearLayout
+            android:id="@+id/search_bar"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="#FF0A0A0A"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/et_search"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="Search in this folder…"
+                android:textColor="#00FF00"
+                android:textColorHint="#00AA00"
+                android:textSize="14sp"
+                android:background="#FF002200"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:singleLine="true"
+                android:inputType="text"
+                android:imeOptions="actionSearch"
+                android:autofillHints="" />
+
+            <ImageView
+                android:id="@+id/btn_search_clear"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_close"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Clear"
+                android:padding="10dp"
+                app:tint="#00FF00" />
         </LinearLayout>
 
         <!-- Selection Info Bar -->
