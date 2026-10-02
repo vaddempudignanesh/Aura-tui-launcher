@@ -1,8 +1,7 @@
 package ohi.andre.consolelauncher.commands.main.raw;
 
 import android.content.Intent;
-import ohi.andre.consolelauncher.CalculatorActivity;
-import ohi.andre.consolelauncher.R;
+import ohi.andre.consolelauncher.calculator.CalculatorActivity;
 import ohi.andre.consolelauncher.commands.ExecutePack;
 import ohi.andre.consolelauncher.commands.main.MainPack;
 import ohi.andre.consolelauncher.commands.main.specific.ParamCommand;

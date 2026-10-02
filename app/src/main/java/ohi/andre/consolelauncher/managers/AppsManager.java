@@ -38,8 +38,8 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 import it.andreuzzi.comparestring2.StringableObject;
-import ohi.andre.consolelauncher.CalculatorActivity;
-import ohi.andre.consolelauncher.GalleryActivity;
+import ohi.andre.consolelauncher.calculator.CalculatorActivity;
+import ohi.andre.consolelauncher.gallery.GalleryActivity;
 import ohi.andre.consolelauncher.MainManager;
 import ohi.andre.consolelauncher.R;
 import ohi.andre.consolelauncher.UIManager;

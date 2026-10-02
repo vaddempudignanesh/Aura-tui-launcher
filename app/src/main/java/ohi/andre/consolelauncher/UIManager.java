@@ -11,20 +11,18 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
-import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
-import android.location.Location;
 import android.net.ConnectivityManager;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
-import androidx.core.app.ActivityCompat;
+
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import androidx.core.view.GestureDetectorCompat;
-import android.text.SpannableString;
+
 import android.text.TextUtils;
 import android.text.method.LinkMovementMethod;
 import android.util.DisplayMetrics;
@@ -50,7 +48,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.List;
@@ -72,20 +69,15 @@ import ohi.andre.consolelauncher.managers.xml.options.Suggestions;
 import ohi.andre.consolelauncher.managers.xml.options.Theme;
 import ohi.andre.consolelauncher.managers.xml.options.Toolbar;
 import ohi.andre.consolelauncher.managers.xml.options.Ui;
+import ohi.andre.consolelauncher.musicplayer.MusicPlayerActivity;
 import ohi.andre.consolelauncher.tuils.AllowEqualsSequence;
 import ohi.andre.consolelauncher.tuils.NetworkUtils;
-import ohi.andre.consolelauncher.tuils.OutlineEditText;
 import ohi.andre.consolelauncher.tuils.OutlineTextView;
 import ohi.andre.consolelauncher.tuils.Tuils;
 import ohi.andre.consolelauncher.tuils.interfaces.CommandExecuter;
 import ohi.andre.consolelauncher.tuils.interfaces.OnBatteryUpdate;
 import ohi.andre.consolelauncher.tuils.interfaces.OnRedirectionListener;
-import ohi.andre.consolelauncher.tuils.interfaces.OnTextChanged;
 import ohi.andre.consolelauncher.tuils.stuff.PolicyReceiver;
-import android.widget.RelativeLayout;
-import android.widget.TextView;
-import android.graphics.Typeface;
-import android.content.Intent;
 
 public class UIManager implements OnTouchListener {
 

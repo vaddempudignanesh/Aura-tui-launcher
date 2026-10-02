@@ -2,7 +2,7 @@ package ohi.andre.consolelauncher.commands.main.raw;
 
 import android.content.Intent;
 
-import ohi.andre.consolelauncher.MusicPlayerActivity;
+import ohi.andre.consolelauncher.musicplayer.MusicPlayerActivity;
 import ohi.andre.consolelauncher.R;
 import ohi.andre.consolelauncher.commands.CommandAbstraction;
 import ohi.andre.consolelauncher.commands.ExecutePack;

@@ -1,11 +1,10 @@
 package ohi.andre.consolelauncher.commands.main.raw;
 
-import ohi.andre.consolelauncher.AuraBrowserActivity;
+import ohi.andre.consolelauncher.browser.AuraBrowserActivity;
 import ohi.andre.consolelauncher.R;
 import ohi.andre.consolelauncher.commands.CommandAbstraction;
 import ohi.andre.consolelauncher.commands.ExecutePack;
 import ohi.andre.consolelauncher.commands.main.MainPack;
-import ohi.andre.consolelauncher.tuils.Tuils;
 
 /**
  * T-UI command: browser [url]

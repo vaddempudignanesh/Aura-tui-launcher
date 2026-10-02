@@ -153,12 +153,12 @@
         </service>
 
         <service
-            android:name=".AuraDownloadService"
+            android:name=".browser.AuraDownloadService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
         <service
-            android:name=".MusicPlaybackService"
+            android:name=".musicplayer.MusicPlaybackService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
         <service
@@ -221,21 +221,21 @@
 
         <!-- ============ OTHER ACTIVITIES ============ -->
         <activity
-            android:name=".CalculatorActivity"
+            android:name=".calculator.CalculatorActivity"
             android:theme="@style/Theme.Transparent"
             android:exported="false"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"/>
 
         <activity
-            android:name=".HistoryActivity"
+            android:name=".tuils.HistoryActivity"
             android:theme="@style/Theme.Transparent"
             android:exported="false"
             android:screenOrientation="portrait"/>
 
 
         <activity
-            android:name=".MusicPlayerActivity"
+            android:name=".musicplayer.MusicPlayerActivity"
             android:exported="false"
             android:theme="@style/MusicTheme"
             android:launchMode="singleTop"
@@ -244,26 +244,26 @@
 
 
         <activity
-            android:name=".GalleryActivity"
+            android:name=".gallery.GalleryActivity"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode"
             android:exported="true"
             android:theme="@style/AppTheme" />
 
         <activity
-            android:name=".ImageViewerActivity"
+            android:name=".gallery.ImageViewerActivity"
             android:theme="@style/Theme.Transparent"
             android:exported="false"
             android:screenOrientation="portrait"/>
 
 
         <activity
-            android:name=".PdfViewerActivity"
+            android:name=".mediareader.PdfViewerActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar"
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
-            android:name=".AuraBrowserActivity"
+            android:name=".browser.AuraBrowserActivity"
             android:label="@string/browser_label"
             android:theme="@style/Theme.Transparent"
             android:exported="true"
@@ -271,7 +271,7 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
-            android:name=".FileManagerActivity"
+            android:name=".filemanager.FileManagerActivity"
             android:exported="true"
             android:theme="@style/Theme.AppCompat.NoActionBar"
             android:configChanges="orientation|screenSize|keyboardHidden"
@@ -388,7 +388,7 @@
 
         <!-- ============ FULLSCREEN VIEWER ============ -->
         <activity
-            android:name=".FullscreenViewerActivity"
+            android:name=".gallery.FullscreenViewerActivity"
             android:theme="@style/Theme.AppCompat.NoActionBar"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="portrait"
