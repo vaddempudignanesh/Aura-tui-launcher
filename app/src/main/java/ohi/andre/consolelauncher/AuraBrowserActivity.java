@@ -69,7 +69,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
     public static final String EXTRA_INCOGNITO = "aura_incognito";
     public static final String DEFAULT_HOME    = "https://www.google.com";
 
-    // ── Views ────────────────────────────────────────────────────
     private LinearLayout topBar;
     private LinearLayout footerBar;
     private FrameLayout webContainer;
@@ -84,19 +83,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private ImageButton btnDownloads;
     private TextView tabCountView;
 
-    // ── Dark mode ────────────────────────────────────────────────
     private boolean forceDark = false;
-
-    // ── Page loading state ───────────────────────────────────────
     private boolean isPageLoading = false;
-
-    // ── Popup counter ────────────────────────────────────────────
     private int blockedPopupsThisSession = 0;
-
-    // ── Selection ActionMode ─────────────────────────────────────
     private ActionMode currentSelectionActionMode;
 
-    // ── Tabs ─────────────────────────────────────────────────────
     private static class Tab {
         WebView webView;
         boolean incognito;
@@ -240,9 +231,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         newTab(startUrl, startIncognito);
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  Popup counter feedback
-    // ═════════════════════════════════════════════════════════════
     private void onPopupBlocked() {
         blockedPopupsThisSession++;
         if (blockedPopupsThisSession <= 3) {
@@ -252,7 +240,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     // ═════════════════════════════════════════════════════════════
-    //  Dark mode — native + CSS hybrid (Dark Reader style)
+    //  Dark mode — one toggle
     // ═════════════════════════════════════════════════════════════
     private void toggleForceDark() {
         forceDark = !forceDark;
@@ -276,24 +264,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    /**
-     * Applies dark mode to a single WebView.
-     *
-     * Two layers:
-     *   1. Native (API 29+): setAlgorithmicDarkeningAllowed / setForceDark.
-     *      These take effect on the NEXT navigation. We set them anyway so
-     *      subsequent pages start dark, but they are NOT what makes the
-     *      current page change — that's layer 2.
-     *   2. CSS (always): a big <style> injected into the live document plus
-     *      a `data-aura-dark` attribute on <html>. This is what makes the
-     *      change visible INSTANTLY without any reload. It also walks
-     *      iframes and mutation events.
-     */
     @SuppressLint("RequiresFeature")
     private void applyForceDark(WebView wv) {
         if (wv == null) return;
 
-        // ── Layer 1: native ──
         try {
             WebSettings settings = wv.getSettings();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -312,130 +286,129 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         } catch (Exception ignored) {}
 
-        // ── Layer 2: CSS — this is what visibly changes the page ──
         injectDeepDarkCss(wv, forceDark);
     }
 
     private void injectDeepDarkCss(WebView wv, boolean enable) {
         String js = enable ? DEEP_DARK_CSS_JS : DEEP_DARK_REMOVE_JS;
+        Log.d("AURA-DARK", "=== injectDeepDarkCss called enable=" + enable
+                + " tabIndex=" + currentTabIndex
+                + " url=" + (wv != null ? wv.getUrl() : "null") + " ===");
         try {
-            wv.evaluateJavascript(js, null);
-        } catch (Exception ignored) {}
+            wv.evaluateJavascript(js, value -> {
+                Log.d("AURA-DARK", "evaluateJavascript callback value=" + value);
+            });
+        } catch (Exception e) {
+            Log.e("AURA-DARK", "evaluateJavascript threw", e);
+        }
     }
 
-    /**
-     * Full-document dark sheet. Runs on every page.
-     *
-     * Key implementation details:
-     *   • The <style id="aura-dark-v2"> is idempotent, so calling twice
-     *     does nothing.
-     *   • A marker attribute `data-aura-dark` on <html> makes it possible
-     *     for the removal script to find and undo everything fast.
-     *   • We force a reflow after inserting the style so the browser
-     *     definitely repaints (this is the piece that was missing).
-     *   • The sheet uses a *filter* fallback on top of the palette rules
-     *     so pages that set colours via unsupported CSS still get darkened.
-     */
+
     private static final String DEEP_DARK_CSS_JS =
             "(function(){" +
                     "try{" +
-                    "var ID='aura-dark-v3';" +
+                    "console.log('===== [AURA] DARK CSS DIAGNOSTIC START =====');" +
+                    "var ID='aura-dark-v5';" +
                     "var html=document.documentElement;" +
-                    "if(!html)return;" +
+                    "if(!html){console.log('[AURA] no documentElement');return;}" +
+                    "console.log('[AURA] url=' + location.href);" +
+                    "console.log('[AURA] title=' + document.title);" +
+
+                    /* ═══════════════ INSTALL CSS ═══════════════ */
+                    // The old, destructive CSS has been removed.
                     "html.setAttribute('data-aura-dark','1');" +
                     "var old=document.getElementById(ID);" +
                     "if(old&&old.parentNode)old.parentNode.removeChild(old);" +
                     "var st=document.createElement('style');" +
                     "st.id=ID;" +
+
+                    // Copy nonce if available
+                    "try{" +
+                    "var nonceSource=document.querySelector('style[nonce],script[nonce]');" +
+                    "if(nonceSource&&nonceSource.nonce){" +
+                    "st.setAttribute('nonce',nonceSource.nonce);" +
+                    "console.log('[AURA] copied nonce=' + nonceSource.nonce);" +
+                    "}" +
+                    "}catch(e){console.log('[AURA] nonce err '+e);}" +
+
+                    // NEW CSS:
+                    // 1. Invert the entire HTML element.
+                    // 2. Apply a hue rotation to make colors look more natural after inversion.
+                    // 3. Re-invert images, videos, and iframes so they look normal.
                     "st.textContent=" +
-                    "'html,html[data-aura-dark]{background:#000000 !important;color-scheme:dark !important;}' +" +
-                    "'html[data-aura-dark] body{background:#000000 !important;color:#d7d7d7 !important;}' +" +
-                    "'html[data-aura-dark] body,html[data-aura-dark] body *{border-color:#222222 !important;}' +" +
-                    "'html[data-aura-dark] body *:not(img):not(video):not(canvas):not(svg):not(picture):not(source):not(iframe){background-color:#000000 !important;}' +" +
-                    "'html[data-aura-dark] a,html[data-aura-dark] a:visited{color:#7aa2f7 !important;background-color:transparent !important;}' +" +
-                    "'html[data-aura-dark] h1,html[data-aura-dark] h2,html[data-aura-dark] h3,' +" +
-                    "'html[data-aura-dark] h4,html[data-aura-dark] h5,html[data-aura-dark] h6,' +" +
-                    "'html[data-aura-dark] p,html[data-aura-dark] span,html[data-aura-dark] li,' +" +
-                    "'html[data-aura-dark] td,html[data-aura-dark] th,html[data-aura-dark] div,' +" +
-                    "'html[data-aura-dark] label,html[data-aura-dark] small,html[data-aura-dark] strong,' +" +
-                    "'html[data-aura-dark] em,html[data-aura-dark] blockquote{color:#d7d7d7 !important;}' +" +
-                    "'html[data-aura-dark] input,html[data-aura-dark] textarea,html[data-aura-dark] select,' +" +
-                    "'html[data-aura-dark] button{background:#000000 !important;color:#e6e6e6 !important;border-color:#333333 !important;}' +" +
-                    "'html[data-aura-dark] table,html[data-aura-dark] tr,html[data-aura-dark] td,' +" +
-                    "'html[data-aura-dark] th{background:#000000 !important;border-color:#222222 !important;}' +" +
-                    "'html[data-aura-dark] pre,html[data-aura-dark] code,html[data-aura-dark] kbd,' +" +
-                    "'html[data-aura-dark] samp{background:#000000 !important;color:#e6e6e6 !important;}' +" +
-                    "'html[data-aura-dark] hr{border-color:#222222 !important;}' +" +
-                    "'html[data-aura-dark] ::selection{background:#3b5bdb !important;color:#ffffff !important;}' +" +
-                    "'html[data-aura-dark] ::-webkit-scrollbar{background:#000000 !important;}' +" +
-                    "'html[data-aura-dark] ::-webkit-scrollbar-thumb{background:#333333 !important;}' +" +
-                    "'html[data-aura-dark] img,html[data-aura-dark] video,html[data-aura-dark] canvas,' +" +
-                    "'html[data-aura-dark] svg,html[data-aura-dark] picture,html[data-aura-dark] source,' +" +
-                    "'html[data-aura-dark] [style*=\"background:#fff\"],' +" +
-                    "'html[data-aura-dark] [style*=\"background: #fff\"],' +" +
-                    "'html[data-aura-dark] [style*=\"background-color:#fff\"],' +" +
-                    "'html[data-aura-dark] [style*=\"background-color: #fff\"],' +" +
-                    "'html[data-aura-dark] [style*=\"background:white\"],' +" +
-                    "'html[data-aura-dark] [style*=\"background-color:white\"]{background:#000000 !important;background-color:#000000 !important;}' +" +
-                    "'html[data-aura-dark] [style*=\"color:#000\"],' +" +
-                    "'html[data-aura-dark] [style*=\"color: #000\"],' +" +
-                    "'html[data-aura-dark] [style*=\"color:black\"]{color:#e6e6e6 !important;}' ;" +
-            "(document.head||html).appendChild(st);" +
-            "try{void document.documentElement.offsetHeight;void document.body&&document.body.offsetHeight;}catch(e){}" +
-            "try{" +
-            "var frames=document.querySelectorAll('iframe');" +
-            "for(var i=0;i<frames.length;i++){" +
-            "try{" +
-            "var d=frames[i].contentDocument;" +
-            "if(d&&d.documentElement){" +
-            "d.documentElement.setAttribute('data-aura-dark','1');" +
-            "var oldFrame=d.getElementById(ID);" +
-            "if(oldFrame&&oldFrame.parentNode)oldFrame.parentNode.removeChild(oldFrame);" +
-            "var fs=d.createElement('style');" +
-            "fs.id=ID;" +
-            "fs.textContent=st.textContent;" +
-            "(d.head||d.documentElement).appendChild(fs);" +
-            "void d.documentElement.offsetHeight;" +
-            "}" +
-            "}catch(e){}" +
-            "}" +
-            "}catch(e){}" +
-            "try{" +
-            "if(window.__auraDarkMO)window.__auraDarkMO.disconnect();" +
-            "var mo=new MutationObserver(function(){try{if(document.documentElement.getAttribute('data-aura-dark')!=='1')document.documentElement.setAttribute('data-aura-dark','1');}catch(e){}});" +
-            "mo.observe(document.documentElement,{attributes:true,attributeFilter:['data-aura-dark']});" +
-            "window.__auraDarkMO=mo;" +
-            "}catch(e){}" +
-            "}catch(e){}" +
-            "})();";
+                    "'html[data-aura-dark]{filter:invert(100%) hue-rotate(180deg) !important;background:#000 !important;}' +" +
+                    "'html[data-aura-dark] img,' +" +
+                    "'html[data-aura-dark] video,' +" +
+                    "'html[data-aura-dark] iframe,' +" +
+                    "'html[data-aura-dark] canvas,' +" +
+                    "'html[data-aura-dark] svg{' +" +
+                    "'filter:invert(100%) hue-rotate(180deg) !important;' +" +
+                    "'}' ;" +
+
+                    "console.log('[AURA] style textContent length=' + st.textContent.length);" +
+                    "try{" +
+                    "(document.head||html).appendChild(st);" +
+                    "console.log('[AURA] style attached to ' + (document.head?'head':'html'));" +
+                    "}catch(e){" +
+                    "console.log('[AURA] head append failed '+e);" +
+                    "try{html.appendChild(st);}catch(e2){console.log('[AURA] html append failed '+e2);}" +
+                    "}" +
+
+                    /* ═══════════════ FORCE REFLOW ═══════════════ */
+                    "try{ void document.documentElement.offsetHeight; }catch(e){}" +
+
+                    "console.log('===== [AURA] DARK CSS DIAGNOSTIC END =====');" +
+                    "}catch(e){" +
+                    "console.log('[AURA] FATAL '+e);" +
+                    "}" +
+                    "})();";
+
+
 
     private static final String DEEP_DARK_REMOVE_JS =
             "(function(){" +
                     "try{" +
-                    "var ID='aura-dark-v3';" +
+                    "console.log('[AURA] remove CSS start');" +
                     "var html=document.documentElement;" +
                     "if(html)html.removeAttribute('data-aura-dark');" +
-                    "var st=document.getElementById(ID);" +
+                    "var st=document.getElementById('aura-dark-v5');" +
+                    "if(st){console.log('[AURA] removing style, parent='+(st.parentNode?st.parentNode.tagName:'null'));}" +
                     "if(st&&st.parentNode)st.parentNode.removeChild(st);" +
-                    "try{if(window.__auraDarkMO){window.__auraDarkMO.disconnect();window.__auraDarkMO=null;}}catch(e){}" +
+                    "var old=document.getElementById('aura-dark-v3');" +
+                    "if(old&&old.parentNode)old.parentNode.removeChild(old);" +
+                    "try{" +
+                    "if(window.__auraDarkMO){" +
+                    "window.__auraDarkMO.disconnect();" +
+                    "window.__auraDarkMO=null;" +
+                    "console.log('[AURA] observer disconnected');" +
+                    "}" +
+                    "}catch(e){}" +
                     "try{" +
                     "var frames=document.querySelectorAll('iframe');" +
                     "for(var i=0;i<frames.length;i++){" +
                     "try{" +
                     "var d=frames[i].contentDocument;" +
                     "if(d){" +
-                    "var f=d.getElementById(ID);" +
+                    "var f=d.getElementById('aura-dark-v5');" +
                     "if(f&&f.parentNode)f.parentNode.removeChild(f);" +
-                    "if(d.documentElement)d.documentElement.removeAttribute('data-aura-dark');" +
+                    "var g=d.getElementById('aura-dark-v3');" +
+                    "if(g&&g.parentNode)g.parentNode.removeChild(g);" +
+                    "if(d.documentElement)" +
+                    "d.documentElement.removeAttribute('data-aura-dark');" +
                     "void d.documentElement.offsetHeight;" +
                     "}" +
                     "}catch(e){}" +
                     "}" +
                     "}catch(e){}" +
-                    "try{void document.documentElement.offsetHeight;void document.body&&document.body.offsetHeight;}catch(e){}" +
+                    "try{" +
+                    "void document.documentElement.offsetHeight;" +
+                    "if(document.body)void document.body.offsetHeight;" +
                     "}catch(e){}" +
+                    "console.log('[AURA] remove CSS done');" +
+                    "}catch(e){" +
+                    "console.log('[AURA] REMOVE FATAL '+e);" +
+                    "}" +
                     "})();";
-
     private void showTabSheet() {
         if (tabs.isEmpty()) return;
 
@@ -710,7 +683,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     // ═════════════════════════════════════════════════════════════
-    //  DOWNLOADS — aria2c daemon + in-app panel
+    //  DOWNLOADS
     // ═════════════════════════════════════════════════════════════
     private void startAria2Download(String url, String userAgent,
                                     String contentDisposition, String mimeType) {
@@ -1002,9 +975,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(true);
 
-        // ── Popup suppression at the WebSettings layer ──
         s.setJavaScriptCanOpenWindowsAutomatically(false);
-        s.setSupportMultipleWindows(true); // needed so our onCreateWindow sees them        s.setCacheMode(incognito ? WebSettings.LOAD_NO_CACHE : WebSettings.LOAD_DEFAULT);
+        s.setSupportMultipleWindows(true);
+        s.setCacheMode(incognito ? WebSettings.LOAD_NO_CACHE : WebSettings.LOAD_DEFAULT);
         s.setGeolocationEnabled(false);
         s.setSaveFormData(!incognito);
         s.setAllowFileAccess(false);
@@ -1031,15 +1004,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
             cm.setAcceptThirdPartyCookies(wv, !incognito);
         }
 
-        // ── Install the security layer. This sets BOTH the WebViewClient
-        //    and the WebChromeClient that handle popup suppression and
-        //    navigation hijack blocking. ──
         SecureWebViewLayer.HostTracker tracker = trackerFor(wv);
         SecureWebViewLayer.install(wv, this, tracker, this::onPopupBlocked);
 
-        // ── Wrap the WebViewClient that SecureWebViewLayer just installed
-        //    so we can add page lifecycle events (progress / title) without
-        //    losing the security hooks. ──
         final WebViewClient baseSecurity = wv.getWebViewClient();
         wv.setWebViewClient(new WebViewClient() {
 
@@ -1081,12 +1048,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             @Override
             public void onPageCommitVisible(WebView view, String url) {
-                // Fires as soon as the new document has begun painting but
-                // before onPageFinished. This is the earliest point at which
-                // we can inject CSS and have it apply to the visible page.
                 applyForceDark(view);
                 baseSecurity.onPageCommitVisible(view, url);
             }
+
             @Override
             public void onPageFinished(WebView view, String url) {
                 if (view == currentTabWebView()) {
@@ -1096,16 +1061,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
                 }
                 updateTabUrl(view, url);
-                // Reapply the CURRENT dark state (on OR off) after every
-                // page load so new pages inherit the user's choice.
                 applyForceDark(view);
                 baseSecurity.onPageFinished(view, url);
             }
         });
 
-        // ── Wrap the WebChromeClient that SecureWebViewLayer installed so
-        //    we can add the progress bar and the long-press text selection
-        //    ActionMode without breaking popup suppression. ──
         final WebChromeClient baseChrome = wv.getWebChromeClient();
         wv.setWebChromeClient(new WebChromeClient() {
 
@@ -1128,14 +1088,18 @@ public class AuraBrowserActivity extends AppCompatActivity {
             public void onShowCustomView(View view, CustomViewCallback callback) {
                 if (callback != null) callback.onCustomViewHidden();
             }
+
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage cm) {
+                Log.d("AURA-DARK-JS", cm.messageLevel() + " " + cm.message()
+                        + " @" + cm.lineNumber() + " src=" + cm.sourceId());
+                return true;
+            }
         });
 
-        // ── Long-press context menu (link-aware) ──
         installLongPressMenu(wv);
 
-        // ── Download listener — hands off to aria2c, WebView keeps going ──
         wv.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
-            // Reject suspicious 1x1 beacons and tracking pixels.
             if (contentLength > 0 && contentLength < 4096
                     && mimeType != null && mimeType.startsWith("image/")) {
                 return;
@@ -1189,10 +1153,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return "https://www.google.com/search?q=" + Uri.encode(u);
     }
 
-
     private void installLongPressMenu(WebView wv) {
-        // Do NOT set wv.setOnLongClickListener — its mere presence disables
-        // WebView's built-in text-selection pipeline.
         wv.setLongClickable(true);
         wv.setFocusable(true);
         wv.setFocusableInTouchMode(true);
@@ -1222,7 +1183,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         handleLongPressAt(wv, downXY[0], downXY[1]);
                     };
                     longPressHandler.postDelayed(pendingLongPress[0], longPressTimeout);
-                    // Let WebView handle the DOWN as usual.
                     return false;
 
                 case MotionEvent.ACTION_MOVE: {
@@ -1244,9 +1204,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         pendingLongPress[0] = null;
                     }
                     if (longPressFired[0]) {
-                        // We already showed our dialog — swallow the UP so
-                        // WebView's internal selection UI doesn't try to
-                        // start or end its own ActionMode on top of ours.
                         longPressFired[0] = false;
                         return true;
                     }
@@ -1262,7 +1219,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             int type = hit != null ? hit.getType() : WebView.HitTestResult.UNKNOWN_TYPE;
             String extra = hit != null ? hit.getExtra() : null;
 
-            // ── Link (or image-inside-link) long-press ──
             if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE
                     || type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
                 if (extra != null && !extra.isEmpty()) {
@@ -1271,7 +1227,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 }
             }
 
-            // ── Bare image long-press ──
             if (type == WebView.HitTestResult.IMAGE_TYPE) {
                 if (extra != null && !extra.isEmpty()) {
                     showLinkMenu(wv, extra);
@@ -1279,13 +1234,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 }
             }
 
-            // ── Text long-press ──
-            //
-            // We must NOT rely on window.getSelection() because by the time
-            // our handler runs, WebView may not have updated the DOM selection
-            // yet. So we compute the word under (x, y) ourselves using
-            // caretRangeFromPoint, expand to word boundaries, select it
-            // visually, and return it. Then we show our own text menu.
             String js =
                     "(function(){" +
                             "  try{" +
@@ -1335,7 +1283,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             wv.evaluateJavascript(js, value -> {
                 String text = decodeJsString(value);
                 if (text == null || text.trim().isEmpty()) {
-                    // Nothing under the finger → do nothing.
                     return;
                 }
                 showTextMenu(wv, text);
@@ -1365,8 +1312,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (url == null || url.isEmpty()) return;
 
         final String linkUrl = url;
-        // Ask the page for the visible text of the anchor so we can offer
-        // "Copy link text". Fall back to the URL if the page doesn't cooperate.
         wv.evaluateJavascript(
                 "(function(){try{"
                         + "var a=document.activeElement;"
@@ -1406,7 +1351,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 });
     }
 
-    // ── Text menu (3 items) ───────────────────────────────────
     private void showTextMenu(WebView wv, String text) {
         if (text == null || text.isEmpty()) return;
         final String body = text;
@@ -1438,7 +1382,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 .show();
     }
 
-    // ── Helpers ────────────────────────────────────────────────
     private void copyToClipboard(String label, String value) {
         try {
             android.content.ClipboardManager cm =
@@ -1470,7 +1413,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return t;
     }
 
-
     private String jsStringLiteral(String s) {
         if (s == null) return "''";
         StringBuilder sb = new StringBuilder(s.length() + 2);
@@ -1489,6 +1431,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         sb.append('\'');
         return sb.toString();
     }
+
     @Override
     public void onBackPressed() {
         Tab t = currentTab();
@@ -1512,8 +1455,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         super.onResume();
         for (Tab t : tabs) {
             t.webView.onResume();
-            // Re-apply dark mode in case the WebView was recreated while
-            // the Activity was paused.
             applyForceDark(t.webView);
         }
     }
@@ -1540,9 +1481,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         super.onDestroy();
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  Static entry points
-    // ═════════════════════════════════════════════════════════════
     public static void open(Context ctx, String url) {
         Intent i = new Intent(ctx, AuraBrowserActivity.class);
         if (url != null) i.putExtra(EXTRA_URL, url);
