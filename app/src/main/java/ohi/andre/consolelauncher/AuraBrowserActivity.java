@@ -1,6 +1,7 @@
 package ohi.andre.consolelauncher;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Context;
@@ -13,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.util.Log;
 import android.view.ActionMode;
 import android.view.GestureDetector;
@@ -26,6 +28,7 @@ import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -43,6 +46,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.FileProvider;
 import androidx.webkit.Profile;
 import androidx.webkit.ProfileStore;
 import androidx.webkit.WebViewCompat;
@@ -53,10 +57,13 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
@@ -70,6 +77,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
     public static final String EXTRA_URL       = "aura_url";
     public static final String EXTRA_INCOGNITO = "aura_incognito";
     public static final String DEFAULT_HOME    = "https://www.google.com";
+
+    // ── File chooser request codes ────────────────────────────────────
+    private static final int REQ_FILE_CHOOSER          = 1001;
+    private static final int REQ_CAMERA_CAPTURE        = 1002;
+    private static final int REQ_PERMISSIONS_FILE      = 2001;
+    private static final int REQ_PERMISSIONS_CAMERA    = 2002;
 
     private LinearLayout topBar;
     private LinearLayout footerBar;
@@ -89,6 +102,18 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private boolean isPageLoading = false;
     private int blockedPopupsThisSession = 0;
     private ActionMode currentSelectionActionMode;
+
+    // ── URL bar typing-lock ───────────────────────────────────────────
+    // When the EditText has focus, we suppress programmatic .setText()
+    // calls from onPageStarted/onPageFinished so the user's typing isn't
+    // clobbered by navigation events. The lock is released on focus loss.
+    private boolean urlBarUserEditing = false;
+    private String  urlBarLastUserText = "";
+
+    // ── File chooser callback state ───────────────────────────────────
+    private ValueCallback<Uri[]> filePathCallback;
+    private Uri cameraOutputUri;          // where the camera writes its JPEG
+    private File cameraOutputFile;        // backing file
 
     // Cached DarkReader source so we don't re-read the asset per tab
     private static String darkReaderSource = null;
@@ -172,8 +197,31 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnDownloads     = findViewById(R.id.aura_btn_downloads);
         tabCountView     = findViewById(R.id.aura_tab_count);
 
-        etUrl.setOnClickListener(v -> { etUrl.selectAll(); etUrl.requestFocus(); });
-        etUrl.setOnFocusChangeListener((v, hasFocus) -> { if (hasFocus) etUrl.selectAll(); });
+        // ── URL bar: user-edit tracking ──────────────────────────────
+        // These listeners keep urlBarUserEditing in sync with real user
+        // interaction so navigation callbacks know when to NOT overwrite.
+        etUrl.setOnClickListener(v -> {
+            urlBarUserEditing = true;
+            etUrl.selectAll();
+            etUrl.requestFocus();
+        });
+        etUrl.setOnFocusChangeListener((v, hasFocus) -> {
+            urlBarUserEditing = hasFocus;
+            if (hasFocus) {
+                etUrl.selectAll();
+            }
+        });
+        etUrl.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {
+                // Only treat changes as "user-typed" if the field has focus.
+                if (etUrl.hasFocus()) {
+                    urlBarUserEditing = true;
+                    urlBarLastUserText = s.toString();
+                }
+            }
+            @Override public void afterTextChanged(android.text.Editable s) {}
+        });
         etUrl.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_GO
                     || actionId == EditorInfo.IME_ACTION_DONE
@@ -263,33 +311,26 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // DARK MODE — DarkReader.js with Trusted Types bypass
-    //
-    // WHY THIS WORKS ON STRICT-CSP SITES (YouTube, SourceForge, etc.):
-    //
-    //   1. When a site enables Trusted Types, it blocks any string that
-    //      is assigned to a sink (.textContent, .src, Function(), eval()).
-    //
-    //   2. The browser provides window.trustedTypes.createPolicy(). If
-    //      the site hasn't already registered a policy named 'default',
-    //      we register one ourselves. That policy simply returns the
-    //      input string as a TrustedScript / TrustedScriptURL.
-    //
-    //   3. Once our 'default' policy is in place, the browser no longer
-    //      rejects our assignments — because they now go through the
-    //      policy's createScript / createScriptURL sanitizers, which
-    //      we've defined as identity functions.
-    //
-    //   4. We then inject DarkReader source inline via a <script> tag
-    //      whose .textContent we assign with the trusted wrapper.
-    //
-    // This bypasses Trusted Types WITHOUT stripping CSP headers, so
-    // other protections on the page remain intact.
+    // URL BAR — programmatic updates that respect user typing
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * Load darkreader.min.js from assets once and cache it.
+     * Set the URL bar to the given URL, but ONLY when the user is not
+     * actively editing the field. This prevents navigation events from
+     * clobbering the user's in-progress text.
      */
+    private void setUrlBarText(String url) {
+        if (urlBarUserEditing || etUrl.hasFocus()) {
+            // User is editing → leave the field alone.
+            return;
+        }
+        etUrl.setText(url != null ? url : DEFAULT_HOME);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // DARK MODE — DarkReader.js with Trusted Types bypass
+    // ═══════════════════════════════════════════════════════════════════
+
     private static synchronized String getDarkReaderSource(Context ctx) {
         if (darkReaderSource != null) return darkReaderSource;
         try (InputStream is = ctx.getAssets().open("darkreader.min.js");
@@ -324,19 +365,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    /**
-     * Enable or disable DarkReader on a single WebView.
-     *
-     * The payload:
-     *   1. Installs a 'default' Trusted Types policy (if Trusted Types
-     *      is enforced and no default policy exists yet).
-     *   2. Loads darkreader.min.js by wrapping its source in a
-     *      TrustedScript via that policy.
-     *   3. Calls DarkReader.enable() with inline options.
-     *
-     * All steps are wrapped in try/catch so failures on unusual sites
-     * degrade gracefully instead of breaking the page.
-     */
     private void applyDarkReader(WebView wv) {
         if (wv == null) return;
 
@@ -347,13 +375,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 return;
             }
 
-            // Escape the source so we can embed it safely in a JS string
             final String escaped = jsStringLiteral(src);
 
             String bootstrapJs =
                     "(function(){" +
                             "  try {" +
-                            // ── Step 1: install Trusted Types default policy ──
                             "    if (window.trustedTypes && window.trustedTypes.createPolicy) {" +
                             "      try {" +
                             "        if (!window.trustedTypes.defaultPolicy) {" +
@@ -367,8 +393,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                             "        console.log('TrustedTypes default policy already exists or creation skipped');" +
                             "      }" +
                             "    }" +
-
-                            // ── Step 2: idempotency guard ──
                             "    if (window.__auraDRState === 'ready' && window.DarkReader) {" +
                             "      try { DarkReader.setFetchMethod(window.fetch.bind(window)); } catch(e){}" +
                             "      DarkReader.enable(" + DR_OPTS_JS + ");" +
@@ -376,9 +400,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                             "    }" +
                             "    if (window.__auraDRState === 'loading') return;" +
                             "    window.__auraDRState = 'loading';" +
-
-                            // ── Step 3: execute DarkReader source via a
-                            //    TrustedScript-aware mechanism.
                             "    var src = " + escaped + ";" +
                             "    var runnable = src;" +
                             "    try {" +
@@ -390,13 +411,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
                             "        }" +
                             "      }" +
                             "    } catch (e) { /* fall through with raw string */ }" +
-
-                            // Execute the source. Use new Function() so we
-                            // don't need a <script> tag at all.
                             "    try {" +
                             "      (new Function('return (' + runnable + ')'))();" +
                             "    } catch (e) {" +
-                            // If Function() failed (e.g. strict TT on Function), fall back to inline <script>
                             "      try {" +
                             "        var tag = document.createElement('script');" +
                             "        var payload = runnable;" +
@@ -414,8 +431,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                             "        return;" +
                             "      }" +
                             "    }" +
-
-                            // ── Step 4: enable DarkReader ──
                             "    try {" +
                             "      if (!window.DarkReader) {" +
                             "        window.__auraDRState = 'failed';" +
@@ -452,6 +467,205 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (forceDark) {
             applyDarkReader(wv);
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // FILE / MEDIA / CAMERA PICKER
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Called by WebView when a page invokes <input type="file" ...> or
+     * uses the File System Access API. We forward the request to the
+     * system picker. The page provides an acceptTypes[] array which we
+     * pass through so the picker filters correctly (images, video, etc.).
+     */
+    private boolean handleFileChooser(ValueCallback<Uri[]> callback,
+                                      WebChromeClient.FileChooserParams params) {
+        // Cancel any previous pending request (spec: only one at a time).
+        if (filePathCallback != null) {
+            filePathCallback.onReceiveValue(null);
+            filePathCallback = null;
+        }
+        filePathCallback = callback;
+
+        try {
+            Intent chooserIntent;
+
+            if (params != null && params.isCaptureEnabled()) {
+                // Page requested direct camera capture (<input capture>).
+                chooserIntent = buildCameraIntent();
+                if (chooserIntent == null) {
+                    // No camera app → fall back to a plain picker.
+                    chooserIntent = buildPickerIntent(params);
+                }
+            } else {
+                chooserIntent = buildPickerIntent(params);
+            }
+
+            if (chooserIntent == null) {
+                // Nothing to launch — bail out cleanly.
+                callback.onReceiveValue(null);
+                filePathCallback = null;
+                return false;
+            }
+
+            startActivityForResult(chooserIntent, REQ_FILE_CHOOSER);
+            return true;
+
+        } catch (Exception e) {
+            Log.e("AuraBrowser", "File chooser failed", e);
+            if (filePathCallback != null) {
+                filePathCallback.onReceiveValue(null);
+                filePathCallback = null;
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Build the ACTION_GET_CONTENT / ACTION_OPEN_DOCUMENT intent that
+     * respects the page's accept types and multi-select flag.
+     */
+    private Intent buildPickerIntent(WebChromeClient.FileChooserParams params) {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+
+        // ── MIME filter ───────────────────────────────────────────────
+        String[] acceptTypes = (params != null) ? params.getAcceptTypes() : null;
+        String mimeFilter = "*/*";
+        boolean hasAccept = false;
+
+        if (acceptTypes != null && acceptTypes.length > 0) {
+            StringBuilder sb = new StringBuilder();
+            for (String a : acceptTypes) {
+                if (a == null || a.trim().isEmpty()) continue;
+                String t = a.trim();
+                // Expand common shorthands like ".jpg" → "image/*"
+                if (t.startsWith(".")) {
+                    String ext = t.substring(1).toLowerCase(Locale.US);
+                    if (ext.equals("jpg") || ext.equals("jpeg") || ext.equals("png")
+                            || ext.equals("gif") || ext.equals("webp") || ext.equals("bmp")
+                            || ext.equals("heic") || ext.equals("heif")) {
+                        sb.append("image/*").append(",");
+                    } else if (ext.equals("mp4") || ext.equals("webm") || ext.equals("mkv")
+                            || ext.equals("mov") || ext.equals("avi")) {
+                        sb.append("video/*").append(",");
+                    } else if (ext.equals("mp3") || ext.equals("wav") || ext.equals("ogg")
+                            || ext.equals("m4a") || ext.equals("flac")) {
+                        sb.append("audio/*").append(",");
+                    } else if (ext.equals("pdf")) {
+                        sb.append("application/pdf").append(",");
+                    } else if (ext.equals("txt")) {
+                        sb.append("text/plain").append(",");
+                    }
+                    hasAccept = true;
+                } else {
+                    sb.append(t).append(",");
+                    hasAccept = true;
+                }
+            }
+            if (sb.length() > 0) {
+                mimeFilter = sb.substring(0, sb.length() - 1);   // trim trailing comma
+            }
+        }
+
+        if (hasAccept) {
+            intent.setType(mimeFilter);
+        } else {
+            intent.setType("*/*");
+        }
+
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,
+                params != null && params.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE);
+
+        // ── Offer camera as an extra source if page allows images ─────
+        Intent cameraIntent = null;
+        if (mimeFilter.contains("image") || mimeFilter.equals("*/*")) {
+            cameraIntent = buildCameraIntent();
+        }
+
+        if (cameraIntent != null) {
+            Intent chooser = Intent.createChooser(intent, "Select file");
+            chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{ cameraIntent });
+            return chooser;
+        }
+        return Intent.createChooser(intent, "Select file");
+    }
+
+    /**
+     * Build a MediaStore.ACTION_IMAGE_CAPTURE intent writing to a
+     * FileProvider-backed file.
+     */
+    private Intent buildCameraIntent() {
+        try {
+            File dir = new File(getCacheDir(), "aura_camera");
+            if (!dir.exists()) dir.mkdirs();
+
+            String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+                    .format(new Date());
+            cameraOutputFile = new File(dir, "aura_" + ts + ".jpg");
+
+            cameraOutputUri = FileProvider.getUriForFile(
+                    this,
+                    getPackageName() + ".fileprovider",
+                    cameraOutputFile);
+
+            Intent capture = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            capture.putExtra(MediaStore.EXTRA_OUTPUT, cameraOutputUri);
+            capture.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+            // Only offer camera if an app actually handles the intent.
+            if (capture.resolveActivity(getPackageManager()) == null) {
+                return null;
+            }
+            return capture;
+        } catch (Exception e) {
+            Log.w("AuraBrowser", "Camera intent unavailable", e);
+            return null;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        // Route file chooser results to the pending WebView callback.
+        if (requestCode == REQ_FILE_CHOOSER) {
+            if (filePathCallback == null) {
+                super.onActivityResult(requestCode, resultCode, data);
+                return;
+            }
+
+            Uri[] results = null;
+
+            if (resultCode == Activity.RESULT_OK) {
+                // Case 1: camera output (our URI was pre-set)
+                if (data == null || (data.getData() == null && data.getClipData() == null)) {
+                    if (cameraOutputUri != null) {
+                        results = new Uri[]{ cameraOutputUri };
+                    }
+                } else {
+                    // Case 2: single pick
+                    if (data.getData() != null) {
+                        results = new Uri[]{ data.getData() };
+                    } else if (data.getClipData() != null) {
+                        // Case 3: multi pick
+                        int n = data.getClipData().getItemCount();
+                        results = new Uri[n];
+                        for (int i = 0; i < n; i++) {
+                            results[i] = data.getClipData().getItemAt(i).getUri();
+                        }
+                    }
+                }
+            }
+
+            filePathCallback.onReceiveValue(results);
+            filePathCallback = null;
+            cameraOutputUri = null;
+            cameraOutputFile = null;
+            return;
+        }
+
+        super.onActivityResult(requestCode, resultCode, data);
     }
 
     // ═════════════════════════════════════════════════════════════
@@ -697,7 +911,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         Tab t = tabs.get(index);
         t.webView.setVisibility(View.VISIBLE);
         t.webView.requestFocus();
-        etUrl.setText(t.url != null ? t.url : DEFAULT_HOME);
+        setUrlBarText(t.url != null ? t.url : DEFAULT_HOME);
 
         updateTabCountBadge();
 
@@ -1091,7 +1305,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 if (view == currentTabWebView()) {
                     progressBar.setVisibility(View.VISIBLE);
-                    etUrl.setText(url);
+                    setUrlBarText(url);          // respects user typing
                     isPageLoading = true;
                     btnRefresh.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
                 }
@@ -1109,7 +1323,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 if (view == currentTabWebView()) {
                     progressBar.setVisibility(View.GONE);
-                    etUrl.setText(url);
+                    setUrlBarText(url);          // respects user typing
                     isPageLoading = false;
                     btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
                 }
@@ -1140,6 +1354,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
             @Override
             public void onShowCustomView(View view, CustomViewCallback callback) {
                 if (callback != null) callback.onCustomViewHidden();
+            }
+
+            // ★ File chooser bridge ★
+            @Override
+            public boolean onShowFileChooser(WebView webView,
+                                             ValueCallback<Uri[]> filePathCallback,
+                                             FileChooserParams fileChooserParams) {
+                return handleFileChooser(filePathCallback, fileChooserParams);
             }
 
             @Override
@@ -1189,6 +1411,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
         t.hostTracker.reset();
         t.webView.loadUrl(finalUrl);
         t.url = finalUrl;
+
+        // User submitted → release the typing lock so subsequent
+        // navigation callbacks can update the field again.
+        urlBarUserEditing = false;
 
         InputMethodManager imm =
                 (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
