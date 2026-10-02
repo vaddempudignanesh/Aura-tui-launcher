@@ -960,6 +960,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
+    // ═════════════════════════════════════════════════════════════
+    //  DOWNLOADS — Clean card-based UI
+    // ═════════════════════════════════════════════════════════════
+
     private void showDownloadPanel() {
         final Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -968,9 +972,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(0xFF0A0A0A);
-        int pad = dp(8);
-        root.setPadding(pad, pad, pad, pad);
+        root.setPadding(dp(12), dp(12), dp(12), dp(12));
 
+        // ── Header ─────────────────────────────────────────────────
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
@@ -978,25 +982,39 @@ public class AuraBrowserActivity extends AppCompatActivity {
         TextView title = new TextView(this);
         title.setText("Downloads");
         title.setTextColor(0xFF33FF33);
-        title.setTextSize(14);
-        title.setPadding(dp(6), dp(4), dp(6), dp(6));
-        title.setLayoutParams(new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        title.setTextSize(16);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        title.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         header.addView(title);
 
         TextView clearBtn = new TextView(this);
-        clearBtn.setText("Clear all");
+        clearBtn.setText("Clear completed");
         clearBtn.setTextColor(0xFFFF6666);
         clearBtn.setTextSize(12);
-        clearBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
-        clearBtn.setOnClickListener(v -> new Thread(() ->
-                AuraDownloadHistory.get(this).clearStopped()).start());
+        clearBtn.setPadding(dp(10), dp(6), dp(10), dp(6));
+        clearBtn.setBackgroundColor(0xFF1A1A1A);
+        clearBtn.setOnClickListener(v -> {
+            AuraDownloadHistory.get(this).clearStopped();
+        });
         header.addView(clearBtn);
         root.addView(header);
 
+        // Thin divider
+        View div = new View(this);
+        div.setBackgroundColor(0xFF1F1F1F);
+        LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
+        divLp.setMargins(0, dp(8), 0, dp(8));
+        div.setLayoutParams(divLp);
+        root.addView(div);
+
+        // ── Scrollable list ───────────────────────────────────────
         ScrollView scroll = new ScrollView(this);
         scroll.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(340)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(420)));
+        scroll.setFillViewport(true);
+
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         scroll.addView(list);
@@ -1008,13 +1026,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (w != null) {
             w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
             w.setLayout(
-                    (int) (getResources().getDisplayMetrics().widthPixels * 0.95),
+                    (int) (getResources().getDisplayMetrics().widthPixels * 0.96),
                     ViewGroup.LayoutParams.WRAP_CONTENT);
             w.setGravity(Gravity.BOTTOM);
             w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             WindowManager.LayoutParams lp = w.getAttributes();
-            lp.dimAmount = 0.5f;
-            lp.y = footerBar.getHeight() + dp(4);
+            lp.dimAmount = 0.6f;
+            lp.y = footerBar.getHeight() + dp(6);
             w.setAttributes(lp);
         }
 
@@ -1029,7 +1047,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         if (!dialog.isShowing()) return;
                         renderDownloadList(list, dialog, arr);
                     });
-                    Thread.sleep(700);
+                    Thread.sleep(300);
                 } catch (InterruptedException ie) {
                     break;
                 } catch (Exception e) {
@@ -1044,23 +1062,432 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     private void renderDownloadList(LinearLayout list, Dialog dialog, JSONArray arr) {
-        list.removeAllViews();
-
+        // Empty state
         if (arr.length() == 0) {
-            TextView empty = new TextView(this);
-            empty.setText("No downloads");
-            empty.setTextColor(0xFF777777);
-            empty.setTextSize(13);
-            empty.setPadding(dp(8), dp(12), dp(8), dp(12));
+            list.removeAllViews();
+            LinearLayout empty = new LinearLayout(this);
+            empty.setOrientation(LinearLayout.VERTICAL);
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(0, dp(40), 0, dp(40));
+
+            TextView icon = new TextView(this);
+            icon.setText("⬇");
+            icon.setTextSize(48);
+            icon.setTextColor(0xFF333333);
+            icon.setGravity(Gravity.CENTER);
+            empty.addView(icon);
+
+            TextView msg = new TextView(this);
+            msg.setText("No downloads yet");
+            msg.setTextSize(14);
+            msg.setTextColor(0xFF666666);
+            msg.setGravity(Gravity.CENTER);
+            msg.setPadding(0, dp(8), 0, 0);
+            empty.addView(msg);
+
+            TextView sub = new TextView(this);
+            sub.setText("Downloads you start will appear here");
+            sub.setTextSize(12);
+            sub.setTextColor(0xFF444444);
+            sub.setGravity(Gravity.CENTER);
+            sub.setPadding(0, dp(4), 0, 0);
+            empty.addView(sub);
+
             list.addView(empty);
             return;
         }
 
+        // Drop the empty-state view if it's still there
+        if (list.getChildCount() == 1
+                && list.getChildAt(0).getTag() == null
+                && list.getChildAt(0) instanceof LinearLayout) {
+            list.removeAllViews();
+        }
+
+        java.util.Set<String> incoming = new java.util.HashSet<>();
+        for (int i = 0; i < arr.length(); i++) {
+            try {
+                incoming.add(arr.getJSONObject(i).optString("gid"));
+            } catch (Exception ignored) {}
+        }
+
+        // Remove stale rows
+        for (int i = list.getChildCount() - 1; i >= 0; i--) {
+            View v = list.getChildAt(i);
+            String gid = (String) v.getTag();
+            if (gid == null || !incoming.contains(gid)) {
+                list.removeViewAt(i);
+            }
+        }
+
+        // Insert / update
         for (int i = 0; i < arr.length(); i++) {
             try {
                 JSONObject job = arr.getJSONObject(i);
-                addDownloadRow(list, dialog, job);
+                String gid = job.optString("gid", "");
+
+                View existing = null;
+                for (int c = 0; c < list.getChildCount(); c++) {
+                    View child = list.getChildAt(c);
+                    if (gid.equals(child.getTag())) { existing = child; break; }
+                }
+
+                if (existing != null) {
+                    updateDownloadCard(existing, job);
+                } else {
+                    View card = createDownloadCard(job);
+                    card.setTag(gid);
+                    list.addView(card, 0);
+                }
             } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * Card layout:
+     *   ┌───────────────────────────────────────┐
+     *   │  filename.ext                         │
+     *   │  ● Status  •  45%  •  2.3 MB/s        │
+     *   │  [██████████░░░░░░░░░░░]  12 MB / 28MB│
+     *   │  [Pause] [Cancel]                     │
+     *   └───────────────────────────────────────┘
+     */
+    private View createDownloadCard(JSONObject job) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(0, dp(4), 0, dp(4));
+        card.setLayoutParams(lp);
+        card.setBackgroundColor(0xFF131313);
+
+        // Filename row
+        LinearLayout nameRow = new LinearLayout(this);
+        nameRow.setOrientation(LinearLayout.HORIZONTAL);
+        nameRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tvName = new TextView(this);
+        tvName.setId(View.generateViewId());
+        tvName.setTextColor(0xFFF0F0F0);
+        tvName.setTextSize(14);
+        tvName.setTypeface(null, android.graphics.Typeface.BOLD);
+        tvName.setMaxLines(2);
+        tvName.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        tvName.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        nameRow.addView(tvName);
+
+        TextView tvStatusChip = new TextView(this);
+        tvStatusChip.setId(View.generateViewId());
+        tvStatusChip.setTextSize(10);
+        tvStatusChip.setPadding(dp(6), dp(2), dp(6), dp(2));
+        nameRow.addView(tvStatusChip);
+
+        card.addView(nameRow);
+
+        // Stats row
+        TextView tvStats = new TextView(this);
+        tvStats.setId(View.generateViewId());
+        tvStats.setTextSize(12);
+        tvStats.setTextColor(0xFF888888);
+        tvStats.setPadding(0, dp(6), 0, dp(6));
+        card.addView(tvStats);
+
+        // Progress bar
+        ProgressBar bar = new ProgressBar(this, null,
+                android.R.attr.progressBarStyleHorizontal);
+        bar.setId(View.generateViewId());
+        bar.setMax(100);
+        bar.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(6)));
+        bar.setProgressDrawable(makeProgressDrawable());
+        card.addView(bar);
+
+        // Error line (hidden by default)
+        TextView tvErr = new TextView(this);
+        tvErr.setId(View.generateViewId());
+        tvErr.setTextSize(11);
+        tvErr.setTextColor(0xFFFF6666);
+        tvErr.setPadding(0, dp(6), 0, 0);
+        tvErr.setVisibility(View.GONE);
+        card.addView(tvErr);
+
+        // Actions
+        LinearLayout actions = new LinearLayout(this);
+        actions.setId(View.generateViewId());
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setPadding(0, dp(10), 0, 0);
+        card.addView(actions);
+
+        updateDownloadCard(card, job);
+        return card;
+    }
+
+    private android.graphics.drawable.Drawable makeProgressDrawable() {
+        android.graphics.drawable.LayerDrawable ld =
+                (android.graphics.drawable.LayerDrawable)
+                        getResources().getDrawable(android.R.drawable.progress_horizontal);
+        try {
+            android.graphics.drawable.ClipDrawable progress =
+                    new android.graphics.drawable.ClipDrawable(
+                            new android.graphics.drawable.ColorDrawable(0xFF33FF33),
+                            Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL);
+            android.graphics.drawable.ColorDrawable background =
+                    new android.graphics.drawable.ColorDrawable(0xFF222222);
+            ld.setDrawableByLayerId(android.R.id.background, background);
+            ld.setDrawableByLayerId(android.R.id.progress, progress);
+        } catch (Exception ignored) {}
+        return ld;
+    }
+
+    private void updateDownloadCard(View card, JSONObject job) {
+        if (!(card instanceof LinearLayout)) return;
+        LinearLayout layout = (LinearLayout) card;
+
+        String gid = job.optString("gid", "");
+        String status = job.optString("status", "unknown");
+        String name = job.optString("name", "file");
+        long completed = job.optLong("completedLength", 0);
+        long total = job.optLong("totalLength", 0);
+        int pct = total > 0 ? (int) Math.min(100, (completed * 100) / total) : 0;
+        long speed = 0;
+        try { speed = Long.parseLong(job.optString("downloadSpeed", "0")); }
+        catch (Exception ignored) {}
+        if (!"active".equals(status)) speed = 0;
+
+        // children indices: 0=nameRow, 1=stats, 2=bar, 3=err, 4=actions
+        LinearLayout nameRow = (LinearLayout) layout.getChildAt(0);
+        TextView tvName = (TextView) nameRow.getChildAt(0);
+        TextView tvStatusChip = (TextView) nameRow.getChildAt(1);
+        TextView tvStats = (TextView) layout.getChildAt(1);
+        ProgressBar bar = (ProgressBar) layout.getChildAt(2);
+        TextView tvErr = (TextView) layout.getChildAt(3);
+        LinearLayout actions = (LinearLayout) layout.getChildAt(4);
+
+        tvName.setText(name);
+
+        // Status chip
+        String chipText;
+        int chipBg, chipFg;
+        switch (status) {
+            case "active":
+                chipText = "DOWNLOADING"; chipBg = 0xFF1A3A1A; chipFg = 0xFF33FF33; break;
+            case "paused":
+                chipText = "PAUSED";      chipBg = 0xFF3A2A1A; chipFg = 0xFFFFAA00; break;
+            case "complete":
+                chipText = "DONE";        chipBg = 0xFF1A2A3A; chipFg = 0xFF66BBFF; break;
+            case "error":
+                chipText = "STOPPED";     chipBg = 0xFF3A1A1A; chipFg = 0xFFFF6666; break;
+            default:
+                chipText = "WAITING";     chipBg = 0xFF222222; chipFg = 0xFF888888; break;
+        }
+        tvStatusChip.setText(chipText);
+        tvStatusChip.setTextColor(chipFg);
+        tvStatusChip.setBackgroundColor(chipBg);
+
+        // Stats
+        String stats;
+        if ("active".equals(status)) {
+            stats = pct + "%  •  " + humanSpeed(speed)
+                    + "  •  " + humanBytes(completed) + " / " + humanBytes(total);
+        } else if ("complete".equals(status)) {
+            stats = "Saved  •  " + humanBytes(total);
+        } else if ("paused".equals(status) || "error".equals(status)) {
+            stats = pct + "%  •  " + humanBytes(completed) + " / " + humanBytes(total);
+        } else {
+            stats = pct + "%";
+        }
+        tvStats.setText(stats);
+
+        bar.setProgress(pct);
+        bar.setVisibility("complete".equals(status) ? View.GONE : View.VISIBLE);
+
+        if ("error".equals(status)) {
+            String errMsg = job.optString("errorMessage", "");
+            tvErr.setText("⚠ " + (errMsg.isEmpty() ? "Download stopped" : errMsg));
+            tvErr.setVisibility(View.VISIBLE);
+        } else {
+            tvErr.setVisibility(View.GONE);
+        }
+
+        // Actions: rebuild only if the action set changed
+        String actionKey = status;
+        if (!actionKey.equals(actions.getTag())) {
+            actions.setTag(actionKey);
+            actions.removeAllViews();
+
+            if ("active".equals(status)) {
+                actions.addView(makeActionButton("⏸  Pause", 0xFFFFAA00, () ->
+                        AuraDownloadHistory.get(this).pause(gid)));
+                actions.addView(makeActionButton("✕  Cancel", 0xFFFF6666, () ->
+                        AuraDownloadHistory.get(this).remove(gid)));
+            } else if ("paused".equals(status) || "error".equals(status)) {
+                actions.addView(makeActionButton("▶  Resume", 0xFF33FF33, () ->
+                        AuraDownloadHistory.get(this).unpause(gid)));
+                actions.addView(makeActionButton("✕  Cancel", 0xFFFF6666, () ->
+                        AuraDownloadHistory.get(this).remove(gid)));
+            } else if ("complete".equals(status)) {
+                actions.addView(makeActionButton("📂  Open", 0xFF66BBFF, () -> {
+                    String path = job.optString("savePath", "");
+                    if (!path.isEmpty()) openFile(new File(path));
+                }));
+                actions.addView(makeActionButton("✕  Remove", 0xFFFF6666, () ->
+                        AuraDownloadHistory.get(this).remove(gid)));
+            }
+        }
+    }
+
+    private TextView makeActionButton(String label, int color, Runnable onClick) {
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setTextColor(color);
+        tv.setTextSize(13);
+        tv.setPadding(dp(14), dp(8), dp(14), dp(8));
+        tv.setBackgroundColor(0xFF1E1E1E);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMarginEnd(dp(8));
+        tv.setLayoutParams(lp);
+        tv.setOnClickListener(v -> {
+            onClick.run();
+            // Immediate visual feedback
+            tv.setAlpha(0.5f);
+            tv.postDelayed(() -> tv.setAlpha(1f), 150);
+        });
+        return tv;
+    }
+
+    private String humanSpeed(long bytesPerSec) {
+        if (bytesPerSec <= 0) return "0 B/s";
+        if (bytesPerSec < 1024) return bytesPerSec + " B/s";
+        if (bytesPerSec < 1024 * 1024)
+            return String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024.0);
+        return String.format(Locale.US, "%.1f MB/s",
+                bytesPerSec / (1024.0 * 1024.0));
+    }
+
+    private String humanBytes(long b) {
+        if (b <= 0) return "0 B";
+        if (b < 1024) return b + " B";
+        if (b < 1024 * 1024)
+            return String.format(Locale.US, "%.1f KB", b / 1024.0);
+        if (b < 1024L * 1024L * 1024L)
+            return String.format(Locale.US, "%.1f MB", b / (1024.0 * 1024.0));
+        return String.format(Locale.US, "%.2f GB",
+                b / (1024.0 * 1024.0 * 1024.0));
+    }
+
+    private View createDownloadRow(JSONObject job, Dialog dialog) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(8), dp(8), dp(8), dp(8));
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rp.setMargins(0, dp(3), 0, dp(3));
+        row.setLayoutParams(rp);
+        row.setBackgroundColor(0xFF111111);
+
+        TextView tvName = new TextView(this);
+        tvName.setId(View.generateViewId());
+        tvName.setTextColor(0xFFEEEEEE);
+        tvName.setTextSize(12);
+        tvName.setMaxLines(1);
+        tvName.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        row.addView(tvName);
+
+        TextView tvInfo = new TextView(this);
+        tvInfo.setId(View.generateViewId());
+        tvInfo.setTextColor(0xFF999999);
+        tvInfo.setTextSize(11);
+        row.addView(tvInfo);
+
+        TextView tvErr = new TextView(this);
+        tvErr.setId(View.generateViewId());
+        tvErr.setTextColor(0xFFFF6666);
+        tvErr.setTextSize(10);
+        tvErr.setPadding(0, dp(3), 0, 0);
+        tvErr.setVisibility(View.GONE);
+        row.addView(tvErr);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setPadding(0, dp(6), 0, 0);
+        actions.setId(View.generateViewId());
+        row.addView(actions);
+
+        updateDownloadRow(row, job);
+        return row;
+    }
+
+    private void updateDownloadRow(View row, JSONObject job) {
+        if (!(row instanceof LinearLayout)) return;
+        LinearLayout layout = (LinearLayout) row;
+        if (layout.getChildCount() < 4) return;
+
+        String gid = job.optString("gid", "");
+        String status = job.optString("status", "unknown");
+        String name = job.optString("name", "unknown");
+        long completed = job.optLong("completedLength", 0);
+        long total = job.optLong("totalLength", 0);
+        int pct = total > 0 ? (int) ((completed * 100) / total) : 0;
+        long spd = 0;
+        try { spd = Long.parseLong(job.optString("downloadSpeed", "0")); } catch (Exception ignored) {}
+        if (!"active".equals(status)) spd = 0;
+
+        TextView tvName = (TextView) layout.getChildAt(0);
+        TextView tvInfo = (TextView) layout.getChildAt(1);
+        TextView tvErr  = (TextView) layout.getChildAt(2);
+        LinearLayout actions = (LinearLayout) layout.getChildAt(3);
+
+        tvName.setText(name);
+
+        String statusIcon;
+        switch (status) {
+            case "active":  statusIcon = "⬇"; break;
+            case "paused":  statusIcon = "⏸"; break;
+            case "waiting": statusIcon = "⏳"; break;
+            case "complete": statusIcon = "✅"; break;
+            case "error":   statusIcon = "❌"; break;
+            case "removed": statusIcon = "🗑"; break;
+            default:        statusIcon = "•"; break;
+        }
+        // ── Real-time: always show current speed ─────────────────────
+        tvInfo.setText(statusIcon + "  " + pct + "%  •  " + formatSpeed(spd));
+
+        if ("error".equals(status)) {
+            String errMsg = job.optString("errorMessage", "");
+            tvErr.setText("⚠ " + (errMsg.isEmpty() ? "Download failed" : errMsg));
+            tvErr.setVisibility(View.VISIBLE);
+        } else {
+            tvErr.setVisibility(View.GONE);
+        }
+
+        // Rebuild actions only if the button set needs to change.
+        String wantedKey = status;
+        Object currentKey = actions.getTag();
+        if (!wantedKey.equals(currentKey)) {
+            actions.setTag(wantedKey);
+            actions.removeAllViews();
+
+            final String g = gid;
+            if ("active".equals(status)) {
+                actions.addView(makeActionButton("⏸ Pause", () ->
+                        AuraDownloadHistory.get(this).pause(g)));
+            } else if ("paused".equals(status) || "error".equals(status)) {
+                actions.addView(makeActionButton("▶ Resume", () ->
+                        AuraDownloadHistory.get(this).unpause(g)));
+            } else if ("complete".equals(status)) {
+                actions.addView(makeActionButton("📂 Open", () -> {
+                    String path = job.optString("savePath", "");
+                    if (!path.isEmpty()) openFile(new File(path));
+                }));
+            }
+
+            if (!"complete".equals(status)) {
+                actions.addView(makeActionButton("✕ Remove", () ->
+                        AuraDownloadHistory.get(this).remove(g)));
+            }
         }
     }
 

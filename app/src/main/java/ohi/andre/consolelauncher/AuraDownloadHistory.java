@@ -1,6 +1,7 @@
 package ohi.andre.consolelauncher;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 
 import org.json.JSONArray;
@@ -10,21 +11,38 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Simple in-memory + SharedPreferences-backed history of downloads.
- * Used by the Downloads panel in the browser.
+ * Fast in-memory registry of downloads, mirrored to SharedPreferences.
+ *
+ * Reads are O(1) from RAM (no disk I/O per poll), so the browser's
+ * Downloads panel updates smoothly at 4-5 Hz.
+ *
+ * Writes still go to disk, but debounced: the persist() call is
+ * coalesced via a 2-second throttle so we don't thrash storage.
+ *
+ * Control commands (pause/resume/remove) are dispatched to
+ * AuraDownloadService via intents.
  */
 public class AuraDownloadHistory {
+
+    public static final String ACTION_CONTROL = "ohi.andre.consolelauncher.DL_CONTROL";
+    public static final String EXTRA_ACTION   = "action";    // "pause"|"resume"|"remove"|"cancel"
+    public static final String EXTRA_GID      = "gid";
 
     private static final String PREFS = "aura_downloads";
     private static final String KEY   = "tasks";
 
     private static AuraDownloadHistory INSTANCE;
+
+    private final Context appCtx;
     private final SharedPreferences prefs;
     private final Map<String, JSONObject> tasks = new ConcurrentHashMap<>();
 
+    private volatile long lastPersistMs = 0L;
+    private static final long PERSIST_THROTTLE_MS = 2000L;
+
     private AuraDownloadHistory(Context ctx) {
-        prefs = ctx.getApplicationContext()
-                .getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        this.appCtx = ctx.getApplicationContext();
+        this.prefs = appCtx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         load();
     }
 
@@ -39,12 +57,29 @@ public class AuraDownloadHistory {
             JSONArray arr = new JSONArray(raw);
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject o = arr.getJSONObject(i);
-                tasks.put(o.optString("gid"), o);
+                String gid = o.optString("gid");
+                if (!gid.isEmpty()) {
+                    // Any non-complete task from a previous session is
+                    // marked "paused" until the user resumes it.
+                    String s = o.optString("status", "");
+                    if ("active".equals(s) || "waiting".equals(s)) {
+                        o.put("status", "paused");
+                        o.put("downloadSpeed", "0");
+                    }
+                    tasks.put(gid, o);
+                }
             }
         } catch (Exception ignored) {}
     }
 
-    private void persist() {
+    private void persistIfDue() {
+        long now = System.currentTimeMillis();
+        if (now - lastPersistMs < PERSIST_THROTTLE_MS) return;
+        lastPersistMs = now;
+        persistNow();
+    }
+
+    private synchronized void persistNow() {
         try {
             JSONArray arr = new JSONArray();
             for (JSONObject o : tasks.values()) arr.put(o);
@@ -52,44 +87,60 @@ public class AuraDownloadHistory {
         } catch (Exception ignored) {}
     }
 
-    public synchronized void upsert(JSONObject job) {
-        tasks.put(job.optString("gid"), job);
-        persist();
+    public void upsert(JSONObject job) {
+        String gid = job.optString("gid");
+        if (gid.isEmpty()) return;
+        tasks.put(gid, job);
+        persistIfDue();
     }
 
-    public synchronized JSONArray listAll() {
+    /** Force a disk flush — call on important state changes. */
+    public void flush() {
+        persistNow();
+    }
+
+    public JSONArray listAll() {
         JSONArray arr = new JSONArray();
         for (JSONObject o : tasks.values()) arr.put(o);
         return arr;
     }
 
-    public synchronized void pause(String gid) {
-        // Handled by AuraDownloadService via broadcast; here we just mark.
-        try {
-            JSONObject o = tasks.get(gid);
-            if (o != null) { o.put("status", "paused"); persist(); }
-        } catch (Exception ignored) {}
+    public JSONObject get(String gid) {
+        return tasks.get(gid);
     }
 
-    public synchronized void unpause(String gid) {
-        try {
-            JSONObject o = tasks.get(gid);
-            if (o != null) { o.put("status", "waiting"); persist(); }
-        } catch (Exception ignored) {}
+    // ─── Control channel: forward commands to AuraDownloadService ────
+    public void pause(String gid) {
+        dispatchControl("pause", gid);
     }
 
-    public synchronized void remove(String gid) {
+    public void unpause(String gid) {
+        dispatchControl("resume", gid);
+    }
+
+    public void remove(String gid) {
+        dispatchControl("remove", gid);
         tasks.remove(gid);
-        persist();
+        flush();
     }
 
-    public synchronized void clearStopped() {
+    private void dispatchControl(String action, String gid) {
+        try {
+            Intent i = new Intent(appCtx, AuraDownloadService.class);
+            i.setAction(ACTION_CONTROL);
+            i.putExtra(EXTRA_ACTION, action);
+            i.putExtra(EXTRA_GID, gid);
+            appCtx.startService(i);
+        } catch (Exception ignored) {}
+    }
+
+    public void clearStopped() {
         java.util.Iterator<Map.Entry<String, JSONObject>> it = tasks.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry<String, JSONObject> e = it.next();
             String s = e.getValue().optString("status", "");
             if (!"active".equals(s)) it.remove();
         }
-        persist();
+        flush();
     }
 }
