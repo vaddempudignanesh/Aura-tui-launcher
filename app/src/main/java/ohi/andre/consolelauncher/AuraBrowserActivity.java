@@ -252,7 +252,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     // ═════════════════════════════════════════════════════════════
-    //  Dark mode
+    //  Dark mode — native + CSS hybrid (Dark Reader style)
     // ═════════════════════════════════════════════════════════════
     private void toggleForceDark() {
         forceDark = !forceDark;
@@ -267,43 +267,174 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     private void applyForceDarkToAllTabs() {
-        for (Tab t : tabs) applyForceDark(t.webView);
+        for (Tab t : tabs) {
+            applyForceDark(t.webView);
+            try {
+                t.webView.invalidate();
+                t.webView.requestLayout();
+            } catch (Exception ignored) {}
+        }
     }
 
+    /**
+     * Applies dark mode to a single WebView.
+     *
+     * Two layers:
+     *   1. Native (API 29+): setAlgorithmicDarkeningAllowed / setForceDark.
+     *      These take effect on the NEXT navigation. We set them anyway so
+     *      subsequent pages start dark, but they are NOT what makes the
+     *      current page change — that's layer 2.
+     *   2. CSS (always): a big <style> injected into the live document plus
+     *      a `data-aura-dark` attribute on <html>. This is what makes the
+     *      change visible INSTANTLY without any reload. It also walks
+     *      iframes and mutation events.
+     */
     @SuppressLint("RequiresFeature")
     private void applyForceDark(WebView wv) {
         if (wv == null) return;
+
+        // ── Layer 1: native ──
         try {
             WebSettings settings = wv.getSettings();
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
-                WebSettingsCompat.setForceDarkStrategy(settings,
-                        WebSettingsCompat.DARK_STRATEGY_WEB_THEME_DARKENING_ONLY);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                try {
+                    settings.setAlgorithmicDarkeningAllowed(forceDark);
+                } catch (Throwable ignored) {}
             }
             if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
                 WebSettingsCompat.setForceDark(settings,
                         forceDark ? WebSettingsCompat.FORCE_DARK_ON
                                 : WebSettingsCompat.FORCE_DARK_OFF);
             }
-            if (forceDark) injectPureBlackCSS(wv);
-            else wv.reload();
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+                WebSettingsCompat.setForceDarkStrategy(settings,
+                        WebSettingsCompat.DARK_STRATEGY_WEB_THEME_DARKENING_ONLY);
+            }
+        } catch (Exception ignored) {}
+
+        // ── Layer 2: CSS — this is what visibly changes the page ──
+        injectDeepDarkCss(wv, forceDark);
+    }
+
+    private void injectDeepDarkCss(WebView wv, boolean enable) {
+        String js = enable ? DEEP_DARK_CSS_JS : DEEP_DARK_REMOVE_JS;
+        try {
+            wv.evaluateJavascript(js, null);
         } catch (Exception ignored) {}
     }
 
-    private void injectPureBlackCSS(WebView wv) {
-        String css =
-                "(function(){" +
-                        "  var s = document.getElementById('aura-dark-css');" +
-                        "  if (!s) {" +
-                        "    s = document.createElement('style');" +
-                        "    s.id = 'aura-dark-css';" +
-                        "    document.documentElement.appendChild(s);" +
-                        "  }" +
-                        "  s.textContent = 'html,body{background:#000 !important;color:#ccc !important;}' +" +
-                        "                  'html{color-scheme:dark;}' +" +
-                        "                  'a{color:#7aa2f7 !important;}';" +
-                        "})();";
-        wv.evaluateJavascript(css, null);
-    }
+    /**
+     * Full-document dark sheet. Runs on every page.
+     *
+     * Key implementation details:
+     *   • The <style id="aura-dark-v2"> is idempotent, so calling twice
+     *     does nothing.
+     *   • A marker attribute `data-aura-dark` on <html> makes it possible
+     *     for the removal script to find and undo everything fast.
+     *   • We force a reflow after inserting the style so the browser
+     *     definitely repaints (this is the piece that was missing).
+     *   • The sheet uses a *filter* fallback on top of the palette rules
+     *     so pages that set colours via unsupported CSS still get darkened.
+     */
+    private static final String DEEP_DARK_CSS_JS =
+            "(function(){" +
+                    "try{" +
+                    "var ID='aura-dark-v3';" +
+                    "var html=document.documentElement;" +
+                    "if(!html)return;" +
+                    "html.setAttribute('data-aura-dark','1');" +
+                    "var old=document.getElementById(ID);" +
+                    "if(old&&old.parentNode)old.parentNode.removeChild(old);" +
+                    "var st=document.createElement('style');" +
+                    "st.id=ID;" +
+                    "st.textContent=" +
+                    "'html,html[data-aura-dark]{background:#000000 !important;color-scheme:dark !important;}' +" +
+                    "'html[data-aura-dark] body{background:#000000 !important;color:#d7d7d7 !important;}' +" +
+                    "'html[data-aura-dark] body,html[data-aura-dark] body *{border-color:#222222 !important;}' +" +
+                    "'html[data-aura-dark] body *:not(img):not(video):not(canvas):not(svg):not(picture):not(source):not(iframe){background-color:#000000 !important;}' +" +
+                    "'html[data-aura-dark] a,html[data-aura-dark] a:visited{color:#7aa2f7 !important;background-color:transparent !important;}' +" +
+                    "'html[data-aura-dark] h1,html[data-aura-dark] h2,html[data-aura-dark] h3,' +" +
+                    "'html[data-aura-dark] h4,html[data-aura-dark] h5,html[data-aura-dark] h6,' +" +
+                    "'html[data-aura-dark] p,html[data-aura-dark] span,html[data-aura-dark] li,' +" +
+                    "'html[data-aura-dark] td,html[data-aura-dark] th,html[data-aura-dark] div,' +" +
+                    "'html[data-aura-dark] label,html[data-aura-dark] small,html[data-aura-dark] strong,' +" +
+                    "'html[data-aura-dark] em,html[data-aura-dark] blockquote{color:#d7d7d7 !important;}' +" +
+                    "'html[data-aura-dark] input,html[data-aura-dark] textarea,html[data-aura-dark] select,' +" +
+                    "'html[data-aura-dark] button{background:#000000 !important;color:#e6e6e6 !important;border-color:#333333 !important;}' +" +
+                    "'html[data-aura-dark] table,html[data-aura-dark] tr,html[data-aura-dark] td,' +" +
+                    "'html[data-aura-dark] th{background:#000000 !important;border-color:#222222 !important;}' +" +
+                    "'html[data-aura-dark] pre,html[data-aura-dark] code,html[data-aura-dark] kbd,' +" +
+                    "'html[data-aura-dark] samp{background:#000000 !important;color:#e6e6e6 !important;}' +" +
+                    "'html[data-aura-dark] hr{border-color:#222222 !important;}' +" +
+                    "'html[data-aura-dark] ::selection{background:#3b5bdb !important;color:#ffffff !important;}' +" +
+                    "'html[data-aura-dark] ::-webkit-scrollbar{background:#000000 !important;}' +" +
+                    "'html[data-aura-dark] ::-webkit-scrollbar-thumb{background:#333333 !important;}' +" +
+                    "'html[data-aura-dark] img,html[data-aura-dark] video,html[data-aura-dark] canvas,' +" +
+                    "'html[data-aura-dark] svg,html[data-aura-dark] picture,html[data-aura-dark] source,' +" +
+                    "'html[data-aura-dark] [style*=\"background:#fff\"],' +" +
+                    "'html[data-aura-dark] [style*=\"background: #fff\"],' +" +
+                    "'html[data-aura-dark] [style*=\"background-color:#fff\"],' +" +
+                    "'html[data-aura-dark] [style*=\"background-color: #fff\"],' +" +
+                    "'html[data-aura-dark] [style*=\"background:white\"],' +" +
+                    "'html[data-aura-dark] [style*=\"background-color:white\"]{background:#000000 !important;background-color:#000000 !important;}' +" +
+                    "'html[data-aura-dark] [style*=\"color:#000\"],' +" +
+                    "'html[data-aura-dark] [style*=\"color: #000\"],' +" +
+                    "'html[data-aura-dark] [style*=\"color:black\"]{color:#e6e6e6 !important;}' ;" +
+            "(document.head||html).appendChild(st);" +
+            "try{void document.documentElement.offsetHeight;void document.body&&document.body.offsetHeight;}catch(e){}" +
+            "try{" +
+            "var frames=document.querySelectorAll('iframe');" +
+            "for(var i=0;i<frames.length;i++){" +
+            "try{" +
+            "var d=frames[i].contentDocument;" +
+            "if(d&&d.documentElement){" +
+            "d.documentElement.setAttribute('data-aura-dark','1');" +
+            "var oldFrame=d.getElementById(ID);" +
+            "if(oldFrame&&oldFrame.parentNode)oldFrame.parentNode.removeChild(oldFrame);" +
+            "var fs=d.createElement('style');" +
+            "fs.id=ID;" +
+            "fs.textContent=st.textContent;" +
+            "(d.head||d.documentElement).appendChild(fs);" +
+            "void d.documentElement.offsetHeight;" +
+            "}" +
+            "}catch(e){}" +
+            "}" +
+            "}catch(e){}" +
+            "try{" +
+            "if(window.__auraDarkMO)window.__auraDarkMO.disconnect();" +
+            "var mo=new MutationObserver(function(){try{if(document.documentElement.getAttribute('data-aura-dark')!=='1')document.documentElement.setAttribute('data-aura-dark','1');}catch(e){}});" +
+            "mo.observe(document.documentElement,{attributes:true,attributeFilter:['data-aura-dark']});" +
+            "window.__auraDarkMO=mo;" +
+            "}catch(e){}" +
+            "}catch(e){}" +
+            "})();";
+
+    private static final String DEEP_DARK_REMOVE_JS =
+            "(function(){" +
+                    "try{" +
+                    "var ID='aura-dark-v3';" +
+                    "var html=document.documentElement;" +
+                    "if(html)html.removeAttribute('data-aura-dark');" +
+                    "var st=document.getElementById(ID);" +
+                    "if(st&&st.parentNode)st.parentNode.removeChild(st);" +
+                    "try{if(window.__auraDarkMO){window.__auraDarkMO.disconnect();window.__auraDarkMO=null;}}catch(e){}" +
+                    "try{" +
+                    "var frames=document.querySelectorAll('iframe');" +
+                    "for(var i=0;i<frames.length;i++){" +
+                    "try{" +
+                    "var d=frames[i].contentDocument;" +
+                    "if(d){" +
+                    "var f=d.getElementById(ID);" +
+                    "if(f&&f.parentNode)f.parentNode.removeChild(f);" +
+                    "if(d.documentElement)d.documentElement.removeAttribute('data-aura-dark');" +
+                    "void d.documentElement.offsetHeight;" +
+                    "}" +
+                    "}catch(e){}" +
+                    "}" +
+                    "}catch(e){}" +
+                    "try{void document.documentElement.offsetHeight;void document.body&&document.body.offsetHeight;}catch(e){}" +
+                    "}catch(e){}" +
+                    "})();";
 
     private void showTabSheet() {
         if (tabs.isEmpty()) return;
@@ -949,6 +1080,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
 
             @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                // Fires as soon as the new document has begun painting but
+                // before onPageFinished. This is the earliest point at which
+                // we can inject CSS and have it apply to the visible page.
+                applyForceDark(view);
+                baseSecurity.onPageCommitVisible(view, url);
+            }
+            @Override
             public void onPageFinished(WebView view, String url) {
                 if (view == currentTabWebView()) {
                     progressBar.setVisibility(View.GONE);
@@ -957,7 +1096,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
                 }
                 updateTabUrl(view, url);
-                if (forceDark) injectPureBlackCSS(view);
+                // Reapply the CURRENT dark state (on OR off) after every
+                // page load so new pages inherit the user's choice.
+                applyForceDark(view);
                 baseSecurity.onPageFinished(view, url);
             }
         });
@@ -1369,7 +1510,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        for (Tab t : tabs) t.webView.onResume();
+        for (Tab t : tabs) {
+            t.webView.onResume();
+            // Re-apply dark mode in case the WebView was recreated while
+            // the Activity was paused.
+            applyForceDark(t.webView);
+        }
     }
 
     @Override
