@@ -1,12 +1,14 @@
 package ohi.andre.consolelauncher.filemanager;
 
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.database.Cursor;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -22,8 +24,10 @@ import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.Menu;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.MimeTypeMap;
@@ -84,6 +88,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private static final int SORT_DATE_OLD   = 3;
     private static final int SORT_SIZE_BIG   = 4;
     private static final int SORT_SIZE_SMALL = 5;
+
 
     private static final int REQUEST_INSTALL_PACKAGES = 12345;
 
@@ -196,6 +201,100 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     protected void onDestroy() {
         super.onDestroy();
         executor.shutdownNow();
+        thumbExecutor.shutdownNow();
+    }
+
+    /**
+     * Called by FileManagerAdapter for image files.
+     *  - Cached by absolute path only (mtime ignored) → no scroll cache misses.
+     *  - Deduped via thumbInFlight → no duplicate decodes.
+     *  - Decoded on 2 threads → no UI stutter.
+     *  - View recycling is detected by re-checking the tag before committing.
+     */
+    public void loadThumbnail(final File file,
+                              final ImageView target,
+                              final android.graphics.drawable.Drawable fallbackIcon) {
+        final String key = file.getAbsolutePath();
+
+        // ── 1. Cache hit ────────────────────────────────────────────────
+        Bitmap cached = thumbCache.get(key);
+        if (cached != null && !cached.isRecycled()) {
+            target.setImageBitmap(cached);
+            target.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            target.setPadding(0, 0, 0, 0);
+            return;
+        }
+
+        // ── 2. Fallback while we wait ────────────────────────────────────
+        target.setImageDrawable(fallbackIcon);
+        target.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        int pad = dp(10);
+        target.setPadding(pad, pad, pad, pad);
+        target.setTag(R.id.iv_icon, key);
+
+        // ── 3. Already queued? just wait ────────────────────────────────
+        if (!thumbInFlight.add(key)) return;
+
+        final int sizePx = dp(THUMB_SIZE_DP);
+
+        thumbExecutor.execute(() -> {
+            Bitmap bmp = null;
+            try {
+                android.graphics.BitmapFactory.Options bounds =
+                        new android.graphics.BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                android.graphics.BitmapFactory.decodeFile(key, bounds);
+
+                int w = bounds.outWidth;
+                int h = bounds.outHeight;
+
+                if (w > 0 && h > 0) {
+                    int sample = 1;
+                    while (w / sample > sizePx * 2 || h / sample > sizePx * 2) {
+                        sample *= 2;
+                    }
+
+                    android.graphics.BitmapFactory.Options opts =
+                            new android.graphics.BitmapFactory.Options();
+                    opts.inSampleSize = sample;
+                    opts.inPreferredConfig = Bitmap.Config.RGB_565;
+                    opts.inDither = false;
+
+                    bmp = android.graphics.BitmapFactory.decodeFile(key, opts);
+                }
+            } catch (OutOfMemoryError oom) {
+                bmp = null;
+            } catch (Exception ignored) {
+                bmp = null;
+            } finally {
+                thumbInFlight.remove(key);
+            }
+
+            final Bitmap finalBmp = bmp;
+
+            if (finalBmp != null) {
+                thumbCache.put(key, finalBmp);
+            }
+
+            // Committing the bitmap must be on the UI thread.
+            mainHandler.post(() -> {
+                if (finalBmp == null) return;
+
+                Object tag = target.getTag(R.id.iv_icon);
+                if (!key.equals(tag)) return; // view was recycled to another file
+
+                // Detect recycled bitmaps defensively
+                if (finalBmp.isRecycled()) return;
+
+                target.setImageBitmap(finalBmp);
+                target.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                target.setPadding(0, 0, 0, 0);
+            });
+        });
+    }
+
+    private void clearThumbCache() {
+        thumbCache.evictAll();
     }
 
     private List<ResolveInfo> resolveExcludingSelf(Intent intent) {
@@ -695,6 +794,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         recyclerFiles.setLayoutManager(glm);
         recyclerFiles.setNestedScrollingEnabled(false);
         recyclerFiles.setHasFixedSize(true);
+        recyclerFiles.setItemAnimator(null);   // ← no cross-fade on bind
 
         adapter = new FileManagerAdapter(this, this);
         recyclerFiles.setAdapter(adapter);
@@ -1184,7 +1284,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Click Handling ====================
     @Override
     public void onFileClick(File file, int position) {
         if (adapter.isSelectionMode()) {
@@ -1193,23 +1292,18 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             return;
         }
 
-        boolean isSearchActive = !currentSearchQuery.isEmpty();
-
         if (file.isDirectory()) {
+            // Directories still navigate — but clear the search first so
+            // the user lands in a clean view of the folder.
+            if (!currentSearchQuery.isEmpty()) {
+                hideSearchBar();
+            }
             loadDirectory(file);
             return;
         }
 
-        if (isSearchActive) {
-            // Jump to the folder that contains the matched file.
-            File parent = file.getParentFile();
-            if (parent != null && parent.canRead()) {
-                hideSearchBar();
-                loadDirectory(parent);
-                return;
-            }
-        }
-
+        // File (whether or not we're in search mode) → just open it.
+        // Don't navigate anywhere.
         openFileWithMime(file, getMimeType(file));
     }
     @Override
@@ -1263,7 +1357,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             return;
         }
         if (mimeType.startsWith("image/")) {
-            tryOpenWithDefaultApp(file, mimeType);
+            openImagePreview(file);
             return;
         }
         if (mimeType.startsWith("video/") || mimeType.startsWith("audio/")) {
@@ -1273,6 +1367,297 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         tryOpenWithDefaultApp(file, mimeType);
     }
 
+
+    /**
+     * Show a full-screen image preview dialog.
+     *
+     * Features:
+     *  - Scales the image to fit the screen (FIT_CENTER).
+     *  - Pinch-to-zoom + pan (via built-in zoom controls).
+     *  - Double-tap toggles between fit and 2× zoom.
+     *  - Tap on the image closes the dialog.
+     *  - Loaded on a background thread to avoid blocking the UI.
+     *  - Info bar shows name + size.
+     */
+    private void openImagePreview(File imageFile) {
+        if (!imageFile.exists() || !imageFile.canRead()) {
+            Toast.makeText(this, "Cannot read image", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // ── Build the dialog shell on the UI thread first ──
+        final Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(0xFF000000);
+
+        // Info bar
+        TextView infoBar = new TextView(this);
+        infoBar.setText(imageFile.getName() + "  •  "
+                + FileManagerAdapter.formatSize(imageFile.length()));
+        infoBar.setTextColor(0xFF00FF00);
+        infoBar.setBackgroundColor(0xFF001100);
+        infoBar.setPadding(24, 24, 24, 24);
+        infoBar.setTextSize(12);
+        infoBar.setTypeface(android.graphics.Typeface.MONOSPACE);
+        infoBar.setSingleLine(true);
+        infoBar.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        root.addView(infoBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // Loading indicator while the bitmap decodes
+        final ProgressBar spinner = new ProgressBar(this);
+        spinner.setIndeterminate(true);
+        LinearLayout.LayoutParams spinnerLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        spinnerLp.gravity = Gravity.CENTER_HORIZONTAL;
+        spinnerLp.topMargin = 40;
+        root.addView(spinner, spinnerLp);
+
+        // Zoomable image container
+        final android.widget.HorizontalScrollView hScroll =
+                new android.widget.HorizontalScrollView(this);
+        hScroll.setBackgroundColor(0xFF000000);
+        hScroll.setHorizontalScrollBarEnabled(false);
+        hScroll.setFillViewport(true);
+        hScroll.setVisibility(View.GONE);
+
+        final android.widget.ImageView imageView = new android.widget.ImageView(this);
+        imageView.setBackgroundColor(0xFF000000);
+        imageView.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        imageView.setAdjustViewBounds(true);
+        hScroll.addView(imageView, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        root.addView(hScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // Bottom bar with action buttons
+        LinearLayout bottomBar = new LinearLayout(this);
+        bottomBar.setOrientation(LinearLayout.HORIZONTAL);
+        bottomBar.setBackgroundColor(0xFF001100);
+        bottomBar.setPadding(8, 8, 8, 8);
+        bottomBar.setGravity(Gravity.CENTER_VERTICAL);
+
+        Button btnOpenWith = createEditorButton("OPEN WITH…", 0xFF00FF00);
+        Button btnShare = createEditorButton("SHARE", 0xFF00FF00);
+        Button btnClose = createEditorButton("CLOSE", 0xFFFF5555);
+
+        bottomBar.addView(btnOpenWith, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        bottomBar.addView(btnShare, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        bottomBar.addView(btnClose, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        root.addView(bottomBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        dialog.setContentView(root);
+        dialog.show();
+
+        // ── Decode the bitmap on a background thread ──
+        executor.execute(() -> {
+            Bitmap bmp = null;
+            try {
+                // First pass: get the dimensions without loading the full bitmap
+                android.graphics.BitmapFactory.Options bounds =
+                        new android.graphics.BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                android.graphics.BitmapFactory.decodeFile(
+                        imageFile.getAbsolutePath(), bounds);
+
+                int maxW = 2048;
+                int maxH = 2048;
+                int scale = 1;
+                while (bounds.outWidth / scale > maxW
+                        || bounds.outHeight / scale > maxH) {
+                    scale *= 2;
+                }
+
+                android.graphics.BitmapFactory.Options opts =
+                        new android.graphics.BitmapFactory.Options();
+                opts.inSampleSize = scale;
+                opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+
+                bmp = android.graphics.BitmapFactory.decodeFile(
+                        imageFile.getAbsolutePath(), opts);
+            } catch (OutOfMemoryError oom) {
+                bmp = null;
+            } catch (Exception e) {
+                bmp = null;
+            }
+
+            final Bitmap finalBmp = bmp;
+
+            mainHandler.post(() -> {
+                spinner.setVisibility(View.GONE);
+
+                if (finalBmp == null) {
+                    Toast.makeText(this,
+                            "Could not load image (too large or unsupported format)",
+                            Toast.LENGTH_LONG).show();
+                    dialog.dismiss();
+                    return;
+                }
+
+                imageView.setImageBitmap(finalBmp);
+                hScroll.setVisibility(View.VISIBLE);
+
+                // ── Enable pinch-zoom + pan via Matrix ──
+                // (ImageView doesn't natively zoom; wire up a ScaleGestureDetector.)
+                final android.graphics.Matrix matrix = new android.graphics.Matrix();
+                imageView.setScaleType(android.widget.ImageView.ScaleType.MATRIX);
+                imageView.setImageMatrix(matrix);
+
+                // Center the image initially
+                final Runnable centerImage = () -> {
+                    float vw = imageView.getWidth();
+                    float vh = imageView.getHeight();
+                    float bw = finalBmp.getWidth();
+                    float bh = finalBmp.getHeight();
+                    if (vw <= 0 || vh <= 0 || bw <= 0 || bh <= 0) return;
+
+                    float fitScale = Math.min(vw / bw, vh / bh);
+                    matrix.reset();
+                    matrix.postScale(fitScale, fitScale);
+                    matrix.postTranslate(
+                            (vw - bw * fitScale) / 2f,
+                            (vh - bh * fitScale) / 2f);
+                    imageView.setImageMatrix(matrix);
+                };
+                imageView.post(centerImage);
+
+                final float[] baseScale = { 1f };
+
+                final android.view.ScaleGestureDetector scaleDetector =
+                        new android.view.ScaleGestureDetector(this,
+                                new android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                                    @Override
+                                    public boolean onScale(android.view.ScaleGestureDetector d) {
+                                        float factor = d.getScaleFactor();
+                                        float cur = getMatrixScale(matrix);
+                                        float next = cur * factor;
+                                        if (next < 0.5f) factor = 0.5f / cur;
+                                        else if (next > 8f) factor = 8f / cur;
+
+                                        matrix.postScale(factor, factor,
+                                                d.getFocusX(), d.getFocusY());
+                                        imageView.setImageMatrix(matrix);
+                                        return true;
+                                    }
+                                });
+
+                final float[] lastTouch = { 0f, 0f };
+
+                imageView.setOnTouchListener((v, ev) -> {
+                    scaleDetector.onTouchEvent(ev);
+
+                    switch (ev.getActionMasked()) {
+                        case MotionEvent.ACTION_DOWN:
+                            lastTouch[0] = ev.getX();
+                            lastTouch[1] = ev.getY();
+                            return true;
+                        case MotionEvent.ACTION_MOVE: {
+                            if (ev.getPointerCount() > 1) return true;
+                            float dx = ev.getX() - lastTouch[0];
+                            float dy = ev.getY() - lastTouch[1];
+                            lastTouch[0] = ev.getX();
+                            lastTouch[1] = ev.getY();
+                            matrix.postTranslate(dx, dy);
+                            imageView.setImageMatrix(matrix);
+                            return true;
+                        }
+                    }
+                    return true;
+                });
+
+                // Double-tap toggles between fit and 2× zoom
+                final android.view.GestureDetector gesture =
+                        new android.view.GestureDetector(this,
+                                new android.view.GestureDetector.SimpleOnGestureListener() {
+                                    @Override
+                                    public boolean onDown(MotionEvent e) {
+                                        return true;
+                                    }
+
+                                    @Override
+                                    public boolean onDoubleTap(MotionEvent e) {
+                                        float cur = getMatrixScale(matrix);
+                                        if (cur > 1.2f) {
+                                            centerImage.run();
+                                        } else {
+                                            matrix.postScale(2f, 2f,
+                                                    e.getX(), e.getY());
+                                            imageView.setImageMatrix(matrix);
+                                        }
+                                        return true;
+                                    }
+                                });
+
+                imageView.setOnTouchListener(new View.OnTouchListener() {
+                    @Override
+                    public boolean onTouch(View v, MotionEvent ev) {
+                        gesture.onTouchEvent(ev);
+                        scaleDetector.onTouchEvent(ev);
+
+                        switch (ev.getActionMasked()) {
+                            case MotionEvent.ACTION_DOWN:
+                                lastTouch[0] = ev.getX();
+                                lastTouch[1] = ev.getY();
+                                return true;
+                            case MotionEvent.ACTION_MOVE: {
+                                if (ev.getPointerCount() > 1) return true;
+                                float dx = ev.getX() - lastTouch[0];
+                                float dy = ev.getY() - lastTouch[1];
+                                lastTouch[0] = ev.getX();
+                                lastTouch[1] = ev.getY();
+                                matrix.postTranslate(dx, dy);
+                                imageView.setImageMatrix(matrix);
+                                return true;
+                            }
+                        }
+                        return true;
+                    }
+                });
+            });
+        });
+
+        btnClose.setOnClickListener(v -> dialog.dismiss());
+        btnOpenWith.setOnClickListener(v -> {
+            dialog.dismiss();
+            openWithChooser(imageFile, getMimeType(imageFile));
+        });
+        btnShare.setOnClickListener(v -> {
+            dialog.dismiss();
+            shareFile(imageFile);
+        });
+
+        dialog.setOnDismissListener(d -> {
+            // Free the bitmap to avoid leaking memory
+            android.graphics.drawable.Drawable dr = imageView.getDrawable();
+            if (dr instanceof android.graphics.drawable.BitmapDrawable) {
+                Bitmap b = ((android.graphics.drawable.BitmapDrawable) dr).getBitmap();
+                if (b != null && !b.isRecycled()) b.recycle();
+            }
+            imageView.setImageDrawable(null);
+        });
+    }
+
+    /** Extract the current uniform scale factor from a Matrix. */
+    private static float getMatrixScale(android.graphics.Matrix m) {
+        float[] v = new float[9];
+        m.getValues(v);
+        float sx = v[android.graphics.Matrix.MSCALE_X];
+        float sy = v[android.graphics.Matrix.MSCALE_Y];
+        return (float) Math.sqrt(sx * sx + sy * sy);
+    }
     private boolean isOfficeDocument(String mimeType, String fileName) {
         if (mimeType == null) return false;
         if (mimeType.contains("msword")) return true;
@@ -2880,6 +3265,34 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             this.relativePath = relativePath;
         }
     }
+
+    // ── Thumbnail infra ─────────────────────────────────────────────────
+    private static final int THUMB_SIZE_DP = 80;
+
+    /** Cache key is the file's absolute path ONLY. mtime is not part of the key
+     *  so scrolling doesn't cause a cache miss every frame. */
+    private final android.util.LruCache<String, Bitmap> thumbCache =
+            new android.util.LruCache<String, Bitmap>(8 * 1024 * 1024) { // 8 MB
+                @Override
+                protected int sizeOf(String key, Bitmap value) {
+                    return value.getByteCount();
+                }
+            };
+
+    /** Paths currently being decoded. Prevents duplicate work. */
+    private final java.util.Set<String> thumbInFlight =
+            java.util.Collections.newSetFromMap(
+                    new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+
+    /** Two decode threads — enough to hide latency, not enough to thrash I/O. */
+    private final ExecutorService thumbExecutor = Executors.newFixedThreadPool(2);
+
+    /** Notified once when the whole batch is ready, so we call notifyDataSetChanged once. */
+    private final android.os.Handler thumbBatchHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final java.util.concurrent.atomic.AtomicInteger pendingThumbs =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+    private boolean thumbBatchScheduled = false;
     private long getFolderSize(File dir) {
         long size = 0;
         File[] files = dir.listFiles();

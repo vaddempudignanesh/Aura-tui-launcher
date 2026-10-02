@@ -90,6 +90,13 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
         notifyDataSetChanged();
     }
 
+
+    private static boolean isImageFile(File f) {
+        String n = f.getName().toLowerCase(java.util.Locale.US);
+        return n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png")
+                || n.endsWith(".gif") || n.endsWith(".webp") || n.endsWith(".bmp")
+                || n.endsWith(".heic") || n.endsWith(".heif") || n.endsWith(".svg");
+    }
     @NonNull
     @Override
     public FileViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
@@ -103,37 +110,49 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
 
         holder.tvName.setText(file.getName());
 
-        // ── Icon ────────────────────────────────────────────────
-        if (file.isDirectory()) {
-            holder.ivIcon.setImageResource(R.drawable.ic_folder);
-        } else {
-            holder.ivIcon.setImageResource(R.drawable.ic_file);
-        }
-
-        // ── Second line: sub-path (search mode) or size/count (normal) ──
+        // ── Second line ──────────────────────────────────────────
         FileManagerActivity.SearchResult sr = null;
         if (searchResults != null && position < searchResults.size()) {
             sr = searchResults.get(position);
         }
 
         if (sr != null) {
-            // Show the containing folder relative to the search root.
             int slash = sr.relativePath.lastIndexOf('/');
             String parentRel = (slash >= 0) ? sr.relativePath.substring(0, slash) : "";
-            if (parentRel.isEmpty()) {
-                holder.tvSize.setText("•  current folder");
-            } else {
-                holder.tvSize.setText("📁 " + parentRel);
-            }
+            holder.tvSize.setText(parentRel.isEmpty()
+                    ? "•  current folder"
+                    : "📁 " + parentRel);
         } else {
-            if (file.isDirectory()) {
-                holder.tvSize.setText(getDirectorySizeText(file));
-            } else {
-                holder.tvSize.setText(formatSize(file.length()));
-            }
+            holder.tvSize.setText(file.isDirectory()
+                    ? getDirectorySizeText(file)
+                    : formatSize(file.length()));
         }
 
-        // ── Colours ─────────────────────────────────────────────
+        // ── Icon / thumbnail ─────────────────────────────────────
+        // Always reset the view to a known state before deciding what to show.
+        holder.ivIcon.setTag(R.id.iv_icon, null);
+        holder.ivIcon.setImageDrawable(null);
+        holder.ivIcon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        int pad = (int) (10 * context.getResources().getDisplayMetrics().density);
+        holder.ivIcon.setPadding(pad, pad, pad, pad);
+
+        if (file.isDirectory()) {
+            holder.ivIcon.setImageResource(R.drawable.ic_folder);
+        } else if (isImageFile(file)
+                && context instanceof FileManagerActivity
+                && file.length() > 0) {
+
+            android.graphics.drawable.Drawable fallback =
+                    androidx.core.content.ContextCompat.getDrawable(context, R.drawable.ic_file);
+
+            holder.ivIcon.setImageDrawable(fallback);
+            ((FileManagerActivity) context).loadThumbnail(file, holder.ivIcon, fallback);
+
+        } else {
+            holder.ivIcon.setImageResource(R.drawable.ic_file);
+        }
+
+        // ── Selection colours ────────────────────────────────────
         if (isSelected) {
             holder.itemContainer.setBackgroundColor(Color.parseColor("#FF003300"));
             holder.tvName.setTextColor(Color.parseColor("#FF00FF00"));
@@ -144,7 +163,7 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
             holder.tvSize.setTextColor(Color.parseColor("#FF00AA00"));
         }
 
-        // ── Clicks ──────────────────────────────────────────────
+        // ── Clicks ───────────────────────────────────────────────
         holder.itemContainer.setOnClickListener(v -> {
             int pos = holder.getAdapterPosition();
             if (pos == RecyclerView.NO_POSITION) return;
