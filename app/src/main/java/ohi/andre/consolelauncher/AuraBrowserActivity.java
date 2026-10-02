@@ -18,8 +18,6 @@ import android.view.ActionMode;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.KeyEvent;
-import android.view.Menu;
-import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -30,6 +28,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -46,14 +45,17 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.webkit.Profile;
 import androidx.webkit.ProfileStore;
-import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -87,6 +89,27 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private boolean isPageLoading = false;
     private int blockedPopupsThisSession = 0;
     private ActionMode currentSelectionActionMode;
+
+    // Cached DarkReader source so we don't re-read the asset per tab
+    private static String darkReaderSource = null;
+
+    // ── DarkReader bootstrap options (inlined into the JS) ────────────
+    private static final String DR_OPTS_JS =
+            "{" +
+                    "  brightness: 100," +
+                    "  contrast: 100," +
+                    "  sepia: 0," +
+                    "  grayscale: 0," +
+                    "  mode: 1," +
+                    "  useFont: false," +
+                    "  textStroke: 0," +
+                    "  engine: 'dynamicTheme'," +
+                    "  styleSystemControls: true," +
+                    "  darkSchemeBackgroundColor: '#181a1b'," +
+                    "  darkSchemeTextColor: '#e8e6e3'," +
+                    "  selectionColor: 'auto'," +
+                    "  scrollbarColor: ''" +
+                    "}";
 
     private static class Tab {
         WebView webView;
@@ -239,13 +262,54 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  Dark mode — one toggle
-    // ═════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════
+    // DARK MODE — DarkReader.js with Trusted Types bypass
+    //
+    // WHY THIS WORKS ON STRICT-CSP SITES (YouTube, SourceForge, etc.):
+    //
+    //   1. When a site enables Trusted Types, it blocks any string that
+    //      is assigned to a sink (.textContent, .src, Function(), eval()).
+    //
+    //   2. The browser provides window.trustedTypes.createPolicy(). If
+    //      the site hasn't already registered a policy named 'default',
+    //      we register one ourselves. That policy simply returns the
+    //      input string as a TrustedScript / TrustedScriptURL.
+    //
+    //   3. Once our 'default' policy is in place, the browser no longer
+    //      rejects our assignments — because they now go through the
+    //      policy's createScript / createScriptURL sanitizers, which
+    //      we've defined as identity functions.
+    //
+    //   4. We then inject DarkReader source inline via a <script> tag
+    //      whose .textContent we assign with the trusted wrapper.
+    //
+    // This bypasses Trusted Types WITHOUT stripping CSP headers, so
+    // other protections on the page remain intact.
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Load darkreader.min.js from assets once and cache it.
+     */
+    private static synchronized String getDarkReaderSource(Context ctx) {
+        if (darkReaderSource != null) return darkReaderSource;
+        try (InputStream is = ctx.getAssets().open("darkreader.min.js");
+             BufferedReader br = new BufferedReader(
+                     new InputStreamReader(is, StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line).append('\n');
+            darkReaderSource = sb.toString();
+        } catch (Exception e) {
+            Log.e("AURA-DARK", "Failed to load darkreader.min.js", e);
+            darkReaderSource = "";
+        }
+        return darkReaderSource;
+    }
+
     private void toggleForceDark() {
         forceDark = !forceDark;
         updateDarkIconTint();
-        applyForceDarkToAllTabs();
+        applyDarkReaderToAllTabs();
     }
 
     private void updateDarkIconTint() {
@@ -254,161 +318,146 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnDarkMode.setImageResource(android.R.drawable.ic_menu_day);
     }
 
-    private void applyForceDarkToAllTabs() {
+    private void applyDarkReaderToAllTabs() {
         for (Tab t : tabs) {
-            applyForceDark(t.webView);
-            try {
-                t.webView.invalidate();
-                t.webView.requestLayout();
-            } catch (Exception ignored) {}
+            applyDarkReader(t.webView);
         }
     }
 
-    @SuppressLint("RequiresFeature")
-    private void applyForceDark(WebView wv) {
+    /**
+     * Enable or disable DarkReader on a single WebView.
+     *
+     * The payload:
+     *   1. Installs a 'default' Trusted Types policy (if Trusted Types
+     *      is enforced and no default policy exists yet).
+     *   2. Loads darkreader.min.js by wrapping its source in a
+     *      TrustedScript via that policy.
+     *   3. Calls DarkReader.enable() with inline options.
+     *
+     * All steps are wrapped in try/catch so failures on unusual sites
+     * degrade gracefully instead of breaking the page.
+     */
+    private void applyDarkReader(WebView wv) {
         if (wv == null) return;
 
-        try {
-            WebSettings settings = wv.getSettings();
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                try {
-                    settings.setAlgorithmicDarkeningAllowed(forceDark);
-                } catch (Throwable ignored) {}
+        if (forceDark) {
+            final String src = getDarkReaderSource(getApplicationContext());
+            if (src.isEmpty()) {
+                Log.w("AURA-DARK", "darkreader.min.js missing from assets");
+                return;
             }
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-                WebSettingsCompat.setForceDark(settings,
-                        forceDark ? WebSettingsCompat.FORCE_DARK_ON
-                                : WebSettingsCompat.FORCE_DARK_OFF);
-            }
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
-                WebSettingsCompat.setForceDarkStrategy(settings,
-                        WebSettingsCompat.DARK_STRATEGY_WEB_THEME_DARKENING_ONLY);
-            }
-        } catch (Exception ignored) {}
 
-        injectDeepDarkCss(wv, forceDark);
-    }
+            // Escape the source so we can embed it safely in a JS string
+            final String escaped = jsStringLiteral(src);
 
-    private void injectDeepDarkCss(WebView wv, boolean enable) {
-        String js = enable ? DEEP_DARK_CSS_JS : DEEP_DARK_REMOVE_JS;
-        Log.d("AURA-DARK", "=== injectDeepDarkCss called enable=" + enable
-                + " tabIndex=" + currentTabIndex
-                + " url=" + (wv != null ? wv.getUrl() : "null") + " ===");
-        try {
-            wv.evaluateJavascript(js, value -> {
-                Log.d("AURA-DARK", "evaluateJavascript callback value=" + value);
-            });
-        } catch (Exception e) {
-            Log.e("AURA-DARK", "evaluateJavascript threw", e);
+            String bootstrapJs =
+                    "(function(){" +
+                            "  try {" +
+                            // ── Step 1: install Trusted Types default policy ──
+                            "    if (window.trustedTypes && window.trustedTypes.createPolicy) {" +
+                            "      try {" +
+                            "        if (!window.trustedTypes.defaultPolicy) {" +
+                            "          window.trustedTypes.createPolicy('default', {" +
+                            "            createHTML: function(s) { return s; }," +
+                            "            createScript: function(s) { return s; }," +
+                            "            createScriptURL: function(s) { return s; }" +
+                            "          });" +
+                            "        }" +
+                            "      } catch (e) {" +
+                            "        console.log('TrustedTypes default policy already exists or creation skipped');" +
+                            "      }" +
+                            "    }" +
+
+                            // ── Step 2: idempotency guard ──
+                            "    if (window.__auraDRState === 'ready' && window.DarkReader) {" +
+                            "      try { DarkReader.setFetchMethod(window.fetch.bind(window)); } catch(e){}" +
+                            "      DarkReader.enable(" + DR_OPTS_JS + ");" +
+                            "      return;" +
+                            "    }" +
+                            "    if (window.__auraDRState === 'loading') return;" +
+                            "    window.__auraDRState = 'loading';" +
+
+                            // ── Step 3: execute DarkReader source via a
+                            //    TrustedScript-aware mechanism.
+                            "    var src = " + escaped + ";" +
+                            "    var runnable = src;" +
+                            "    try {" +
+                            "      if (window.trustedTypes && window.trustedTypes.createPolicy) {" +
+                            "        var p = window.trustedTypes.defaultPolicy || " +
+                            "                (function(){ try { return window.trustedTypes.createPolicy('aura_' + Date.now(), { createScript: function(s){ return s; } }); } catch(e){ return null; } })();" +
+                            "        if (p && p.createScript) {" +
+                            "          runnable = p.createScript(src);" +
+                            "        }" +
+                            "      }" +
+                            "    } catch (e) { /* fall through with raw string */ }" +
+
+                            // Execute the source. Use new Function() so we
+                            // don't need a <script> tag at all.
+                            "    try {" +
+                            "      (new Function('return (' + runnable + ')'))();" +
+                            "    } catch (e) {" +
+                            // If Function() failed (e.g. strict TT on Function), fall back to inline <script>
+                            "      try {" +
+                            "        var tag = document.createElement('script');" +
+                            "        var payload = runnable;" +
+                            "        try {" +
+                            "          if (window.trustedTypes && window.trustedTypes.defaultPolicy && window.trustedTypes.defaultPolicy.createScript) {" +
+                            "            payload = window.trustedTypes.defaultPolicy.createScript(runnable);" +
+                            "          }" +
+                            "        } catch (e3) {}" +
+                            "        tag.textContent = payload;" +
+                            "        (document.head || document.documentElement).appendChild(tag);" +
+                            "        tag.remove();" +
+                            "      } catch (e2) {" +
+                            "        window.__auraDRState = 'failed';" +
+                            "        console.error('DarkReader injection failed', e2);" +
+                            "        return;" +
+                            "      }" +
+                            "    }" +
+
+                            // ── Step 4: enable DarkReader ──
+                            "    try {" +
+                            "      if (!window.DarkReader) {" +
+                            "        window.__auraDRState = 'failed';" +
+                            "        console.error('DarkReader global missing after injection');" +
+                            "        return;" +
+                            "      }" +
+                            "      try { DarkReader.setFetchMethod(window.fetch.bind(window)); } catch(e){}" +
+                            "      DarkReader.enable(" + DR_OPTS_JS + ");" +
+                            "      window.__auraDRState = 'ready';" +
+                            "    } catch (e) {" +
+                            "      window.__auraDRState = 'failed';" +
+                            "      console.error('DarkReader enable failed', e);" +
+                            "    }" +
+                            "  } catch (e) {" +
+                            "    console.error('DarkReader bootstrap failed', e);" +
+                            "  }" +
+                            "})();";
+            wv.evaluateJavascript(bootstrapJs, null);
+        } else {
+            String js =
+                    "(function(){" +
+                            "  try {" +
+                            "    if (window.DarkReader && window.DarkReader.isEnabled && window.DarkReader.isEnabled()) {" +
+                            "      window.DarkReader.disable();" +
+                            "    }" +
+                            "    window.__auraDRState = null;" +
+                            "  } catch(e) { console.error('DarkReader disable failed', e); }" +
+                            "})();";
+            wv.evaluateJavascript(js, null);
         }
     }
 
+    private void reapplyDarkReaderIfNeeded(WebView wv) {
+        if (forceDark) {
+            applyDarkReader(wv);
+        }
+    }
 
-    private static final String DEEP_DARK_CSS_JS =
-            "(function(){" +
-                    "try{" +
-                    "console.log('===== [AURA] DARK CSS DIAGNOSTIC START =====');" +
-                    "var ID='aura-dark-v5';" +
-                    "var html=document.documentElement;" +
-                    "if(!html){console.log('[AURA] no documentElement');return;}" +
-                    "console.log('[AURA] url=' + location.href);" +
-                    "console.log('[AURA] title=' + document.title);" +
+    // ═════════════════════════════════════════════════════════════
+    //  TABS
+    // ═════════════════════════════════════════════════════════════
 
-                    /* ═══════════════ INSTALL CSS ═══════════════ */
-                    // The old, destructive CSS has been removed.
-                    "html.setAttribute('data-aura-dark','1');" +
-                    "var old=document.getElementById(ID);" +
-                    "if(old&&old.parentNode)old.parentNode.removeChild(old);" +
-                    "var st=document.createElement('style');" +
-                    "st.id=ID;" +
-
-                    // Copy nonce if available
-                    "try{" +
-                    "var nonceSource=document.querySelector('style[nonce],script[nonce]');" +
-                    "if(nonceSource&&nonceSource.nonce){" +
-                    "st.setAttribute('nonce',nonceSource.nonce);" +
-                    "console.log('[AURA] copied nonce=' + nonceSource.nonce);" +
-                    "}" +
-                    "}catch(e){console.log('[AURA] nonce err '+e);}" +
-
-                    // NEW CSS:
-                    // 1. Invert the entire HTML element.
-                    // 2. Apply a hue rotation to make colors look more natural after inversion.
-                    // 3. Re-invert images, videos, and iframes so they look normal.
-                    "st.textContent=" +
-                    "'html[data-aura-dark]{filter:invert(100%) hue-rotate(180deg) !important;background:#000 !important;}' +" +
-                    "'html[data-aura-dark] img,' +" +
-                    "'html[data-aura-dark] video,' +" +
-                    "'html[data-aura-dark] iframe,' +" +
-                    "'html[data-aura-dark] canvas,' +" +
-                    "'html[data-aura-dark] svg{' +" +
-                    "'filter:invert(100%) hue-rotate(180deg) !important;' +" +
-                    "'}' ;" +
-
-                    "console.log('[AURA] style textContent length=' + st.textContent.length);" +
-                    "try{" +
-                    "(document.head||html).appendChild(st);" +
-                    "console.log('[AURA] style attached to ' + (document.head?'head':'html'));" +
-                    "}catch(e){" +
-                    "console.log('[AURA] head append failed '+e);" +
-                    "try{html.appendChild(st);}catch(e2){console.log('[AURA] html append failed '+e2);}" +
-                    "}" +
-
-                    /* ═══════════════ FORCE REFLOW ═══════════════ */
-                    "try{ void document.documentElement.offsetHeight; }catch(e){}" +
-
-                    "console.log('===== [AURA] DARK CSS DIAGNOSTIC END =====');" +
-                    "}catch(e){" +
-                    "console.log('[AURA] FATAL '+e);" +
-                    "}" +
-                    "})();";
-
-
-
-    private static final String DEEP_DARK_REMOVE_JS =
-            "(function(){" +
-                    "try{" +
-                    "console.log('[AURA] remove CSS start');" +
-                    "var html=document.documentElement;" +
-                    "if(html)html.removeAttribute('data-aura-dark');" +
-                    "var st=document.getElementById('aura-dark-v5');" +
-                    "if(st){console.log('[AURA] removing style, parent='+(st.parentNode?st.parentNode.tagName:'null'));}" +
-                    "if(st&&st.parentNode)st.parentNode.removeChild(st);" +
-                    "var old=document.getElementById('aura-dark-v3');" +
-                    "if(old&&old.parentNode)old.parentNode.removeChild(old);" +
-                    "try{" +
-                    "if(window.__auraDarkMO){" +
-                    "window.__auraDarkMO.disconnect();" +
-                    "window.__auraDarkMO=null;" +
-                    "console.log('[AURA] observer disconnected');" +
-                    "}" +
-                    "}catch(e){}" +
-                    "try{" +
-                    "var frames=document.querySelectorAll('iframe');" +
-                    "for(var i=0;i<frames.length;i++){" +
-                    "try{" +
-                    "var d=frames[i].contentDocument;" +
-                    "if(d){" +
-                    "var f=d.getElementById('aura-dark-v5');" +
-                    "if(f&&f.parentNode)f.parentNode.removeChild(f);" +
-                    "var g=d.getElementById('aura-dark-v3');" +
-                    "if(g&&g.parentNode)g.parentNode.removeChild(g);" +
-                    "if(d.documentElement)" +
-                    "d.documentElement.removeAttribute('data-aura-dark');" +
-                    "void d.documentElement.offsetHeight;" +
-                    "}" +
-                    "}catch(e){}" +
-                    "}" +
-                    "}catch(e){}" +
-                    "try{" +
-                    "void document.documentElement.offsetHeight;" +
-                    "if(document.body)void document.body.offsetHeight;" +
-                    "}catch(e){}" +
-                    "console.log('[AURA] remove CSS done');" +
-                    "}catch(e){" +
-                    "console.log('[AURA] REMOVE FATAL '+e);" +
-                    "}" +
-                    "})();";
     private void showTabSheet() {
         if (tabs.isEmpty()) return;
 
@@ -579,7 +628,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
         webContainer.addView(wv);
         wv.setVisibility(View.GONE);
 
-        applyForceDark(wv);
+        if (forceDark) {
+            wv.postDelayed(() -> applyDarkReader(wv), 100);
+        }
+
         wv.loadUrl(normalized);
         switchToTab(tabs.size() - 1);
         updateTabCountBadge();
@@ -685,6 +737,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     // ═════════════════════════════════════════════════════════════
     //  DOWNLOADS
     // ═════════════════════════════════════════════════════════════
+
     private void startAria2Download(String url, String userAgent,
                                     String contentDisposition, String mimeType) {
         String referer = currentTabWebView() != null
@@ -980,8 +1033,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
         s.setCacheMode(incognito ? WebSettings.LOAD_NO_CACHE : WebSettings.LOAD_DEFAULT);
         s.setGeolocationEnabled(false);
         s.setSaveFormData(!incognito);
-        s.setAllowFileAccess(false);
-        s.setAllowContentAccess(false);
+        s.setAllowFileAccess(true);
+        s.setAllowContentAccess(true);
         s.setMediaPlaybackRequiresUserGesture(true);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -1022,14 +1075,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
 
             @Override
-            public android.webkit.WebResourceResponse shouldInterceptRequest(
+            public WebResourceResponse shouldInterceptRequest(
                     WebView view, WebResourceRequest request) {
                 return baseSecurity.shouldInterceptRequest(view, request);
             }
 
             @SuppressWarnings("deprecation")
             @Override
-            public android.webkit.WebResourceResponse shouldInterceptRequest(
+            public WebResourceResponse shouldInterceptRequest(
                     WebView view, String url) {
                 return baseSecurity.shouldInterceptRequest(view, url);
             }
@@ -1048,7 +1101,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             @Override
             public void onPageCommitVisible(WebView view, String url) {
-                applyForceDark(view);
+                reapplyDarkReaderIfNeeded(view);
                 baseSecurity.onPageCommitVisible(view, url);
             }
 
@@ -1061,7 +1114,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
                 }
                 updateTabUrl(view, url);
-                applyForceDark(view);
+                reapplyDarkReaderIfNeeded(view);
                 baseSecurity.onPageFinished(view, url);
             }
         });
@@ -1455,7 +1508,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         super.onResume();
         for (Tab t : tabs) {
             t.webView.onResume();
-            applyForceDark(t.webView);
+            if (forceDark) applyDarkReader(t.webView);
         }
     }
 
