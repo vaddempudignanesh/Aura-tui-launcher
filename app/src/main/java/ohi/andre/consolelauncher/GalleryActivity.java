@@ -1239,7 +1239,28 @@ public class GalleryActivity extends AppCompatActivity {
         videoHandler.removeCallbacks(overlayProgressRunnable);
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
 
+        try {
+            RecyclerView rv = (RecyclerView) fullscreenViewPager.getChildAt(0);
+            if (rv != null) {
+                for (int i = 0; i < rv.getChildCount(); i++) {
+                    View child = rv.getChildAt(i);
+                    if (child != null) {
+                        CustomVideoView vv = child.findViewById(R.id.fullscreen_video);
+                        if (vv != null) vv.stopPlayback();
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        if (videoControlContainer != null) videoControlContainer.setVisibility(View.GONE);
+        fullscreenOverlay.setVisibility(View.GONE);
+        bottomBar.setVisibility(View.VISIBLE);
+
+        View topNav = findViewById(R.id.topNavBar);
+        if (topNav != null) topNav.setVisibility(View.VISIBLE);
+        updateTopNavBar();
     }
+
     private void updateFullscreenInfo(int position) {
         if (position < 0 || position >= fullscreenMediaPaths.size()) return;
         String path = fullscreenMediaPaths.get(position);
