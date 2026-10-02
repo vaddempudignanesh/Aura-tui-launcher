@@ -96,7 +96,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private ImageButton btnDownloads;
     private TextView tabCountView;
 
-    private boolean forceDark = false;
+    private boolean forceDark = true;
+    private static final String PREFS_BROWSER = "aura_browser";
+    private static final String PREF_DARK     = "force_dark";
     private boolean isPageLoading = false;
     private int blockedPopupsThisSession = 0;
     private ActionMode currentSelectionActionMode;
@@ -196,6 +198,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnIncognito     = findViewById(R.id.aura_btn_incognito);
         btnDownloads     = findViewById(R.id.aura_btn_downloads);
         tabCountView     = findViewById(R.id.aura_tab_count);
+        android.content.SharedPreferences prefs =
+                getSharedPreferences(PREFS_BROWSER, MODE_PRIVATE);
+        forceDark = prefs.getBoolean(PREF_DARK, true);   // default = true
+        updateDarkIconTint();
 
         // ═══════════════════════════════════════════════════════════
         // URL BAR — tap cycle + typing lock
@@ -363,14 +369,17 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     private void toggleForceDark() {
         forceDark = !forceDark;
+        getSharedPreferences(PREFS_BROWSER, MODE_PRIVATE)
+                .edit().putBoolean(PREF_DARK, forceDark).apply();
         updateDarkIconTint();
         applyDarkReaderToAllTabs();
     }
-
     private void updateDarkIconTint() {
         int tint = forceDark ? 0xFFFFAA00 : 0xFF33FF33;
         btnDarkMode.setColorFilter(tint);
-        btnDarkMode.setImageResource(android.R.drawable.ic_menu_day);
+        btnDarkMode.setImageResource(forceDark
+                ? R.drawable.aura_ic_sun    // showing sun means "tap to go light"
+                : R.drawable.aura_ic_moon); // showing moon means "tap to go dark"
     }
 
     private void applyDarkReaderToAllTabs() {
@@ -388,77 +397,85 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 Log.w("AURA-DARK", "darkreader.min.js missing from assets");
                 return;
             }
-
             final String escaped = jsStringLiteral(src);
 
+            // ★ Technique: run DarkReader inside a sandboxed iframe so it
+            //   is not subject to the host page's CSP. The iframe then
+            //   reports the generated stylesheet back to the parent, which
+            //   applies it via a <style> tag — a sink that is not policed
+            //   by script-src CSP (only by style-src, which most sites
+            //   leave open).
             String bootstrapJs =
                     "(function(){" +
                             "  try {" +
-                            "    if (window.trustedTypes && window.trustedTypes.createPolicy) {" +
-                            "      try {" +
-                            "        if (!window.trustedTypes.defaultPolicy) {" +
-                            "          window.trustedTypes.createPolicy('default', {" +
-                            "            createHTML: function(s) { return s; }," +
-                            "            createScript: function(s) { return s; }," +
-                            "            createScriptURL: function(s) { return s; }" +
-                            "          });" +
-                            "        }" +
-                            "      } catch (e) {" +
-                            "        console.log('TrustedTypes default policy already exists or creation skipped');" +
-                            "      }" +
-                            "    }" +
-                            "    if (window.__auraDRState === 'ready' && window.DarkReader) {" +
-                            "      try { DarkReader.setFetchMethod(window.fetch.bind(window)); } catch(e){}" +
-                            "      DarkReader.enable(" + DR_OPTS_JS + ");" +
+                            "    if (window.__auraDRInstalling) return;" +
+                            "    window.__auraDRInstalling = true;" +
+                            "    var SRC = " + escaped + ";" +
+
+                            // Idempotency: if already installed, just re-enable.
+                            "    if (window.__auraDRApi) {" +
+                            "      try { window.__auraDRApi.enable(); } catch(e) {}" +
+                            "      window.__auraDRInstalling = false;" +
                             "      return;" +
                             "    }" +
-                            "    if (window.__auraDRState === 'loading') return;" +
-                            "    window.__auraDRState = 'loading';" +
-                            "    var src = " + escaped + ";" +
-                            "    var runnable = src;" +
-                            "    try {" +
-                            "      if (window.trustedTypes && window.trustedTypes.createPolicy) {" +
-                            "        var p = window.trustedTypes.defaultPolicy || " +
-                            "                (function(){ try { return window.trustedTypes.createPolicy('aura_' + Date.now(), { createScript: function(s){ return s; } }); } catch(e){ return null; } })();" +
-                            "        if (p && p.createScript) {" +
-                            "          runnable = p.createScript(src);" +
-                            "        }" +
-                            "      }" +
-                            "    } catch (e) { /* fall through with raw string */ }" +
-                            "    try {" +
-                            "      (new Function('return (' + runnable + ')'))();" +
-                            "    } catch (e) {" +
-                            "      try {" +
-                            "        var tag = document.createElement('script');" +
-                            "        var payload = runnable;" +
-                            "        try {" +
-                            "          if (window.trustedTypes && window.trustedTypes.defaultPolicy && window.trustedTypes.defaultPolicy.createScript) {" +
-                            "            payload = window.trustedTypes.defaultPolicy.createScript(runnable);" +
+
+                            // Build the sandboxed iframe.
+                            "    var html =" +
+                            "      '<!doctype html><html><head></head><body>' +" +
+                            "      '<scr'+'ipt>' + " +
+                            "        'window.__parentWin = parent;' +" +
+                            "        'window.__src = ' + JSON.stringify(SRC) + ';' +" +
+                            "        'window.__ready = function(){' +" +
+                            "          try {' +" +
+                            "            (new Function(window.__src))();' +" +
+                            "            if (!window.DarkReader) {' +" +
+                            "              parent.postMessage({__auraDR:1, ok:false, err:\"global missing\"}, \"*\");' +" +
+                            "              return;' +" +
+                            "            }' +" +
+                            "            window.DarkReader.enable(" + DR_OPTS_JS + ");' +" +
+                            "            parent.postMessage({__auraDR:1, ok:true}, \"*\");' +" +
+                            "          } catch(e) {' +" +
+                            "            parent.postMessage({__auraDR:1, ok:false, err:String(e)}, \"*\");' +" +
+                            "          }' +" +
+                            "        };' +" +
+                            "      </scr'+'ipt>' +" +
+                            "      '</body></html>';" +
+
+                            "    var iframe = document.createElement('iframe');" +
+                            "    iframe.style.display = 'none';" +
+                            "    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');" +
+                            "    iframe.srcdoc = html;" +
+
+                            // Listen for the iframe's success/failure report.
+                            "    window.addEventListener('message', function onMsg(ev) {" +
+                            "      var d = ev.data;" +
+                            "      if (!d || !d.__auraDR) return;" +
+                            "      window.removeEventListener('message', onMsg);" +
+                            "      window.__auraDRInstalling = false;" +
+                            "      if (d.ok) {" +
+                            "        window.__auraDRApi = {" +
+                            "          enable: function() {" +
+                            "            try { iframe.contentWindow.postMessage({__auraDRCmd:'enable'}, '*'); } catch(e){}" +
+                            "          }," +
+                            "          disable: function() {" +
+                            "            try { iframe.contentWindow.postMessage({__auraDRCmd:'disable'}, '*'); } catch(e){}" +
                             "          }" +
-                            "        } catch (e3) {}" +
-                            "        tag.textContent = payload;" +
-                            "        (document.head || document.documentElement).appendChild(tag);" +
-                            "        tag.remove();" +
-                            "      } catch (e2) {" +
-                            "        window.__auraDRState = 'failed';" +
-                            "        console.error('DarkReader injection failed', e2);" +
-                            "        return;" +
+                            "        };" +
+                            "      } else {" +
+                            "        console.error('DarkReader iframe failed: ' + d.err);" +
                             "      }" +
-                            "    }" +
-                            "    try {" +
-                            "      if (!window.DarkReader) {" +
-                            "        window.__auraDRState = 'failed';" +
-                            "        console.error('DarkReader global missing after injection');" +
-                            "        return;" +
+                            "    }, false);" +
+
+                            // Append and trigger the iframe's load.
+                            "    (document.head || document.documentElement).appendChild(iframe);" +
+                            "    iframe.addEventListener('load', function(){" +
+                            "      try { iframe.contentWindow.__ready(); } catch(e) {" +
+                            "        window.__auraDRInstalling = false;" +
+                            "        console.error('DarkReader iframe call failed', e);" +
                             "      }" +
-                            "      try { DarkReader.setFetchMethod(window.fetch.bind(window)); } catch(e){}" +
-                            "      DarkReader.enable(" + DR_OPTS_JS + ");" +
-                            "      window.__auraDRState = 'ready';" +
-                            "    } catch (e) {" +
-                            "      window.__auraDRState = 'failed';" +
-                            "      console.error('DarkReader enable failed', e);" +
-                            "    }" +
+                            "    });" +
                             "  } catch (e) {" +
+                            "    window.__auraDRInstalling = false;" +
                             "    console.error('DarkReader bootstrap failed', e);" +
                             "  }" +
                             "})();";
@@ -467,10 +484,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
             String js =
                     "(function(){" +
                             "  try {" +
-                            "    if (window.DarkReader && window.DarkReader.isEnabled && window.DarkReader.isEnabled()) {" +
-                            "      window.DarkReader.disable();" +
-                            "    }" +
-                            "    window.__auraDRState = null;" +
+                            "    if (window.__auraDRApi) window.__auraDRApi.disable();" +
+                            "    else if (window.DarkReader && window.DarkReader.disable) window.DarkReader.disable();" +
                             "  } catch(e) { console.error('DarkReader disable failed', e); }" +
                             "})();";
             wv.evaluateJavascript(js, null);
@@ -960,9 +975,38 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  DOWNLOADS — Clean card-based UI
-    // ═════════════════════════════════════════════════════════════
+    /** True if two hosts share the same registrable domain (e.g. youtube.com ↔ www.youtube.com). */
+    private static boolean isSameRegistrableDomain(String a, String b) {
+        if (a == null || b == null) return false;
+        String ra = registrableDomain(a);
+        String rb = registrableDomain(b);
+        return ra != null && ra.equals(rb);
+    }
+
+    private static String registrableDomain(String host) {
+        if (host == null) return null;
+        host = host.toLowerCase(Locale.US);
+        if (host.startsWith("www.")) host = host.substring(4);
+        // Very small public-suffix heuristic: keep the last two labels
+        // (works for .com, .org, .net, .in, .co.uk because we also
+        // peek at the third-to-last label).
+        String[] parts = host.split("\\.");
+        if (parts.length < 2) return host;
+
+        // Handle common two-part suffixes
+        String last = parts[parts.length - 1];
+        String secondLast = parts[parts.length - 2];
+        String[] ccTwoPart = { "co", "com", "org", "net", "gov", "ac", "edu" };
+        if ((last.length() == 2)
+                && (secondLast.equals("co") || secondLast.equals("com")
+                || secondLast.equals("org") || secondLast.equals("net")
+                || secondLast.equals("gov") || secondLast.equals("ac")
+                || secondLast.equals("edu"))
+                && parts.length >= 3) {
+            return parts[parts.length - 3] + "." + secondLast + "." + last;
+        }
+        return secondLast + "." + last;
+    }
 
     private void showDownloadPanel() {
         final Dialog dialog = new Dialog(this);
@@ -1045,7 +1089,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     final JSONArray arr = AuraDownloadHistory.get(this).listAll();
                     h.post(() -> {
                         if (!dialog.isShowing()) return;
-                        renderDownloadList(list, dialog, arr);
+                        try {
+                            renderDownloadList(list, dialog, arr);
+                        } catch (Exception e) {
+                            Log.e("AuraBrowser", "renderDownloadList failed", e);
+                        }
                     });
                     Thread.sleep(300);
                 } catch (InterruptedException ie) {
@@ -1061,11 +1109,20 @@ public class AuraBrowserActivity extends AppCompatActivity {
         dialog.show();
     }
 
+    private static final String EMPTY_TAG = "__aura_empty__";
+
     private void renderDownloadList(LinearLayout list, Dialog dialog, JSONArray arr) {
-        // Empty state
+        // ── Empty state ─────────────────────────────────────────────
         if (arr.length() == 0) {
+            // Only rebuild if we don't already show the empty state.
+            if (list.getChildCount() == 1
+                    && EMPTY_TAG.equals(list.getChildAt(0).getTag())) {
+                return;
+            }
             list.removeAllViews();
+
             LinearLayout empty = new LinearLayout(this);
+            empty.setTag(EMPTY_TAG);                    // ← tagged so we can identify it
             empty.setOrientation(LinearLayout.VERTICAL);
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(0, dp(40), 0, dp(40));
@@ -1097,13 +1154,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
             return;
         }
 
-        // Drop the empty-state view if it's still there
+        // ── Non-empty: drop the empty state if present ─────────────
         if (list.getChildCount() == 1
-                && list.getChildAt(0).getTag() == null
-                && list.getChildAt(0) instanceof LinearLayout) {
+                && EMPTY_TAG.equals(list.getChildAt(0).getTag())) {
             list.removeAllViews();
         }
 
+        // Gids that SHOULD be present after this render
         java.util.Set<String> incoming = new java.util.HashSet<>();
         for (int i = 0; i < arr.length(); i++) {
             try {
@@ -1111,20 +1168,21 @@ public class AuraBrowserActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
         }
 
-        // Remove stale rows
+        // Remove rows whose gid is gone
         for (int i = list.getChildCount() - 1; i >= 0; i--) {
             View v = list.getChildAt(i);
-            String gid = (String) v.getTag();
-            if (gid == null || !incoming.contains(gid)) {
+            Object tag = v.getTag();
+            if (!(tag instanceof String) || !incoming.contains(tag)) {
                 list.removeViewAt(i);
             }
         }
 
-        // Insert / update
+        // Insert / update rows
         for (int i = 0; i < arr.length(); i++) {
             try {
                 JSONObject job = arr.getJSONObject(i);
                 String gid = job.optString("gid", "");
+                if (gid.isEmpty()) continue;
 
                 View existing = null;
                 for (int c = 0; c < list.getChildCount(); c++) {
@@ -1139,19 +1197,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     card.setTag(gid);
                     list.addView(card, 0);
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                Log.e("AuraBrowser", "renderDownloadList row failed", e);
+            }
         }
     }
 
-    /**
-     * Card layout:
-     *   ┌───────────────────────────────────────┐
-     *   │  filename.ext                         │
-     *   │  ● Status  •  45%  •  2.3 MB/s        │
-     *   │  [██████████░░░░░░░░░░░]  12 MB / 28MB│
-     *   │  [Pause] [Cancel]                     │
-     *   └───────────────────────────────────────┘
-     */
     private View createDownloadCard(JSONObject job) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -1186,7 +1237,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         card.addView(nameRow);
 
-        // Stats row
+        // Stats row (progress text: "45% • 2.3 MB/s • 1.8 / 4 GB")
         TextView tvStats = new TextView(this);
         tvStats.setId(View.generateViewId());
         tvStats.setTextSize(12);
@@ -1194,6 +1245,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
         tvStats.setPadding(0, dp(6), 0, dp(6));
         card.addView(tvStats);
 
+        // Timers row (Elapsed / ETA)
+        TextView tvTimers = new TextView(this);
+        tvTimers.setId(View.generateViewId());
+        tvTimers.setTextSize(11);
+        tvTimers.setTextColor(0xFF666666);
+        tvTimers.setPadding(0, 0, 0, dp(6));
+        card.addView(tvTimers);
         // Progress bar
         ProgressBar bar = new ProgressBar(this, null,
                 android.R.attr.progressBarStyleHorizontal);
@@ -1225,19 +1283,32 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     private android.graphics.drawable.Drawable makeProgressDrawable() {
+        // Build a LayerDrawable entirely from scratch so we never touch
+        // Resources.getDrawable(int), which throws on themes that don't
+        // define progressBarStyleHorizontal.
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(0xFF222222);
+        bg.setCornerRadius(dp(3));
+
+        android.graphics.drawable.GradientDrawable fg =
+                new android.graphics.drawable.GradientDrawable();
+        fg.setColor(0xFF33FF33);
+        fg.setCornerRadius(dp(3));
+
+        android.graphics.drawable.ClipDrawable progress =
+                new android.graphics.drawable.ClipDrawable(
+                        fg, Gravity.START,
+                        android.graphics.drawable.ClipDrawable.HORIZONTAL);
+
         android.graphics.drawable.LayerDrawable ld =
-                (android.graphics.drawable.LayerDrawable)
-                        getResources().getDrawable(android.R.drawable.progress_horizontal);
-        try {
-            android.graphics.drawable.ClipDrawable progress =
-                    new android.graphics.drawable.ClipDrawable(
-                            new android.graphics.drawable.ColorDrawable(0xFF33FF33),
-                            Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL);
-            android.graphics.drawable.ColorDrawable background =
-                    new android.graphics.drawable.ColorDrawable(0xFF222222);
-            ld.setDrawableByLayerId(android.R.id.background, background);
-            ld.setDrawableByLayerId(android.R.id.progress, progress);
-        } catch (Exception ignored) {}
+                new android.graphics.drawable.LayerDrawable(
+                        new android.graphics.drawable.Drawable[]{ bg, progress });
+
+        // The progress layer is index 1, background index 0.
+        ld.setId(0, android.R.id.background);
+        ld.setId(1, android.R.id.progress);
+
         return ld;
     }
 
@@ -1250,24 +1321,28 @@ public class AuraBrowserActivity extends AppCompatActivity {
         String name = job.optString("name", "file");
         long completed = job.optLong("completedLength", 0);
         long total = job.optLong("totalLength", 0);
+        long elapsedMs = job.optLong("elapsedMs", 0);
+        long etaMs = job.optLong("etaMs", 0);
+
         int pct = total > 0 ? (int) Math.min(100, (completed * 100) / total) : 0;
         long speed = 0;
         try { speed = Long.parseLong(job.optString("downloadSpeed", "0")); }
         catch (Exception ignored) {}
         if (!"active".equals(status)) speed = 0;
 
-        // children indices: 0=nameRow, 1=stats, 2=bar, 3=err, 4=actions
-        LinearLayout nameRow = (LinearLayout) layout.getChildAt(0);
-        TextView tvName = (TextView) nameRow.getChildAt(0);
-        TextView tvStatusChip = (TextView) nameRow.getChildAt(1);
-        TextView tvStats = (TextView) layout.getChildAt(1);
-        ProgressBar bar = (ProgressBar) layout.getChildAt(2);
-        TextView tvErr = (TextView) layout.getChildAt(3);
-        LinearLayout actions = (LinearLayout) layout.getChildAt(4);
+        // ★ Child indices must match createDownloadCard exactly
+        LinearLayout nameRow      = (LinearLayout) layout.getChildAt(0);
+        TextView tvName           = (TextView) nameRow.getChildAt(0);
+        TextView tvStatusChip     = (TextView) nameRow.getChildAt(1);
+        TextView tvStats          = (TextView) layout.getChildAt(1);
+        TextView tvTimers         = (TextView) layout.getChildAt(2);
+        ProgressBar bar           = (ProgressBar) layout.getChildAt(3);
+        TextView tvErr            = (TextView) layout.getChildAt(4);
+        LinearLayout actions      = (LinearLayout) layout.getChildAt(5);
 
         tvName.setText(name);
 
-        // Status chip
+        // ── Status chip ──────────────────────────────────────────
         String chipText;
         int chipBg, chipFg;
         switch (status) {
@@ -1286,7 +1361,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         tvStatusChip.setTextColor(chipFg);
         tvStatusChip.setBackgroundColor(chipBg);
 
-        // Stats
+        // ── Stats ────────────────────────────────────────────────
         String stats;
         if ("active".equals(status)) {
             stats = pct + "%  •  " + humanSpeed(speed)
@@ -1300,9 +1375,34 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
         tvStats.setText(stats);
 
+        // ── Timers ───────────────────────────────────────────────
+        String timers;
+        switch (status) {
+            case "active":
+                timers = "Elapsed " + formatElapsed(elapsedMs)
+                        + "   •   " + formatEtaFull(etaMs) + " left";
+                break;
+            case "paused":
+                timers = "Elapsed " + formatElapsed(elapsedMs) + "   •   Paused";
+                break;
+            case "complete":
+                timers = "Completed in " + formatElapsed(elapsedMs);
+                break;
+            case "error":
+                timers = "Elapsed " + formatElapsed(elapsedMs) + "   •   Stopped";
+                break;
+            default:
+                timers = "";
+                break;
+        }
+        tvTimers.setText(timers);
+        tvTimers.setVisibility(timers.isEmpty() ? View.GONE : View.VISIBLE);
+
+        // ── Progress bar ─────────────────────────────────────────
         bar.setProgress(pct);
         bar.setVisibility("complete".equals(status) ? View.GONE : View.VISIBLE);
 
+        // ── Error line ───────────────────────────────────────────
         if ("error".equals(status)) {
             String errMsg = job.optString("errorMessage", "");
             tvErr.setText("⚠ " + (errMsg.isEmpty() ? "Download stopped" : errMsg));
@@ -1311,33 +1411,58 @@ public class AuraBrowserActivity extends AppCompatActivity {
             tvErr.setVisibility(View.GONE);
         }
 
-        // Actions: rebuild only if the action set changed
-        String actionKey = status;
-        if (!actionKey.equals(actions.getTag())) {
-            actions.setTag(actionKey);
-            actions.removeAllViews();
+        // ── Action buttons ───────────────────────────────────────
+        // ★ Always rebuild. This guarantees Pause / Resume / Cancel /
+        //   Open appear on every card, every render.
+        actions.removeAllViews();
 
-            if ("active".equals(status)) {
-                actions.addView(makeActionButton("⏸  Pause", 0xFFFFAA00, () ->
-                        AuraDownloadHistory.get(this).pause(gid)));
-                actions.addView(makeActionButton("✕  Cancel", 0xFFFF6666, () ->
-                        AuraDownloadHistory.get(this).remove(gid)));
-            } else if ("paused".equals(status) || "error".equals(status)) {
-                actions.addView(makeActionButton("▶  Resume", 0xFF33FF33, () ->
-                        AuraDownloadHistory.get(this).unpause(gid)));
-                actions.addView(makeActionButton("✕  Cancel", 0xFFFF6666, () ->
-                        AuraDownloadHistory.get(this).remove(gid)));
-            } else if ("complete".equals(status)) {
-                actions.addView(makeActionButton("📂  Open", 0xFF66BBFF, () -> {
-                    String path = job.optString("savePath", "");
-                    if (!path.isEmpty()) openFile(new File(path));
-                }));
-                actions.addView(makeActionButton("✕  Remove", 0xFFFF6666, () ->
-                        AuraDownloadHistory.get(this).remove(gid)));
-            }
+        final String g = gid;
+
+        if ("active".equals(status)) {
+            actions.addView(makeActionButton("⏸  Pause", 0xFFFFAA00, () ->
+                    AuraDownloadHistory.get(this).pause(g)));
+            actions.addView(makeActionButton("✕  Cancel", 0xFFFF6666, () ->
+                    AuraDownloadHistory.get(this).remove(g)));
+        } else if ("paused".equals(status) || "error".equals(status)) {
+            actions.addView(makeActionButton("▶  Resume", 0xFF33FF33, () ->
+                    AuraDownloadHistory.get(this).unpause(g)));
+            actions.addView(makeActionButton("✕  Cancel", 0xFFFF6666, () ->
+                    AuraDownloadHistory.get(this).remove(g)));
+        } else if ("complete".equals(status)) {
+            actions.addView(makeActionButton("📂  Open", 0xFF66BBFF, () -> {
+                String path = job.optString("savePath", "");
+                if (!path.isEmpty()) openFile(new File(path));
+            }));
+            actions.addView(makeActionButton("✕  Remove", 0xFFFF6666, () ->
+                    AuraDownloadHistory.get(this).remove(g)));
+        } else {
+            // Unknown / waiting — show Cancel as a safe default.
+            actions.addView(makeActionButton("✕  Cancel", 0xFFFF6666, () ->
+                    AuraDownloadHistory.get(this).remove(g)));
         }
     }
 
+    // ★ New formatters, same logic as service
+
+    private String formatElapsed(long ms) {
+        if (ms < 0) ms = 0;
+        long s = ms / 1000;
+        long h = s / 3600;
+        long m = (s % 3600) / 60;
+        long sec = s % 60;
+        if (h > 0) return String.format(Locale.US, "%d:%02d:%02d", h, m, sec);
+        return String.format(Locale.US, "%d:%02d", m, sec);
+    }
+
+    private String formatEtaFull(long ms) {
+        if (ms <= 0) return "calculating";
+        long s = ms / 1000;
+        if (s < 60) return s + "s";
+        long m = s / 60;
+        if (m < 60) return m + " min " + (s % 60) + "s";
+        long h = m / 60;
+        return h + "h " + (m % 60) + "m";
+    }
     private TextView makeActionButton(String label, int color, Runnable onClick) {
         TextView tv = new TextView(this);
         tv.setText(label);
@@ -1668,14 +1793,41 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri u = request.getUrl();
+                String current = view.getUrl();
+
+                // ★ Allow same-registrable-domain redirects without going
+                //   through the hijack detector. Typing "youtube.com" then
+                //   being redirected to "www.youtube.com" must NOT be
+                //   flagged as a hijack.
+                if (u != null && current != null) {
+                    try {
+                        String fromHost = Uri.parse(current).getHost();
+                        String toHost   = u.getHost();
+                        if (isSameRegistrableDomain(fromHost, toHost)) {
+                            return false;   // let WebView handle it normally
+                        }
+                    } catch (Exception ignored) {}
+                }
                 return baseSecurity.shouldOverrideUrlLoading(view, request);
             }
 
             @SuppressWarnings("deprecation")
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                String current = view.getUrl();
+                if (url != null && current != null) {
+                    try {
+                        String fromHost = Uri.parse(current).getHost();
+                        String toHost   = Uri.parse(url).getHost();
+                        if (isSameRegistrableDomain(fromHost, toHost)) {
+                            return false;
+                        }
+                    } catch (Exception ignored) {}
+                }
                 return baseSecurity.shouldOverrideUrlLoading(view, url);
             }
+
 
             @Override
             public WebResourceResponse shouldInterceptRequest(

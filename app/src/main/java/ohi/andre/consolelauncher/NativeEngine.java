@@ -23,24 +23,34 @@ public class NativeEngine {
     private final AtomicBoolean finished = new AtomicBoolean(false);
     private final DownloadProgressListener listener;
 
-    // ── Speed tracking (all updates via AtomicLong to be thread-safe) ──
-    private final AtomicLong windowBytes = new AtomicLong(0);   // bytes in current window
-    private final AtomicLong windowStart = new AtomicLong(0);   // window start time
-    private final AtomicLong currentSpeed = new AtomicLong(0);  // last computed B/s
+    // ── Raw byte counter, incremented by every worker ────────────────
+    private final AtomicLong rawBytesThisTick = new AtomicLong(0);
+
+    // ── EWMA-smoothed speed ──────────────────────────────────────────
+    private static final double ALPHA = 0.25;
+    private volatile double smoothedSpeed = 0.0;
+
+    // ── Timing ───────────────────────────────────────────────────────
+    private long startTimeMs = 0L;
+    private long accumulatedMs = 0L;   // elapsed across previous resume sessions
 
     private Thread tickerThread;
 
     public interface DownloadProgressListener {
-        void onProgress(long totalDownloaded, long totalSize, long bytesPerSec);
-        void onComplete();
+        void onProgress(long totalDownloaded, long totalSize, long bytesPerSec,
+                        long elapsedMs, long etaMs);
+        void onComplete(long elapsedMs);
         void onError(String message);
         void onPaused();
+        void onStarted(long totalSize);
     }
 
     public NativeEngine(DownloadTaskInfo taskInfo, DownloadProgressListener listener) {
         this.taskInfo = taskInfo;
         this.stateFilePath = taskInfo.savePath + ".state";
         this.listener = listener;
+        // Carry over any elapsed time saved across sessions.
+        this.accumulatedMs = taskInfo.elapsedMs;
     }
 
     public DownloadTaskInfo getTaskInfo() {
@@ -54,55 +64,48 @@ public class NativeEngine {
     public void start() {
         paused.set(false);
         finished.set(false);
+        rawBytesThisTick.set(0);
+        smoothedSpeed = 0.0;
+        startTimeMs = System.currentTimeMillis();
 
         executor = Executors.newFixedThreadPool(taskInfo.threadCount);
 
-        // Reset speed window
-        windowBytes.set(0);
-        windowStart.set(System.currentTimeMillis());
-        currentSpeed.set(0);
+        try { listener.onStarted(taskInfo.totalSize); } catch (Exception ignored) {}
 
-        // Launch the worker threads
         for (int i = 0; i < taskInfo.threadCount; i++) {
             executor.execute(new DownloadWorker(i));
         }
 
-        // Launch the speed ticker (fires onProgress every 500 ms)
         tickerThread = new Thread(this::tickerLoop, "aura-dl-ticker");
         tickerThread.setDaemon(true);
         tickerThread.start();
 
-        // Watchdog to fire onComplete when all workers exit
         new Thread(() -> {
             try {
                 executor.shutdown();
                 executor.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
 
-                // Stop the ticker
                 if (tickerThread != null) tickerThread.interrupt();
 
+                long sessionMs = System.currentTimeMillis() - startTimeMs;
+                long totalElapsed = accumulatedMs + sessionMs;
+                taskInfo.elapsedMs = totalElapsed;
+                try { taskInfo.saveState(stateFilePath); } catch (Exception ignored) {}
+
                 if (paused.get()) {
-                    // Pause path: emit final onPaused
-                    try { taskInfo.saveState(stateFilePath); } catch (Exception ignored) {}
                     listener.onPaused();
                 } else if (!finished.getAndSet(true)) {
-                    // Natural completion
                     File stateFile = new File(stateFilePath);
                     if (stateFile.exists()) stateFile.delete();
-                    listener.onComplete();
+                    listener.onComplete(totalElapsed);
                 }
-            } catch (InterruptedException e) {
-                // fall through
-            }
+            } catch (InterruptedException ignored) {}
         }, "aura-dl-watchdog").start();
     }
 
-    /**
-     * Runs while not paused/terminated. Every 500 ms it computes the
-     * rolling speed and forwards onProgress. This guarantees the UI
-     * always sees a fresh value (0 B/s if truly stalled).
-     */
     private void tickerLoop() {
+        long prevTime = System.currentTimeMillis();
+
         while (!paused.get() && !Thread.currentThread().isInterrupted()) {
             try {
                 Thread.sleep(500);
@@ -112,44 +115,53 @@ public class NativeEngine {
             if (paused.get()) return;
 
             long now = System.currentTimeMillis();
-            long elapsed = now - windowStart.get();
-            if (elapsed >= 1000) {
-                long bytes = windowBytes.getAndSet(0);
-                long speed = (long) (bytes / (elapsed / 1000.0));
-                currentSpeed.set(speed);
-                windowStart.set(now);
+            long elapsed = now - prevTime;
+            prevTime = now;
+
+            long deltaBytes = rawBytesThisTick.getAndSet(0);
+            double instantSpeed = elapsed > 0
+                    ? (deltaBytes * 1000.0) / elapsed
+                    : 0.0;
+
+            smoothedSpeed = ALPHA * instantSpeed + (1.0 - ALPHA) * smoothedSpeed;
+
+            long reported = (long) smoothedSpeed;
+            if (reported < 1024 && deltaBytes == 0) reported = 0;
+
+            // ── Timing ───────────────────────────────────────────────
+            long sessionElapsed = now - startTimeMs;
+            long totalElapsed = accumulatedMs + sessionElapsed;
+
+            long downloaded = taskInfo.totalDownloaded();
+            long remaining = Math.max(0, taskInfo.totalSize - downloaded);
+            long etaMs = 0L;
+            if (reported > 0 && remaining > 0) {
+                etaMs = (long) ((remaining * 1000.0) / reported);
             }
 
-            // Emit progress (speed is refreshed every ~1 s, total every 500 ms)
-            long total = taskInfo.totalDownloaded();
             try {
-                listener.onProgress(total, taskInfo.totalSize, currentSpeed.get());
+                listener.onProgress(downloaded, taskInfo.totalSize,
+                        reported, totalElapsed, etaMs);
             } catch (Exception ignored) {}
 
-            // Persist state
+            // Persist running elapsed time in the state file.
+            taskInfo.elapsedMs = totalElapsed;
             try { taskInfo.saveState(stateFilePath); } catch (Exception ignored) {}
         }
     }
 
-    /**
-     * Pauses all workers, flushes state, and notifies the listener.
-     * Safe to call from any thread.
-     */
     public void pause() {
-        if (paused.getAndSet(true)) return;   // already paused
+        if (paused.getAndSet(true)) return;
+        // Capture elapsed time before tearing down.
+        long sessionMs = System.currentTimeMillis() - startTimeMs;
+        taskInfo.elapsedMs = accumulatedMs + sessionMs;
         if (tickerThread != null) tickerThread.interrupt();
-        if (executor != null) {
-            executor.shutdownNow();            // interrupts each worker
-        }
+        if (executor != null) executor.shutdownNow();
         try { taskInfo.saveState(stateFilePath); } catch (Exception ignored) {}
     }
 
-    /**
-     * Called by each worker on every chunk. Just adds to the counters.
-     * Speed computation happens in the ticker.
-     */
     private void recordBytes(long bytes) {
-        windowBytes.addAndGet(bytes);
+        rawBytesThisTick.addAndGet(bytes);
     }
 
     private class DownloadWorker implements Runnable {
@@ -170,15 +182,12 @@ public class NativeEngine {
                         + taskInfo.downloadedBytes[threadId];
                 long end = taskInfo.endBytes[threadId];
 
-                if (actualStart > end) {
-                    Log.d(TAG, "Worker " + threadId + " already complete");
-                    return;
-                }
+                if (actualStart > end) return;
 
                 URL url = new URL(taskInfo.url);
                 connection = (HttpURLConnection) url.openConnection();
                 connection.setConnectTimeout(15000);
-                connection.setReadTimeout(20000);
+                connection.setReadTimeout(30000);
                 connection.setRequestProperty("Range",
                         "bytes=" + actualStart + "-" + end);
                 if (taskInfo.userAgent != null && !taskInfo.userAgent.isEmpty()) {
@@ -192,17 +201,16 @@ public class NativeEngine {
                 int code = connection.getResponseCode();
                 if (code != HttpURLConnection.HTTP_PARTIAL
                         && code != HttpURLConnection.HTTP_OK) {
-                    listener.onError("HTTP " + code);
+                    if (!paused.get()) listener.onError("HTTP " + code);
                     return;
                 }
 
-                in = new BufferedInputStream(connection.getInputStream(), 8192);
+                in = new BufferedInputStream(connection.getInputStream(), 131072);
                 File targetFile = new File(taskInfo.savePath);
                 fileAccessor = new RandomAccessFile(targetFile, "rw");
                 fileAccessor.seek(actualStart);
 
-                // ★ 8 KB buffer → pause takes effect within ~1 read cycle
-                byte[] buffer = new byte[8192];
+                byte[] buffer = new byte[131072];
                 int bytesRead;
                 while (!paused.get() && !Thread.currentThread().isInterrupted()
                         && (bytesRead = in.read(buffer)) != -1) {
@@ -210,11 +218,7 @@ public class NativeEngine {
                     taskInfo.downloadedBytes[threadId] += bytesRead;
                     recordBytes(bytesRead);
                 }
-
-                Log.d(TAG, "Worker " + threadId + " exiting, paused=" + paused.get());
-
             } catch (Exception e) {
-                // Only report errors that aren't caused by our own interrupt
                 if (!paused.get() && !Thread.currentThread().isInterrupted()) {
                     Log.e(TAG, "Worker " + threadId + " error: " + e.getMessage());
                     listener.onError(e.getMessage() == null ? "Network error" : e.getMessage());

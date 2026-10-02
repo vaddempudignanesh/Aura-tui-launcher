@@ -9,9 +9,9 @@ import java.io.ObjectOutputStream;
 import java.io.Serializable;
 
 public class DownloadTaskInfo implements Serializable {
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 2L;   // bumped for the new field
 
-    public String gid;              // stable ID for this task
+    public String gid;
     public String url;
     public String savePath;
     public String userAgent;
@@ -21,6 +21,9 @@ public class DownloadTaskInfo implements Serializable {
     public long[] startBytes;
     public long[] endBytes;
     public long[] downloadedBytes;
+
+    // ★ NEW: cumulative active download time across all resume sessions
+    public long elapsedMs = 0L;
 
     public DownloadTaskInfo(String gid, String url, String savePath,
                             long totalSize, int threadCount) {
@@ -57,7 +60,7 @@ public class DownloadTaskInfo implements Serializable {
         File file = new File(stateFilePath);
         if (!file.exists()) return null;
         try (ObjectInputStream ois =
-                     new ObjectInputStream(new FileInputStream(file))) {
+                     new ObjectInputStream(new FileInputStream(stateFilePath))) {
             return (DownloadTaskInfo) ois.readObject();
         } catch (Exception e) {
             return null;

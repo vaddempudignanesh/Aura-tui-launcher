@@ -149,12 +149,11 @@
             android:layout_height="34dp"
             android:layout_weight="1"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:src="@android:drawable/ic_menu_manage"
+            android:src="@drawable/aura_ic_incognito"
             android:contentDescription="New incognito tab"
             android:scaleType="centerInside"
             android:padding="4dp"
             app:tint="#FFAA66FF" />
-
         <ImageButton
             android:id="@+id/aura_btn_downloads"
             android:layout_width="0dp"
