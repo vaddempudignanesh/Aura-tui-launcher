@@ -122,7 +122,9 @@ public class GalleryActivity extends AppCompatActivity {
     private ViewPager2 fullscreenViewPager;
 
     private int overlayPendingSeekMs = -1;
-
+    private int savedVideoPositionMs = -1;
+    private String savedVideoPath = null;
+    private boolean savedVideoWasPlaying = false;
     private FullscreenAdapter fullscreenAdapter;
     private final List<String> fullscreenMediaPaths = new ArrayList<>();
     private int fullscreenCurrentPosition = 0;
@@ -471,23 +473,44 @@ public class GalleryActivity extends AppCompatActivity {
 
             @Override
             public void onVideoVisible(CustomVideoView videoView, int position) {
-                if (position == fullscreenCurrentPosition) {
-                    currentFullscreenPageIsVideo = true;
-                    currentFullscreenVideo = videoView;
-                    currentFullscreenVideoPosition = position;
-                    isOverlayVideoPlaying = true;
-                    overlayPendingSeekMs = -1;
-                    try { videoView.start(); } catch (Exception ignored) {}
-                    updateOverlayTitle();
-                    updateOverlaySeekBar();
-                    startOverlayProgressUpdate();
-                    if (!userIsSwiping) {
-                        if (videoControlContainer != null) {
-                            videoControlContainer.setVisibility(View.VISIBLE);
-                        }
-                        setFullscreenChromeVisible(true);
-                        overlayControlsVisible = true;
+                if (position != fullscreenCurrentPosition) return;
+
+                currentFullscreenPageIsVideo = true;
+                currentFullscreenVideo = videoView;
+                currentFullscreenVideoPosition = position;
+                overlayPendingSeekMs = -1;
+
+                String path = (position >= 0 && position < fullscreenMediaPaths.size())
+                        ? fullscreenMediaPaths.get(position) : null;
+
+                int restoreMs = -1;
+                boolean restorePlaying = true;
+                if (path != null && path.equals(savedVideoPath) && savedVideoPositionMs >= 0) {
+                    restoreMs = savedVideoPositionMs;
+                    restorePlaying = savedVideoWasPlaying;
+                }
+
+                try {
+                    if (restoreMs > 0) videoView.seekTo(restoreMs);
+                } catch (Exception ignored) {}
+
+                try {
+                    if (restorePlaying) videoView.start();
+                    else videoView.pause();
+                } catch (Exception ignored) {}
+
+                syncOverlayPlayPauseIcon();
+
+                updateOverlayTitle();
+                updateOverlaySeekBar();
+                startOverlayProgressUpdate();
+
+                if (!userIsSwiping) {
+                    if (videoControlContainer != null) {
+                        videoControlContainer.setVisibility(View.VISIBLE);
                     }
+                    setFullscreenChromeVisible(true);
+                    overlayControlsVisible = true;
                 }
             }
         });
@@ -884,9 +907,11 @@ public class GalleryActivity extends AppCompatActivity {
     private void toggleOverlayPlayPause() {
         if (currentFullscreenVideo == null) return;
         overlayPendingSeekMs = -1;
+
         boolean actuallyPlaying = false;
         try { actuallyPlaying = currentFullscreenVideo.isPlaying(); }
         catch (Exception ignored) {}
+
         if (actuallyPlaying) {
             currentFullscreenVideo.pause();
             isOverlayVideoPlaying = false;
@@ -900,8 +925,14 @@ public class GalleryActivity extends AppCompatActivity {
                 btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
             startOverlayProgressUpdate();
         }
-    }
 
+        // Remember the new state so it survives onPause/onResume.
+        savedVideoPositionMs = getEffectivePositionMs();
+        savedVideoPath = currentFullscreenVideoPosition >= 0
+                && currentFullscreenVideoPosition < fullscreenMediaPaths.size()
+                ? fullscreenMediaPaths.get(currentFullscreenVideoPosition) : null;
+        savedVideoWasPlaying = isOverlayVideoPlaying;
+    }
     private void startOverlayProgressUpdate() {
         videoHandler.removeCallbacks(overlayProgressRunnable);
         overlayProgressRunnable = new Runnable() {
@@ -944,7 +975,6 @@ public class GalleryActivity extends AppCompatActivity {
                 || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
                 || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv");
     }
-
     private void findAndStartVideoForPosition(int targetPosition) {
         try {
             RecyclerView rv = (RecyclerView) fullscreenViewPager.getChildAt(0);
@@ -973,17 +1003,16 @@ public class GalleryActivity extends AppCompatActivity {
                                 mp.seekTo(0);
                                 mp.start();
                                 isOverlayVideoPlaying = true;
-                                if (btnCenterPlayPause != null)
-                                    btnCenterPlayPause.setImageResource(
-                                            android.R.drawable.ic_media_pause);
+                                syncOverlayPlayPauseIcon();
                                 startOverlayProgressUpdate();
                             } catch (Exception ignored) {}
                         });
 
+                        // Already bound to the same view → just restore state
                         if (currentFullscreenVideo == vv
                                 && currentFullscreenVideoPosition == targetPosition) {
-                            vv.start();
-                            isOverlayVideoPlaying = true;
+                            restoreSavedPlaybackState(vv, targetPosition);
+                            syncOverlayPlayPauseIcon();
                             showAllControlsWithTimeout();
                             return;
                         }
@@ -991,7 +1020,6 @@ public class GalleryActivity extends AppCompatActivity {
                         currentFullscreenVideo = vv;
                         currentFullscreenVideoPosition = targetPosition;
                         currentFullscreenPageIsVideo = true;
-                        isOverlayVideoPlaying = true;
                         overlayPendingSeekMs = -1;
 
                         vv.setOnTapListener(this::onFullscreenTap);
@@ -1009,9 +1037,9 @@ public class GalleryActivity extends AppCompatActivity {
                             return true;
                         });
 
-                        vv.start();
-                        if (btnCenterPlayPause != null)
-                            btnCenterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
+                        restoreSavedPlaybackState(vv, targetPosition);
+                        syncOverlayPlayPauseIcon();
+
                         updateOverlayTitle();
                         updateOverlaySeekBar();
                         startOverlayProgressUpdate();
@@ -1026,6 +1054,50 @@ public class GalleryActivity extends AppCompatActivity {
                     findAndStartVideoForPosition(targetPosition);
             });
         } catch (Exception ignored) {}
+    }
+
+    private void restoreSavedPlaybackState(CustomVideoView vv, int position) {
+        String path = (position >= 0 && position < fullscreenMediaPaths.size())
+                ? fullscreenMediaPaths.get(position) : null;
+
+        int restoreMs = -1;
+        boolean restorePlaying = true;
+        if (path != null && path.equals(savedVideoPath) && savedVideoPositionMs >= 0) {
+            restoreMs = savedVideoPositionMs;
+            restorePlaying = savedVideoWasPlaying;
+        }
+
+        try {
+            if (restoreMs > 0) vv.seekTo(restoreMs);
+        } catch (Exception ignored) {}
+
+        try {
+            if (restorePlaying) {
+                vv.start();
+                isOverlayVideoPlaying = true;
+            } else {
+                vv.pause();
+                isOverlayVideoPlaying = false;
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * Drives the play/pause icon from the *actual* MediaPlayer state, not
+     * from a stale boolean. Call after any state change to the video.
+     */
+    private void syncOverlayPlayPauseIcon() {
+        boolean playing = false;
+        if (currentFullscreenVideo != null) {
+            try { playing = currentFullscreenVideo.isPlaying(); }
+            catch (Exception ignored) {}
+        }
+        isOverlayVideoPlaying = playing;
+        if (btnCenterPlayPause != null) {
+            btnCenterPlayPause.setImageResource(playing
+                    ? android.R.drawable.ic_media_pause
+                    : android.R.drawable.ic_media_play);
+        }
     }
 
     private void toggleOrientation() {
@@ -1160,32 +1232,14 @@ public class GalleryActivity extends AppCompatActivity {
         isOverlayVideoPlaying = false;
         overlayControlsVisible = false;
         overlayPendingSeekMs = -1;
+        savedVideoPositionMs = -1;
+        savedVideoPath = null;
+        savedVideoWasPlaying = false;
         hideMediaHudImmediately();
         videoHandler.removeCallbacks(overlayProgressRunnable);
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
 
-        try {
-            RecyclerView rv = (RecyclerView) fullscreenViewPager.getChildAt(0);
-            if (rv != null) {
-                for (int i = 0; i < rv.getChildCount(); i++) {
-                    View child = rv.getChildAt(i);
-                    if (child != null) {
-                        CustomVideoView vv = child.findViewById(R.id.fullscreen_video);
-                        if (vv != null) vv.stopPlayback();
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-
-        if (videoControlContainer != null) videoControlContainer.setVisibility(View.GONE);
-        fullscreenOverlay.setVisibility(View.GONE);
-        bottomBar.setVisibility(View.VISIBLE);
-
-        View topNav = findViewById(R.id.topNavBar);
-        if (topNav != null) topNav.setVisibility(View.VISIBLE);
-        updateTopNavBar();
     }
-
     private void updateFullscreenInfo(int position) {
         if (position < 0 || position >= fullscreenMediaPaths.size()) return;
         String path = fullscreenMediaPaths.get(position);
