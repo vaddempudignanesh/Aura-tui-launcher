@@ -2090,21 +2090,83 @@ public class AuraBrowserActivity extends AppCompatActivity {
             int type = hit != null ? hit.getType() : WebView.HitTestResult.UNKNOWN_TYPE;
             String extra = hit != null ? hit.getExtra() : null;
 
-            if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE
-                    || type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
+            // ── 1. Plain anchor: extra IS the href ─────────────────────
+            if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE) {
                 if (extra != null && !extra.isEmpty()) {
-                    showLinkMenu(wv, extra);
+                    showLinkMenu(wv, extra, null);
                     return;
                 }
             }
 
+            // ── 2. Image inside an anchor: extra is the IMG src, we
+            //      must walk the DOM to find the enclosing <a href>.
+            if (type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
+                if (extra != null && !extra.isEmpty()) {
+                    // Ask the page to resolve the anchor around this image.
+                    String js =
+                            "(function(){" +
+                                    "  try {" +
+                                    "    var imgSrc = " + jsStringLiteral(extra) + ";" +
+                                    // Find the image element by src
+                                    "    var imgs = document.querySelectorAll('img');" +
+                                    "    var img = null;" +
+                                    "    for (var i = 0; i < imgs.length; i++) {" +
+                                    "      if (imgs[i].src === imgSrc || imgs[i].currentSrc === imgSrc) {" +
+                                    "        img = imgs[i]; break;" +
+                                    "      }" +
+                                    "    }" +
+                                    "    if (!img) return JSON.stringify({a:'',i:imgSrc,t:''});" +
+                                    // Walk up to the nearest <a href>
+                                    "    var a = img.closest ? img.closest('a[href]') : null;" +
+                                    "    if (!a) {" +
+                                    "      var p = img.parentNode;" +
+                                    "      while (p && p.tagName !== 'A') p = p.parentNode;" +
+                                    "      if (p && p.tagName === 'A') a = p;" +
+                                    "    }" +
+                                    "    var href = a ? a.href : '';" +
+                                    "    var txt = a && a.textContent ? a.textContent.trim() : '';" +
+                                    "    return JSON.stringify({a: href, i: imgSrc, t: txt});" +
+                                    "  } catch (e) {" +
+                                    "    return JSON.stringify({a:'',i:'',t:''});" +
+                                    "  }" +
+                                    "})();";
+
+                    wv.evaluateJavascript(js, value -> {
+                        String anchorUrl = "";
+                        String imageUrl = extra;
+                        String anchorText = "";
+
+                        try {
+                            String decoded = decodeJsString(value);
+                            if (decoded != null && !decoded.isEmpty()) {
+                                org.json.JSONObject jo = new org.json.JSONObject(decoded);
+                                anchorUrl = jo.optString("a", "");
+                                String iu = jo.optString("i", "");
+                                if (!iu.isEmpty()) imageUrl = iu;
+                                anchorText = jo.optString("t", "");
+                            }
+                        } catch (Exception ignored) {}
+
+                        if (!anchorUrl.isEmpty()) {
+                            showLinkMenu(wv, anchorUrl, imageUrl);
+                        } else {
+                            // No anchor found — treat the image itself as the target
+                            showLinkMenu(wv, imageUrl, imageUrl);
+                        }
+                    });
+                    return;
+                }
+            }
+
+            // ── 3. Plain image: no anchor, offer image actions ─────────
             if (type == WebView.HitTestResult.IMAGE_TYPE) {
                 if (extra != null && !extra.isEmpty()) {
-                    showLinkMenu(wv, extra);
+                    showImageMenu(wv, extra);
                     return;
                 }
             }
 
+            // ── 4. Fallback: text word at the touch point ──────────────
             String js =
                     "(function(){" +
                             "  try{" +
@@ -2177,49 +2239,113 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return s;
     }
 
-    private void showLinkMenu(WebView wv, String url) {
-        if (url == null || url.isEmpty()) return;
+    private void showLinkMenu(WebView wv, String linkUrl, String imageUrl) {
+        if (linkUrl == null || linkUrl.isEmpty()) return;
 
-        final String linkUrl = url;
+        final String anchorUrl = linkUrl;
+        final String imgUrl = (imageUrl != null && !imageUrl.isEmpty()) ? imageUrl : null;
+
         wv.evaluateJavascript(
                 "(function(){try{"
                         + "var a=document.activeElement;"
                         + "if(!a||a.tagName!=='A'){"
                         + "  var all=document.querySelectorAll('a[href]');"
                         + "  for(var i=0;i<all.length;i++){"
-                        + "    if(all[i].href===" + jsStringLiteral(linkUrl) + "){a=all[i];break;}}"
+                        + "    if(all[i].href===" + jsStringLiteral(anchorUrl) + "){a=all[i];break;}}"
                         + "}"
                         + "return a&&a.textContent?a.textContent.trim():'';"
                         + "}catch(e){return '';}})();",
                 value -> {
                     String linkText = decodeJsString(value);
-                    if (linkText == null || linkText.isEmpty()) linkText = linkUrl;
+                    if (linkText == null || linkText.isEmpty()) linkText = anchorUrl;
 
                     final String finalText = linkText;
 
+                    // Build the item list dynamically so "Open image" only
+                    // appears when we actually detected an image.
+                    java.util.List<CharSequence> items = new java.util.ArrayList<>();
+                    final java.util.List<Integer> actions = new java.util.ArrayList<>();
+
+                    // If we have BOTH an anchor URL and an image URL, and
+                    // they differ, offer both "open link" and "open image".
+                    boolean hasImage = imgUrl != null && !imgUrl.equals(anchorUrl);
+
+                    if (hasImage) {
+                        items.add("Open image");          actions.add(0);
+                    }
+                    items.add("Open link");               actions.add(1);
+                    items.add("Open link in new tab");    actions.add(2);
+                    items.add("Open link in incognito");  actions.add(3);
+                    items.add("Download link");           actions.add(4);
+                    if (hasImage) {
+                        items.add("Download image");      actions.add(5);
+                    }
+                    items.add("Copy link URL");           actions.add(6);
+                    items.add("Copy link text");          actions.add(7);
+                    items.add("Share link");              actions.add(8);
+
+                    final boolean fHasImage = hasImage;
+
                     new AlertDialog.Builder(AuraBrowserActivity.this)
-                            .setTitle(trimForMenu(linkUrl))
-                            .setItems(new CharSequence[]{
-                                    "Open link",
-                                    "Open in new tab",
-                                    "Open in incognito",
-                                    "Download link",
-                                    "Copy link URL",
-                                    "Copy link text",
-                                    "Share link"
-                            }, (d, which) -> {
-                                switch (which) {
-                                    case 0: wv.loadUrl(linkUrl); break;
-                                    case 1: newTab(linkUrl, false); break;
-                                    case 2: newTab(linkUrl, true); break;
-                                    case 3: startNativeDownload(linkUrl, null, null, null); break;
-                                    case 4: copyToClipboard("URL", linkUrl); break;
-                                    case 5: copyToClipboard("Link text", finalText); break;
-                                    case 6: shareText(linkUrl); break;
-                                }
-                            })
+                            .setTitle(trimForMenu(anchorUrl))
+                            .setItems(items.toArray(new CharSequence[0]),
+                                    (d, which) -> {
+                                        int action = actions.get(which);
+                                        switch (action) {
+                                            case 0:  // Open image
+                                                wv.loadUrl(imgUrl);
+                                                break;
+                                            case 1:  // Open link
+                                                wv.loadUrl(anchorUrl);
+                                                break;
+                                            case 2:  // New tab
+                                                newTab(anchorUrl, false);
+                                                break;
+                                            case 3:  // Incognito
+                                                newTab(anchorUrl, true);
+                                                break;
+                                            case 4:  // Download link
+                                                startNativeDownload(anchorUrl, null, null, null);
+                                                break;
+                                            case 5:  // Download image
+                                                startNativeDownload(imgUrl, null, null, null);
+                                                break;
+                                            case 6:  // Copy link URL
+                                                copyToClipboard("URL", anchorUrl);
+                                                break;
+                                            case 7:  // Copy link text
+                                                copyToClipboard("Link text", finalText);
+                                                break;
+                                            case 8:  // Share link
+                                                shareText(anchorUrl);
+                                                break;
+                                        }
+                                    })
                             .show();
                 });
+    }
+
+    private void showImageMenu(WebView wv, String imageUrl) {
+        if (imageUrl == null || imageUrl.isEmpty()) return;
+
+        final String img = imageUrl;
+
+        new AlertDialog.Builder(AuraBrowserActivity.this)
+                .setTitle(trimForMenu(img))
+                .setItems(new CharSequence[]{
+                        "Open image",
+                        "Save image",
+                        "Copy image URL",
+                        "Share image URL"
+                }, (d, which) -> {
+                    switch (which) {
+                        case 0: wv.loadUrl(img); break;
+                        case 1: startNativeDownload(img, null, null, null); break;
+                        case 2: copyToClipboard("Image URL", img); break;
+                        case 3: shareText(img); break;
+                    }
+                })
+                .show();
     }
 
     private void showTextMenu(WebView wv, String text) {
