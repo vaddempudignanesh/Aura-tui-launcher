@@ -96,18 +96,30 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
         View view = LayoutInflater.from(context).inflate(R.layout.item_file, parent, false);
         return new FileViewHolder(view);
     }
-
     @Override
     public void onBindViewHolder(@NonNull FileViewHolder holder, int position) {
         File file = files.get(position);
         boolean isSelected = selectedFiles.contains(file);
 
         holder.tvName.setText(file.getName());
+
+        // ── Icon ────────────────────────────────────────────────
+        if (file.isDirectory()) {
+            holder.ivIcon.setImageResource(R.drawable.ic_folder);
+        } else {
+            holder.ivIcon.setImageResource(R.drawable.ic_file);
+        }
+
+        // ── Second line: sub-path (search mode) or size/count (normal) ──
+        FileManagerActivity.SearchResult sr = null;
         if (searchResults != null && position < searchResults.size()) {
-            FileManagerActivity.SearchResult r = searchResults.get(position);
-            String parentRel;
-            int slash = r.relativePath.lastIndexOf('/');
-            parentRel = (slash >= 0) ? r.relativePath.substring(0, slash) : "";
+            sr = searchResults.get(position);
+        }
+
+        if (sr != null) {
+            // Show the containing folder relative to the search root.
+            int slash = sr.relativePath.lastIndexOf('/');
+            String parentRel = (slash >= 0) ? sr.relativePath.substring(0, slash) : "";
             if (parentRel.isEmpty()) {
                 holder.tvSize.setText("•  current folder");
             } else {
@@ -115,22 +127,13 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
             }
         } else {
             if (file.isDirectory()) {
-                holder.ivIcon.setImageResource(R.drawable.ic_folder);
                 holder.tvSize.setText(getDirectorySizeText(file));
             } else {
-                holder.ivIcon.setImageResource(R.drawable.ic_file);
                 holder.tvSize.setText(formatSize(file.length()));
             }
         }
 
-        if (file.isDirectory()) {
-            holder.ivIcon.setImageResource(R.drawable.ic_folder);
-            holder.tvSize.setText(getDirectorySizeText(file));
-        } else {
-            holder.ivIcon.setImageResource(R.drawable.ic_file);
-            holder.tvSize.setText(formatSize(file.length()));
-        }
-
+        // ── Colours ─────────────────────────────────────────────
         if (isSelected) {
             holder.itemContainer.setBackgroundColor(Color.parseColor("#FF003300"));
             holder.tvName.setTextColor(Color.parseColor("#FF00FF00"));
@@ -141,6 +144,7 @@ public class FileManagerAdapter extends RecyclerView.Adapter<FileManagerAdapter.
             holder.tvSize.setTextColor(Color.parseColor("#FF00AA00"));
         }
 
+        // ── Clicks ──────────────────────────────────────────────
         holder.itemContainer.setOnClickListener(v -> {
             int pos = holder.getAdapterPosition();
             if (pos == RecyclerView.NO_POSITION) return;

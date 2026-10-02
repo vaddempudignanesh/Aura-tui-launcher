@@ -853,11 +853,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         searchBar.setVisibility(View.GONE);
         etSearch.setText("");
         currentSearchQuery = "";
-        searchGeneration++;                 // kill running search
-        adapter.setSearchResults(null);     // restore normal rendering
-        applySearchFilter();
+        searchGeneration++;
+        adapter.setSearchResults(null);     // clear sub-path line
+        applySearchFilter();                 // repopulates with currentFileList
     }
-
     private void hideKeyboard() {
         InputMethodManager imm = (InputMethodManager)
                 getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -866,7 +865,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     }
 
     private void applySearchFilter() {
-        // No query → just show the current directory, no recursion needed.
+        // No query → show the plain current directory.
         if (currentSearchQuery.isEmpty()) {
             displayedFileList = new ArrayList<>(currentFileList);
             adapter.setFiles(displayedFileList);
@@ -879,22 +878,21 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             return;
         }
 
-        // Snapshot for the background thread.
         final File root = currentDir;
         final String query = currentSearchQuery;
         final int generation = ++searchGeneration;
 
-        // Show a transient "Searching…" state without clearing the list.
-        tvEmpty.setVisibility(View.GONE);
+        // Cancel any in-flight search and show "Searching…" briefly.
+        tvEmpty.setText("Searching…");
+        tvEmpty.setVisibility(View.VISIBLE);
+        recyclerFiles.setVisibility(View.GONE);
 
         executor.execute(() -> {
             List<SearchResult> results = new ArrayList<>();
             recursiveSearch(root, root, query, results, generation);
 
-            // Stale? Discard.
             if (generation != searchGeneration) return;
 
-            // Sort: shorter relative path first, then alpha.
             Collections.sort(results, (a, b) -> {
                 int cmp = Integer.compare(a.relativePath.length(), b.relativePath.length());
                 if (cmp != 0) return cmp;
@@ -907,6 +905,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 displayedFileList = new ArrayList<>();
                 for (SearchResult r : results) displayedFileList.add(r.file);
 
+                // ORDER MATTERS: setFiles() triggers a rebind, so we must
+                // hand the adapter both lists before the rebind paints.
+                adapter.setFiles(displayedFileList);
                 adapter.setSearchResults(results);
 
                 boolean empty = results.isEmpty();
@@ -931,7 +932,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                                  List<SearchResult> out,
                                  int generation) {
         if (generation != searchGeneration) return;
-        if (out.size() >= 2000) return; // hard cap to avoid runaway memory
+        if (out.size() >= 2000) return;
 
         File[] children = current.listFiles();
         if (children == null) return;
@@ -939,8 +940,15 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         for (File child : children) {
             if (generation != searchGeneration) return;
 
-            String name = child.getName().toLowerCase(Locale.US);
-            if (name.contains(query)) {
+            // Skip Android/data + Android/obb — permission-protected and huge.
+            String name = child.getName();
+            if (current.getName().equals("Android")
+                    && (name.equals("data") || name.equals("obb"))) {
+                continue;
+            }
+
+            String lower = name.toLowerCase(Locale.US);
+            if (lower.contains(query)) {
                 String rel = relativize(root, child);
                 out.add(new SearchResult(child, rel));
             }
@@ -1117,9 +1125,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             currentSearchQuery = "";
             etSearch.setText("");
             searchBar.setVisibility(View.GONE);
-            searchGeneration++;             // ← NEW: kill any running search
-            adapter.setSearchResults(null); // ← NEW: restore normal rendering
         }
+        searchGeneration++;
+        adapter.setSearchResults(null);
 
         final int sortModeSnapshot = currentSortMode;
 
@@ -1142,7 +1150,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             });
         });
     }
-
     // ==================== UI Updates ====================
 
     private void updateSelectionUI() {
@@ -1197,7 +1204,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             // Jump to the folder that contains the matched file.
             File parent = file.getParentFile();
             if (parent != null && parent.canRead()) {
-                hideSearchBar();            // clears query + generation
+                hideSearchBar();
                 loadDirectory(parent);
                 return;
             }
@@ -1205,7 +1212,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         openFileWithMime(file, getMimeType(file));
     }
-
     @Override
     public void onFileLongClick(File file, int position) {
         adapter.setSelectionMode(true);
