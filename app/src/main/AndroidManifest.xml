@@ -369,6 +369,10 @@
             </intent-filter>
         </activity>
 
+        <meta-data
+            android:name="com.google.android.gms.version"
+            android:value="12451000" />
+
         <!-- ============ FULLSCREEN VIEWER ============ -->
         <activity
             android:name=".FullscreenViewerActivity"

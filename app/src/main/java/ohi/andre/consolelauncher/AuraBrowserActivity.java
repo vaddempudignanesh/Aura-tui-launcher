@@ -26,7 +26,6 @@ import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -50,7 +49,6 @@ import androidx.webkit.WebViewFeature;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -61,7 +59,7 @@ import ohi.andre.consolelauncher.managers.xml.options.Theme;
 import ohi.andre.consolelauncher.managers.xml.options.Ui;
 
 /**
- * AuraBrowser v7 — full code with CA-bundle fix and improved download panel.
+ * AuraBrowser v8 — hardened against popups, popunders, and navigation hijacking.
  */
 public class AuraBrowserActivity extends AppCompatActivity {
 
@@ -84,24 +82,29 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private ImageButton btnDownloads;
     private TextView tabCountView;
 
-
     // ── Dark mode ────────────────────────────────────────────────
     private boolean forceDark = false;
 
-    // ── Page loading state (for refresh/stop toggle) ────────────
+    // ── Page loading state ───────────────────────────────────────
     private boolean isPageLoading = false;
+
+    // ── Popup counter (badge shown briefly when a popup is killed) ──
+    private int blockedPopupsThisSession = 0;
+
     // ── Tabs ─────────────────────────────────────────────────────
     private static class Tab {
         WebView webView;
         boolean incognito;
         String url;
         String profileName;
+        SecureWebViewLayer.HostTracker hostTracker;
 
         Tab(WebView wv, boolean incog, String url, String profileName) {
             this.webView = wv;
             this.incognito = incog;
             this.url = url;
             this.profileName = profileName;
+            this.hostTracker = new SecureWebViewLayer.HostTracker();
         }
     }
 
@@ -117,7 +120,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
+        AuraCrashGuard.install();
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
@@ -136,7 +139,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
 
         setContentView(R.layout.activity_aura_browser);
-        // ── Initialize ad blocker on a background thread ─────────
+
         new Thread(() -> AdBlocker.init(getApplicationContext()), "adblock-init").start();
 
         topBar           = findViewById(R.id.aura_top_bar);
@@ -153,7 +156,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         btnDownloads     = findViewById(R.id.aura_btn_downloads);
         tabCountView     = findViewById(R.id.aura_tab_count);
 
-        // Address bar
         etUrl.setOnClickListener(v -> { etUrl.selectAll(); etUrl.requestFocus(); });
         etUrl.setOnFocusChangeListener((v, hasFocus) -> { if (hasFocus) etUrl.selectAll(); });
         etUrl.setOnEditorActionListener((v, actionId, event) -> {
@@ -166,11 +168,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
             return false;
         });
 
-        // Dark mode
         btnDarkMode.setOnClickListener(v -> toggleForceDark());
         updateDarkIconTint();
 
-        // Refresh / Stop toggle
         btnRefresh.setOnClickListener(v -> {
             Tab t = currentTab();
             if (t == null) return;
@@ -184,7 +184,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         });
 
-        // Footer nav
         btnBack.setOnClickListener(v -> {
             Tab t = currentTab();
             if (t != null && t.webView.canGoBack()) t.webView.goBack();
@@ -194,7 +193,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             if (t != null && t.webView.canGoForward()) t.webView.goForward();
         });
 
-        // Swipe on tabs badge to change tabs
         tabSwipeDetector = new GestureDetector(this,
                 new GestureDetector.SimpleOnGestureListener() {
                     @Override
@@ -234,11 +232,23 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         cleanupOrphanedIncognitoProfiles();
 
-        // Initial tab
         Intent intent = getIntent();
         boolean startIncognito = intent != null && intent.getBooleanExtra(EXTRA_INCOGNITO, false);
         String startUrl = intent != null ? intent.getStringExtra(EXTRA_URL) : null;
         newTab(startUrl, startIncognito);
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    //  Popup counter feedback
+    // ═════════════════════════════════════════════════════════════
+    private void onPopupBlocked() {
+        blockedPopupsThisSession++;
+        // Toast only on the first few so the user sees the shield is working
+        // but isn't spammed when the site fires 50 popups in a row.
+        if (blockedPopupsThisSession <= 3) {
+            runOnUiThread(() -> Toast.makeText(this,
+                    "Popup blocked", Toast.LENGTH_SHORT).show());
+        }
     }
 
     // ═════════════════════════════════════════════════════════════
@@ -274,11 +284,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         forceDark ? WebSettingsCompat.FORCE_DARK_ON
                                 : WebSettingsCompat.FORCE_DARK_OFF);
             }
-            if (forceDark) {
-                injectPureBlackCSS(wv);
-            } else {
-                wv.reload();
-            }
+            if (forceDark) injectPureBlackCSS(wv);
+            else wv.reload();
         } catch (Exception ignored) {}
     }
 
@@ -297,8 +304,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         "})();";
         wv.evaluateJavascript(css, null);
     }
-
-
 
     // ═════════════════════════════════════════════════════════════
     //  Tab sheet
@@ -439,9 +444,15 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     @SuppressLint("SetJavaScriptEnabled")
     private void newTab(String url, boolean incognito) {
-        WebView wv = new WebView(this);
+        WebView wv;
+        try {
+            wv = new WebView(this);
+        } catch (Throwable t) {
+            Log.e("AuraBrowser", "WebView construction failed", t);
+            Toast.makeText(this, "Could not open browser view", Toast.LENGTH_LONG).show();
+            return;
+        }
 
-        // Incognito MUST get its own profile before any WebView operation.
         String profileName = null;
         if (incognito) {
             profileName = attachFreshIncognitoProfile(wv);
@@ -505,11 +516,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             for (String name : names) {
                 if (name != null && name.startsWith(INCOGNITO_PROFILE_PREFIX)) {
-                    try {
-                        store.deleteProfile(name);
-                    } catch (Exception ignored) {
-                        // A profile still used by a live WebView is left alone.
-                    }
+                    try { store.deleteProfile(name); }
+                    catch (Exception ignored) {}
                 }
             }
         } catch (Exception e) {
@@ -543,7 +551,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         updateTabCountBadge();
 
-        // Reset refresh/stop icon when switching tabs
         isPageLoading = false;
         progressBar.setVisibility(View.GONE);
         btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
@@ -562,9 +569,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             t.webView.destroy();
         } catch (Exception ignored) {}
 
-        if (t.incognito) {
-            deleteIncognitoProfile(t.profileName);
-        }
+        if (t.incognito) deleteIncognitoProfile(t.profileName);
 
         tabs.remove(index);
 
@@ -623,7 +628,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         int pad = dp(8);
         root.setPadding(pad, pad, pad, pad);
 
-        // Header
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
@@ -642,15 +646,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
         clearBtn.setTextColor(0xFFFF6666);
         clearBtn.setTextSize(12);
         clearBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
-        clearBtn.setOnClickListener(v -> {
-            new Thread(() -> {
-                Aria2Manager.get(this).clearStopped();
-            }).start();
-        });
+        clearBtn.setOnClickListener(v -> new Thread(() ->
+                Aria2Manager.get(this).clearStopped()).start());
         header.addView(clearBtn);
         root.addView(header);
 
-        // Scrollable list
         ScrollView scroll = new ScrollView(this);
         scroll.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(340)));
@@ -678,19 +678,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
         final Handler h = new Handler(Looper.getMainLooper());
         final boolean[] alive = {true};
 
-        // Poll on a BACKGROUND thread, then post to main for UI
         Thread pollThread = new Thread(() -> {
             while (alive[0]) {
                 try {
-                    // ⬇️ RPC runs on THIS background thread, not main
                     final JSONArray arr = Aria2Manager.get(this).listAll();
-
-                    // Post UI update to main thread
                     h.post(() -> {
                         if (!dialog.isShowing()) return;
                         renderDownloadList(list, dialog, arr);
                     });
-
                     Thread.sleep(700);
                 } catch (InterruptedException ie) {
                     break;
@@ -705,10 +700,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         dialog.show();
     }
 
-    /**
-     * Renders the downloaded list. MUST be called on the main thread.
-     * The JSONArray has already been fetched on a background thread.
-     */
     private void renderDownloadList(LinearLayout list, Dialog dialog, JSONArray arr) {
         list.removeAllViews();
 
@@ -785,16 +776,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
             long spd = 0;
             try { spd = Long.parseLong(speed); } catch (Exception ignored) {}
-            // ⬇️ Only show speed for ACTIVE downloads — otherwise it's stale
-            if (!"active".equals(status)) {
-                spd = 0;
-            }
+            if (!"active".equals(status)) spd = 0;
             tvInfo.setText(statusIcon + "  " + pct + "%  •  " + formatSpeed(spd));
             tvInfo.setTextColor(0xFF999999);
             tvInfo.setTextSize(11);
             row.addView(tvInfo);
 
-            // Error message row (only for errors)
             if ("error".equals(status)) {
                 String errMsg = job.optString("errorMessage", "");
                 if (errMsg.isEmpty()) {
@@ -809,7 +796,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 row.addView(tvErr);
             }
 
-            // Action buttons
             LinearLayout actions = new LinearLayout(this);
             actions.setOrientation(LinearLayout.HORIZONTAL);
             actions.setPadding(0, dp(6), 0, 0);
@@ -818,28 +804,19 @@ public class AuraBrowserActivity extends AppCompatActivity {
             final String s = status;
 
             if ("active".equals(s)) {
-                actions.addView(makeActionButton("⏸ Pause", () -> {
-                    new Thread(() -> {
-                        Aria2Manager.get(this).pause(g);
-                    }).start();
-                }));
+                actions.addView(makeActionButton("⏸ Pause", () ->
+                        new Thread(() -> Aria2Manager.get(this).pause(g)).start()));
             } else if ("paused".equals(s)) {
-                actions.addView(makeActionButton("▶ Resume", () -> {
-                    new Thread(() -> {
-                        Aria2Manager.get(this).unpause(g);
-                    }).start();
-                }));
+                actions.addView(makeActionButton("▶ Resume", () ->
+                        new Thread(() -> Aria2Manager.get(this).unpause(g)).start()));
             } else if ("complete".equals(s)) {
                 actions.addView(makeActionButton("📂 Open", () ->
                         openFile(new File(Aria2Manager.DOWNLOAD_DIR, name))));
             }
 
             if (!"removed".equals(s)) {
-                actions.addView(makeActionButton("✕ Remove", () -> {
-                    new Thread(() -> {
-                        Aria2Manager.get(this).remove(g);
-                    }).start();
-                }));
+                actions.addView(makeActionButton("✕ Remove", () ->
+                        new Thread(() -> Aria2Manager.get(this).remove(g)).start()));
             }
 
             row.addView(actions);
@@ -903,6 +880,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(true);
 
+        // ── Popup suppression at the WebSettings layer ──
+        s.setJavaScriptCanOpenWindowsAutomatically(false);
+        s.setSupportMultipleWindows(true); // needed so our onCreateWindow sees them
+
         s.setCacheMode(incognito ? WebSettings.LOAD_NO_CACHE : WebSettings.LOAD_DEFAULT);
         s.setGeolocationEnabled(false);
         s.setSaveFormData(!incognito);
@@ -914,10 +895,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         }
 
-        // Normal tabs use the Default profile. Incognito uses only its
-        // separate profile cookie store.
         CookieManager cm = CookieManager.getInstance();
-
         if (incognito) {
             try {
                 Profile profile = WebViewCompat.getProfile(wv);
@@ -929,44 +907,29 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
 
         cm.setAcceptCookie(true);
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             cm.setAcceptThirdPartyCookies(wv, !incognito);
         }
 
+        // Determine host tracker for this WebView's tab BEFORE installing
+        // the secure layer so the callback can look it up.
+        SecureWebViewLayer.HostTracker tracker = trackerFor(wv);
+
+        SecureWebViewLayer.install(wv, this, tracker, this::onPopupBlocked);
+
+        // ── Page events WebViewClient on top of the security client ──
+        final WebViewClient baseSecurity = wv.getWebViewClient();
         wv.setWebViewClient(new WebViewClient() {
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                String url = request.getUrl().toString();
-
-                // Block ad domains in main frame
-                if (AdBlocker.isAd(url)) {
-                    Log.d("AuraBrowser", "Blocked nav: " + url);
-                    return true;
-                }
-
-                // Block non-web protocols (intent://, market://, whatsapp://, tel://)
-                if (!url.startsWith("http://") && !url.startsWith("https://")
-                        && !url.startsWith("file://") && !url.startsWith("content://")
-                        && !url.startsWith("about:")) {
-                    Log.d("AuraBrowser", "Blocked protocol: " + url);
-                    return true;
-                }
-
-                // Let WebView handle it normally (keeps history clean)
-                return false;
+                return baseSecurity.shouldOverrideUrlLoading(view, request);
             }
 
-            @Override
             @SuppressWarnings("deprecation")
+            @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                if (AdBlocker.isAd(url)) return true;
-                if (!url.startsWith("http://") && !url.startsWith("https://")
-                        && !url.startsWith("file://") && !url.startsWith("content://")
-                        && !url.startsWith("about:")) {
-                    return true;
-                }
-                return false;
+                return baseSecurity.shouldOverrideUrlLoading(view, url);
             }
 
             @Override
@@ -993,8 +956,16 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         });
 
-
+        // Wrap the security chrome client with a progress-aware one.
+        final WebChromeClient baseChrome = wv.getWebChromeClient();
         wv.setWebChromeClient(new WebChromeClient() {
+
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog,
+                                          boolean isUserGesture, android.os.Message resultMsg) {
+                return baseChrome.onCreateWindow(view, isDialog, isUserGesture, resultMsg);
+            }
+
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 if (view == currentTabWebView()) {
@@ -1004,10 +975,23 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         });
 
+        // ── Download listener — hands off to aria2c, WebView keeps going ──
         wv.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
+            // Reject suspicious 1x1 beacons and tracking pixels.
+            if (contentLength > 0 && contentLength < 4096
+                    && mimeType != null && mimeType.startsWith("image/")) {
+                return;
+            }
             Toast.makeText(this, "Downloading via aria2c...", Toast.LENGTH_SHORT).show();
             startAria2Download(url, userAgent, contentDisposition, mimeType);
         });
+    }
+
+    private SecureWebViewLayer.HostTracker trackerFor(WebView wv) {
+        for (Tab t : tabs) if (t.webView == wv) return t.hostTracker;
+        // If we don't yet have a Tab (called before tab creation finishes),
+        // create a fresh tracker — it will be replaced once the Tab exists.
+        return new SecureWebViewLayer.HostTracker();
     }
 
     private WebView currentTabWebView() {
@@ -1021,7 +1005,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
-
     // ═════════════════════════════════════════════════════════════
     //  URL handling
     // ═════════════════════════════════════════════════════════════
@@ -1033,6 +1016,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (url.isEmpty()) return;
 
         String finalUrl = normalizeUrl(url);
+        t.hostTracker.reset();  // user explicitly asked for this URL
         t.webView.loadUrl(finalUrl);
         t.url = finalUrl;
 
@@ -1090,16 +1074,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 t.webView.destroy();
             } catch (Exception ignored) {}
 
-            if (t.incognito) {
-                deleteIncognitoProfile(t.profileName);
-            }
+            if (t.incognito) deleteIncognitoProfile(t.profileName);
         }
         tabs.clear();
 
         if (isFinishing()) {
-            try {
-                Aria2Manager.get(this).stop();
-            } catch (Exception ignored) {}
+            try { Aria2Manager.get(this).stop(); } catch (Exception ignored) {}
         }
 
         super.onDestroy();
