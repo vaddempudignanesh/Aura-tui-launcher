@@ -108,6 +108,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
     private File pendingApkInstall = null;
 
+    private boolean rootAvailable = false;
+    private boolean rootGranted = false;
+
     // Views
     private DrawerLayout drawerLayout;
     private RecyclerView recyclerFiles;
@@ -175,10 +178,19 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         currentDir = new File(HOME_DIR);
 
+// Do NOT probe root at startup. `hasRootGranted()` runs `su -c id`,
+// which triggers the superuser prompt the moment the app launches.
+// Root state is checked lazily in `ensureRoot()`, only when the user
+// actually navigates into a root path.
+        rootAvailable = false;
+        rootGranted = false;
+
         if (!handleIncomingIntent(getIntent())) {
             loadDirectory(currentDir);
         }
     }
+
+
 
     private boolean isIncomingFileIntent(Intent intent) {
         if (intent == null) return false;
@@ -370,6 +382,27 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
+    private boolean ensureRoot() {
+        // Only probe su availability the first time we're actually asked.
+        if (!rootAvailable) rootAvailable = FileManagerRootHelper.isRootAvailable();
+
+        if (!rootAvailable) {
+            Toast.makeText(this,
+                    "This device is not rooted — root files cannot be accessed.",
+                    Toast.LENGTH_LONG).show();
+            return false;
+        }
+
+        if (rootGranted) return true;
+
+        rootGranted = FileManagerRootHelper.requestRoot();
+        if (!rootGranted) {
+            Toast.makeText(this,
+                    "Root permission denied. Grant superuser access to browse system files.",
+                    Toast.LENGTH_LONG).show();
+        }
+        return rootGranted;
+    }
     // ==================== Incoming File Handling ====================
 
     private boolean handleIncomingIntent(Intent intent) {
@@ -1096,6 +1129,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             items.add(new StorageAdapter.StorageItem("Internal Storage", internal.getAbsolutePath()));
         }
 
+        // Root at the bottom so it doesn't draw attention and isn't the first
+        // thing the user taps.
+        items.add(new StorageAdapter.StorageItem("Root (needs su)", "/"));
+
         File[] externalDirs = getExternalFilesDirs(null);
         if (externalDirs != null) {
             for (File dir : externalDirs) {
@@ -1111,7 +1148,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             }
         }
 
-        items.add(new StorageAdapter.StorageItem("Root", "/"));
         storageAdapter.setItems(items);
     }
 
@@ -1232,17 +1268,22 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         return total;
     }
 
-    // ==================== Directory Loading ====================
-
     private void loadDirectory(File dir) {
-        if (dir == null || !dir.exists() || !dir.canRead()) {
-            return;
+        if (dir == null) return;
+
+        boolean isRootPath = FileManagerRootHelper.needsRoot(dir.getAbsolutePath());
+
+        if (isRootPath) {
+            // Request root the first time the user opens /
+            if (!ensureRoot()) return;
+        } else {
+            // Normal user storage — same checks as before
+            if (!dir.exists() || !dir.canRead()) return;
         }
 
         currentDir = dir;
         tvPath.setText(dir.getAbsolutePath());
 
-        // Directory changed → clear active search filter
         if (!currentSearchQuery.isEmpty()) {
             currentSearchQuery = "";
             etSearch.setText("");
@@ -1252,12 +1293,22 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         adapter.setSearchResults(null);
 
         final int sortModeSnapshot = currentSortMode;
+        final boolean useRoot = isRootPath;
 
         executor.execute(() -> {
-            File[] files = dir.listFiles();
             List<File> fileList = new ArrayList<>();
-            if (files != null) fileList.addAll(Arrays.asList(files));
 
+            if (useRoot) {
+                File[] children = FileManagerRootHelper.list(dir);
+                if (children != null) fileList.addAll(Arrays.asList(children));
+            } else {
+                File[] files = dir.listFiles();
+                if (files != null) fileList.addAll(Arrays.asList(files));
+            }
+
+            // Size sort uses the same sizeCache; when using root we can still
+            // compute sizes but they'll be 0 for entries that can't be stat'd,
+            // which is acceptable — they'll sink to the bottom.
             if (sortModeSnapshot == SORT_SIZE_BIG || sortModeSnapshot == SORT_SIZE_SMALL) {
                 precomputeSizes(fileList);
             }
@@ -1315,17 +1366,11 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
 
         if (file.isDirectory()) {
-            // Directories still navigate — but clear the search first so
-            // the user lands in a clean view of the folder.
-            if (!currentSearchQuery.isEmpty()) {
-                hideSearchBar();
-            }
+            if (!currentSearchQuery.isEmpty()) hideSearchBar();
             loadDirectory(file);
             return;
         }
 
-        // File (whether or not we're in search mode) → just open it.
-        // Don't navigate anywhere.
         openFileWithMime(file, getMimeType(file));
     }
     @Override
@@ -1338,6 +1383,17 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     // ==================== UNIVERSAL FILE OPENING ====================
 
     private void openFileWithMime(File file, String mimeType) {
+        if (FileManagerRootHelper.needsRoot(file.getAbsolutePath())) {
+            if (!ensureRoot()) return;
+            File local = copyRootFileToCache(file);
+            if (local == null) {
+                Toast.makeText(this, "Could not read file even with root.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            FileManagerActivity.this.openFileWithMime(local,
+                    mimeType != null ? mimeType : getMimeType(file));
+            return;
+        }
         if (!file.exists()) {
             Toast.makeText(this, "File no longer exists", Toast.LENGTH_SHORT).show();
             return;
@@ -1387,6 +1443,25 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             return;
         }
         tryOpenWithDefaultApp(file, mimeType);
+    }
+
+    /**
+     * Copies a root-only file to our cache dir so external apps can open it.
+     * Returns the local copy, or null on failure.
+     */
+    private File copyRootFileToCache(File rootFile) {
+        try {
+            File cacheDir = new File(getCacheDir(), "root");
+            if (!cacheDir.exists()) cacheDir.mkdirs();
+            File dest = new File(cacheDir, rootFile.getName());
+            String cmd = "cat " + FileManagerRootHelper.shellEscape(rootFile.getAbsolutePath())
+                    + " > " + FileManagerRootHelper.shellEscape(dest.getAbsolutePath());
+            List<String> out = FileManagerRootHelper.run(cmd);
+            if (out == null || !dest.exists() || dest.length() == 0) return null;
+            return dest;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
 
