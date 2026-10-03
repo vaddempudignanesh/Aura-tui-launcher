@@ -16,18 +16,15 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import ohi.andre.consolelauncher.calculator.CalculatorActivity;
 import ohi.andre.consolelauncher.commands.Command;
 import ohi.andre.consolelauncher.commands.CommandGroup;
 import ohi.andre.consolelauncher.commands.CommandTuils;
 import ohi.andre.consolelauncher.commands.main.MainPack;
 import ohi.andre.consolelauncher.commands.main.raw.location;
 import ohi.andre.consolelauncher.commands.main.specific.RedirectCommand;
-import ohi.andre.consolelauncher.gallery.GalleryActivity;
 import ohi.andre.consolelauncher.managers.AliasManager;
 import ohi.andre.consolelauncher.managers.AppsManager;
 import ohi.andre.consolelauncher.managers.ContactManager;
-import ohi.andre.consolelauncher.managers.HTMLExtractManager;
 import ohi.andre.consolelauncher.managers.RssManager;
 import ohi.andre.consolelauncher.managers.TerminalManager;
 import ohi.andre.consolelauncher.managers.ThemeManager;
@@ -127,7 +124,6 @@ public class MainManager {
     private ContactManager contactManager;
     private MusicManager2 musicManager2;
     private ThemeManager themeManager;
-    private HTMLExtractManager htmlExtractManager;
 
     private BroadcastReceiver receiver;
 
@@ -198,7 +194,6 @@ public class MainManager {
         rssManager = new RssManager(mContext, client);
         themeManager = new ThemeManager(client, mContext, c);
         musicManager2 = XMLPrefsManager.getBoolean(Behavior.enable_music) ? new MusicManager2(mContext) : null;
-        htmlExtractManager = new HTMLExtractManager(mContext, client);
 
         mainPack = new MainPack(mContext, group, aliasManager, appsManager, musicManager2, contactManager, redirectator, rssManager, client);
 
@@ -359,7 +354,6 @@ public class MainManager {
         TuiLocationManager.disposeStatic();
 
         themeManager.dispose();
-        htmlExtractManager.dispose(mContext);
         aliasManager.dispose();
         LocalBroadcastManager.getInstance(mContext.getApplicationContext()).unregisterReceiver(receiver);
 

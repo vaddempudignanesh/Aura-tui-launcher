@@ -1,0 +1,233 @@
+/home/vaddempudignanesh/Downloads/TUI-ConsoleLauncher-master/app/src/main/java/ohi/andre/consolelauncher
+├── alarm
+│   ├── AlarmActivity.java
+│   ├── AlarmAdapter.java
+│   ├── AlarmModel.java
+│   ├── AlarmReceiver.java
+│   ├── AlarmRingActivity.java
+│   ├── AlarmService.java
+│   ├── AlarmStore.java
+│   └── TimerRingActivity.java
+├── browser
+│   ├── AdBlocker.java
+│   ├── AuraBrowserActivity.java
+│   ├── AuraCrashGuard.java
+│   ├── AuraDownloadHistory.java
+│   ├── AuraDownloadService.java
+│   ├── DownloadTaskInfo.java
+│   ├── NativeEngine.java
+│   ├── SecureWebViewLayer.java
+│   ├── TabStore.java
+│   └── TrackingFilter.java
+├── calculator
+│   └── CalculatorActivity.java
+├── commands
+│   ├── CommandAbstraction.java
+│   ├── CommandGroup.java
+│   ├── Command.java
+│   ├── CommandsPreferences.java
+│   ├── CommandTuils.java
+│   ├── ExecutePack.java
+│   ├── main
+│   │   ├── MainPack.java
+│   │   ├── Param.java
+│   │   ├── raw
+│   │   │   ├── airplane.java
+│   │   │   ├── alarm.java
+│   │   │   ├── alias.java
+│   │   │   ├── apps.java
+│   │   │   ├── bbman.java
+│   │   │   ├── beep.java
+│   │   │   ├── bluetooth.java
+│   │   │   ├── brightness.java
+│   │   │   ├── browser.java
+│   │   │   ├── calc.java
+│   │   │   ├── calculator.java
+│   │   │   ├── call.java
+│   │   │   ├── changelog.java
+│   │   │   ├── clear.java
+│   │   │   ├── cntcts.java
+│   │   │   ├── config.java
+│   │   │   ├── ctrlc.java
+│   │   │   ├── data.java
+│   │   │   ├── devutils.java
+│   │   │   ├── donate.java
+│   │   │   ├── exit.java
+│   │   │   ├── filemanager.java
+│   │   │   ├── flash.java
+│   │   │   ├── gallery.java
+│   │   │   ├── help.java
+│   │   │   ├── htmlextract.java
+│   │   │   ├── location.java
+│   │   │   ├── music.java
+│   │   │   ├── notes.java
+│   │   │   ├── notifications.java
+│   │   │   ├── open.java
+│   │   │   ├── rate.java
+│   │   │   ├── refresh.java
+│   │   │   ├── regex.java
+│   │   │   ├── reply.java
+│   │   │   ├── restart.java
+│   │   │   ├── rss.java
+│   │   │   ├── search.java
+│   │   │   ├── share.java
+│   │   │   ├── shortcut.java
+│   │   │   ├── status.java
+│   │   │   ├── theme.java
+│   │   │   ├── time.java
+│   │   │   ├── tui.java
+│   │   │   ├── tuiweather.java
+│   │   │   ├── tuixt.java
+│   │   │   ├── tutorial.java
+│   │   │   ├── uninstall.java
+│   │   │   ├── username.java
+│   │   │   ├── vibrate.java
+│   │   │   ├── volume.java
+│   │   │   └── wifi.java
+│   │   └── specific
+│   │       ├── APICommand.java
+│   │       ├── ParamCommand.java
+│   │       ├── PermanentSuggestionCommand.java
+│   │       └── RedirectCommand.java
+│   └── tuixt
+│       ├── raw
+│       │   ├── exit.java
+│       │   ├── help.java
+│       │   └── save.java
+│       ├── TuixtActivity.java
+│       └── TuixtPack.java
+├── filemanager
+│   ├── FileLog.java
+│   ├── FileManagerActivity.java
+│   ├── FileManagerAdapter.java
+│   └── FileManagerRootHelper.java
+├── gallery
+│   ├── AlbumAdapter.java
+│   ├── CustomVideoView.java
+│   ├── FullscreenAdapter.java
+│   ├── FullscreenViewerActivity.java
+│   ├── GalleryActivity.java
+│   ├── GalleryAdapter.java
+│   ├── ImageViewerActivity.java
+│   ├── ThumbnailCache.java
+│   └── ZoomableImageView.java
+├── LauncherActivity.java
+├── MainManager.java
+├── managers
+│   ├── AliasManager.java
+│   ├── AppsManager.java
+│   ├── ChangelogManager.java
+│   ├── ContactManager.java
+│   ├── FileManager.java
+│   ├── flashlight
+│   │   ├── Constants.java
+│   │   ├── Device.java
+│   │   ├── DeviceListener.java
+│   │   ├── Flashlight1.java
+│   │   ├── Flashlight2.java
+│   │   ├── Flashlight.java
+│   │   ├── OutputDevice.java
+│   │   ├── OutputDeviceListener.java
+│   │   ├── Torch.java
+│   │   └── TorchManager.java
+│   ├── HTMLExtractManager.java
+│   ├── music
+│   │   ├── MusicController.java
+│   │   ├── MusicManager2.java
+│   │   ├── MusicService.java
+│   │   └── Song.java
+│   ├── NotesManager.java
+│   ├── notifications
+│   │   ├── KeeperService.java
+│   │   ├── NotificationManager.java
+│   │   ├── NotificationMonitorService.java
+│   │   ├── NotificationService.java
+│   │   └── reply
+│   │       ├── BoundApp.java
+│   │       ├── NotificationWear.java
+│   │       └── ReplyManager.java
+│   ├── RegexManager.java
+│   ├── RssManager.java
+│   ├── suggestions
+│   │   ├── HideSuggestionViewValues.java
+│   │   ├── RemoverRunnable.java
+│   │   ├── SuggestionRunnable.java
+│   │   ├── SuggestionsManager.java
+│   │   └── SuggestionTextWatcher.java
+│   ├── TerminalManager.java
+│   ├── ThemeManager.java
+│   ├── TimeManager.java
+│   ├── TuiLocationManager.java
+│   └── xml
+│       ├── classes
+│       │   ├── XMLPrefsElement.java
+│       │   ├── XMLPrefsEntry.java
+│       │   ├── XMLPrefsList.java
+│       │   └── XMLPrefsSave.java
+│       ├── options
+│       │   ├── Apps.java
+│       │   ├── Behavior.java
+│       │   ├── Cmd.java
+│       │   ├── Notifications.java
+│       │   ├── Reply.java
+│       │   ├── Rss.java
+│       │   ├── Suggestions.java
+│       │   ├── Theme.java
+│       │   ├── Toolbar.java
+│       │   └── Ui.java
+│       └── XMLPrefsManager.java
+├── mediareader
+│   ├── DocReader.java
+│   ├── DocxReader.java
+│   ├── PdfTextExtractor.java
+│   └── PdfViewerActivity.java
+├── musicplayer
+│   ├── MusicPlaybackService.java
+│   └── MusicPlayerActivity.java
+├── permissionhandler
+│   ├── StorageAdapter.java
+│   └── StoragePermissionHelper.java
+├── tuils
+│   ├── AllowEqualsSequence.java
+│   ├── Assist.java
+│   ├── BusyBoxInstaller.java
+│   ├── CustomExceptionHandler.java
+│   ├── GenericFileProvider.java
+│   ├── html_escape
+│   │   ├── Html4EscapeSymbolsInitializer.java
+│   │   ├── Html5EscapeSymbolsInitializer.java
+│   │   ├── HtmlEscape.java
+│   │   ├── HtmlEscapeLevel.java
+│   │   ├── HtmlEscapeSymbols.java
+│   │   ├── HtmlEscapeType.java
+│   │   └── HtmlEscapeUtil.java
+│   ├── interfaces
+│   │   ├── CommandExecuter.java
+│   │   ├── Inputable.java
+│   │   ├── OnBatteryUpdate.java
+│   │   ├── OnRedirectionListener.java
+│   │   ├── OnTextChanged.java
+│   │   ├── Outputable.java
+│   │   ├── Redirectator.java
+│   │   └── Reloadable.java
+│   ├── libsuperuser
+│   │   ├── ShellHolder.java
+│   │   ├── Shell.java
+│   │   └── StreamGobbler.java
+│   ├── LongClickableSpan.java
+│   ├── LongClickMovementMethod.java
+│   ├── MimeTypes.java
+│   ├── NetworkUtils.java
+│   ├── OutlineEditText.java
+│   ├── OutlineTextView.java
+│   ├── PrivateIOReceiver.java
+│   ├── PublicIOReceiver.java
+│   ├── SimpleMutableEntry.java
+│   ├── StoppableThread.java
+│   ├── stuff
+│   │   ├── FakeLauncherActivity.java
+│   │   └── PolicyReceiver.java
+│   └── Tuils.java
+└── UIManager.java
+
+29 directories, 202 files

@@ -16,7 +16,6 @@ import ohi.andre.consolelauncher.managers.AppsManager;
 import ohi.andre.consolelauncher.managers.ContactManager;
 import ohi.andre.consolelauncher.managers.FileManager;
 import ohi.andre.consolelauncher.managers.FileManager.DirInfo;
-import ohi.andre.consolelauncher.managers.HTMLExtractManager;
 import ohi.andre.consolelauncher.managers.RssManager;
 import ohi.andre.consolelauncher.managers.music.MusicManager2;
 import ohi.andre.consolelauncher.managers.notifications.NotificationManager;
@@ -186,12 +185,7 @@ public class CommandTuils {
         ArgInfo a = noSpaceString(input);
         if(a.found) {
             String s = (String) a.arg;
-            try {
-                HTMLExtractManager.StoreableValue.Type.valueOf(s);
-                return a;
-            } catch (Exception e) {
-                return null;
-            }
+
         }
 
         a.found = false;
