@@ -69,6 +69,9 @@ public class AlarmAdapter extends RecyclerView.Adapter<AlarmAdapter.VH> {
         }
         selectionMode = false;
         selectedIds.clear();
+        // Sync the foreground service with the new state of the store.
+        if (AlarmStore.hasActive(ctx)) AlarmService.start(ctx);
+        else AlarmService.stop(ctx);
         onSelectionChanged.onSelectionChanged(0);
     }
 
@@ -84,6 +87,9 @@ public class AlarmAdapter extends RecyclerView.Adapter<AlarmAdapter.VH> {
                 }
             }
         }
+        // Sync the foreground service with the new state of the store.
+        if (AlarmStore.hasActive(ctx)) AlarmService.start(ctx);
+        else AlarmService.stop(ctx);
         notifyDataSetChanged();
     }
 
@@ -120,8 +126,17 @@ public class AlarmAdapter extends RecyclerView.Adapter<AlarmAdapter.VH> {
         h.enable.setOnCheckedChangeListener((v, checked) -> {
             m.enabled = checked;
             AlarmStore.update(ctx, m);
-            if (checked) AlarmReceiver.schedule(ctx, m);
-            else AlarmReceiver.cancel(ctx, m);
+            if (checked) {
+                AlarmReceiver.schedule(ctx, m);
+                AlarmService.start(ctx);
+            } else {
+                AlarmReceiver.cancel(ctx, m);
+                if (!AlarmStore.hasActive(ctx)) {
+                    AlarmService.stop(ctx);
+                } else {
+                    AlarmService.start(ctx); // refresh notification text
+                }
+            }
         });
 
         h.row.setBackground(ctx.getDrawable(selected

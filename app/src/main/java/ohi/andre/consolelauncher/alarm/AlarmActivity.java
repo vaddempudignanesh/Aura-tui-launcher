@@ -69,6 +69,7 @@ public class AlarmActivity extends Activity {
             recycler.setVisibility(View.VISIBLE);
             stopwatchView.setVisibility(View.GONE);
             timerView.setVisibility(View.GONE);
+            add.setVisibility(View.VISIBLE);
             emptyView.setVisibility(adapter.getItemCount() == 0
                     ? View.VISIBLE : View.GONE);
             tabAlarm.setTextColor(0xFF00FF00);
@@ -80,6 +81,7 @@ public class AlarmActivity extends Activity {
             emptyView.setVisibility(View.GONE);
             stopwatchView.setVisibility(View.VISIBLE);
             timerView.setVisibility(View.GONE);
+            add.setVisibility(View.GONE);
             tabAlarm.setTextColor(0xFF00AA00);
             tabStopwatch.setTextColor(0xFF00FF00);
             tabTimer.setTextColor(0xFF00AA00);
@@ -89,6 +91,7 @@ public class AlarmActivity extends Activity {
             emptyView.setVisibility(View.GONE);
             stopwatchView.setVisibility(View.GONE);
             timerView.setVisibility(View.VISIBLE);
+            add.setVisibility(View.GONE);
             tabAlarm.setTextColor(0xFF00AA00);
             tabStopwatch.setTextColor(0xFF00AA00);
             tabTimer.setTextColor(0xFF00FF00);
