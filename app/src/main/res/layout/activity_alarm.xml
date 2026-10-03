@@ -18,7 +18,53 @@
         android:typeface="monospace"
         android:background="#001100"/>
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#000000"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp">
+
+        <TextView
+            android:id="@+id/tab_alarm"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:padding="10dp"
+            android:text="ALARM"
+            android:textColor="#00FF00"
+            android:textSize="13sp"
+            android:typeface="monospace"/>
+
+        <TextView
+            android:id="@+id/tab_stopwatch"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:padding="10dp"
+            android:text="STOPWATCH"
+            android:textColor="#00AA00"
+            android:textSize="13sp"
+            android:typeface="monospace"/>
+
+        <TextView
+            android:id="@+id/tab_timer"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:padding="10dp"
+            android:text="TIMER"
+            android:textColor="#00AA00"
+            android:textSize="13sp"
+            android:typeface="monospace"/>
+    </LinearLayout>
+
     <FrameLayout
+        android:id="@+id/alarm_area"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
@@ -40,7 +86,228 @@
             android:textSize="16sp"
             android:typeface="monospace"
             android:visibility="gone"/>
+
+        <LinearLayout
+            android:id="@+id/stopwatch_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/stopwatch_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="00:00:00.0"
+                android:textColor="#00FF00"
+                android:textSize="48sp"
+                android:typeface="monospace"
+                android:textStyle="bold"/>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="32dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/stopwatch_start"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="12dp"
+                    android:background="@drawable/bg_button_green"
+                    android:text="START"
+                    android:textColor="#000000"
+                    android:typeface="monospace"/>
+
+                <Button
+                    android:id="@+id/stopwatch_reset"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_card_alarm"
+                    android:text="RESET"
+                    android:textColor="#00FF00"
+                    android:typeface="monospace"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/timer_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/timer_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="00:00:00"
+                android:textColor="#00FF00"
+                android:textSize="48sp"
+                android:typeface="monospace"
+                android:textStyle="bold"/>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <EditText
+                    android:id="@+id/timer_hours"
+                    android:layout_width="72dp"
+                    android:layout_height="wrap_content"
+                    android:hint="HH"
+                    android:inputType="number"
+                    android:maxLength="2"
+                    android:textColor="#00FF00"
+                    android:textColorHint="#00AA00"
+                    android:background="#001100"
+                    android:padding="10dp"
+                    android:gravity="center"
+                    android:typeface="monospace"/>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_marginEnd="6dp"
+                    android:text=":"
+                    android:textColor="#00FF00"
+                    android:textSize="22sp"
+                    android:typeface="monospace"/>
+
+                <EditText
+                    android:id="@+id/timer_minutes"
+                    android:layout_width="72dp"
+                    android:layout_height="wrap_content"
+                    android:hint="MM"
+                    android:inputType="number"
+                    android:maxLength="2"
+                    android:textColor="#00FF00"
+                    android:textColorHint="#00AA00"
+                    android:background="#001100"
+                    android:padding="10dp"
+                    android:gravity="center"
+                    android:typeface="monospace"/>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_marginEnd="6dp"
+                    android:text=":"
+                    android:textColor="#00FF00"
+                    android:textSize="22sp"
+                    android:typeface="monospace"/>
+
+                <EditText
+                    android:id="@+id/timer_seconds"
+                    android:layout_width="72dp"
+                    android:layout_height="wrap_content"
+                    android:hint="SS"
+                    android:inputType="number"
+                    android:maxLength="2"
+                    android:textColor="#00FF00"
+                    android:textColorHint="#00AA00"
+                    android:background="#001100"
+                    android:padding="10dp"
+                    android:gravity="center"
+                    android:typeface="monospace"/>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/timer_start"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="12dp"
+                    android:background="@drawable/bg_button_green"
+                    android:text="START"
+                    android:textColor="#000000"
+                    android:typeface="monospace"/>
+
+                <Button
+                    android:id="@+id/timer_cancel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_card_alarm"
+                    android:text="CANCEL"
+                    android:textColor="#FF5555"
+                    android:typeface="monospace"/>
+            </LinearLayout>
+        </LinearLayout>
     </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/alarm_selection_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#001100"
+        android:padding="8dp"
+        android:gravity="center_vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/alarm_selection_count"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="0 selected"
+            android:textColor="#00FF00"
+            android:textSize="13sp"
+            android:typeface="monospace"/>
+
+        <TextView
+            android:id="@+id/alarm_select_enable"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ENABLE"
+            android:textColor="#00FF00"
+            android:textSize="12sp"
+            android:padding="10dp"
+            android:typeface="monospace"/>
+
+        <TextView
+            android:id="@+id/alarm_select_disable"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DISABLE"
+            android:textColor="#FFAA00"
+            android:textSize="12sp"
+            android:padding="10dp"
+            android:typeface="monospace"/>
+
+        <TextView
+            android:id="@+id/alarm_select_delete"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DELETE"
+            android:textColor="#FF5555"
+            android:textSize="12sp"
+            android:padding="10dp"
+            android:typeface="monospace"/>
+
+        <TextView
+            android:id="@+id/alarm_select_close"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="✕"
+            android:textColor="#00FF00"
+            android:textSize="16sp"
+            android:padding="10dp"
+            android:typeface="monospace"/>
+    </LinearLayout>
 
     <Button
         android:id="@+id/alarm_add"

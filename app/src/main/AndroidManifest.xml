@@ -223,6 +223,15 @@
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
 
+        <activity
+            android:name=".alarm.TimerRingActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.AppCompat.NoActionBar"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
             android:name=".gallery.GalleryActivity"

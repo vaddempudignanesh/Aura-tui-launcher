@@ -1,24 +1,33 @@
 package ohi.andre.consolelauncher.alarm;
 
 import android.app.AlarmManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 
+import androidx.core.app.NotificationCompat;
+
 import java.util.Calendar;
 import java.util.List;
+
+import ohi.andre.consolelauncher.R;
 
 public class AlarmReceiver extends BroadcastReceiver {
 
     public static final String ACTION_FIRE = "ohi.andre.consolelauncher.alarm.FIRE";
     public static final String EXTRA_ID = "alarm_id";
 
+    private static final String CH_RING = "ohi_alarm_ring";
+    private static final int RING_NOTIF_ID = 9922;
+
     @Override
     public void onReceive(Context context, Intent intent) {
         if (context == null || intent == null) return;
-
         String action = intent.getAction();
         if (action == null) return;
 
@@ -35,14 +44,16 @@ public class AlarmReceiver extends BroadcastReceiver {
 
         if (ACTION_FIRE.equals(action)) {
             long id = intent.getLongExtra(EXTRA_ID, -1);
+
             Intent ring = new Intent(context, AlarmRingActivity.class);
             ring.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                     | Intent.FLAG_ACTIVITY_CLEAR_TOP
                     | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
             ring.putExtra(EXTRA_ID, id);
-            context.startActivity(ring);
+            try { context.startActivity(ring); } catch (Exception ignored) { }
 
-            // re-arm repeat or auto-disable one-shot
+            postAlarmNotification(context, id);
+
             List<AlarmModel> list = AlarmStore.load(context);
             for (AlarmModel m : list) {
                 if (m.id != id) continue;
@@ -54,8 +65,62 @@ public class AlarmReceiver extends BroadcastReceiver {
                 }
                 break;
             }
-            if (!AlarmStore.hasActive(context)) AlarmService.stop(context);
+
+            if (AlarmStore.hasActive(context)) AlarmService.start(context);
+            else AlarmService.stop(context);
         }
+    }
+
+    private static void postAlarmNotification(Context c, long id) {
+        NotificationManager nm = (NotificationManager)
+                c.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (nm.getNotificationChannel(CH_RING) == null) {
+                NotificationChannel ch = new NotificationChannel(
+                        CH_RING, "Alarm ringing",
+                        NotificationManager.IMPORTANCE_HIGH);
+                ch.setDescription("Shown when an alarm fires.");
+                ch.enableVibration(false);
+                ch.setSound(null, null);
+                ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+                nm.createNotificationChannel(ch);
+            }
+        }
+
+        Intent ring = new Intent(c, AlarmRingActivity.class);
+        ring.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+        ring.putExtra(EXTRA_ID, id);
+
+        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+            piFlags |= PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent fullScreen = PendingIntent.getActivity(
+                c, (int) (id & 0x7fffffff), ring, piFlags);
+
+        // Silent — the ringtone plays from AlarmRingActivity only.
+        NotificationCompat.Builder b = new NotificationCompat.Builder(c, CH_RING)
+                .setSmallIcon(R.drawable.ic_alarm)
+                .setContentTitle("Alarm")
+                .setContentText("Tap to stop")
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setAutoCancel(true)
+                .setOngoing(true)
+                .setSilent(true)
+                .setContentIntent(fullScreen)
+                .setFullScreenIntent(fullScreen, true);
+
+        try { nm.notify(RING_NOTIF_ID, b.build()); } catch (SecurityException ignored) { }
+    }
+
+    public static void cancelAlarmNotification(Context c) {
+        NotificationManager nm = (NotificationManager)
+                c.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) nm.cancel(RING_NOTIF_ID);
     }
 
     public static void rescheduleAll(Context c) {
@@ -108,7 +173,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         return PendingIntent.getBroadcast(c, (int) (m.id & 0x7fffffff), i, flags);
     }
 
-    private static long nextTrigger(AlarmModel m) {
+    public static long nextTrigger(AlarmModel m) {
         Calendar now = Calendar.getInstance();
         Calendar c = Calendar.getInstance();
         c.set(Calendar.HOUR_OF_DAY, m.hour);
@@ -117,9 +182,8 @@ public class AlarmReceiver extends BroadcastReceiver {
         c.set(Calendar.MILLISECOND, 0);
 
         if (m.repeats()) {
-            // find next matching day
             for (int i = 0; i < 8; i++) {
-                int day = c.get(Calendar.DAY_OF_WEEK) - 1; // 0=Sun
+                int day = c.get(Calendar.DAY_OF_WEEK) - 1;
                 boolean match = false;
                 for (int d : m.repeatDays) if (d == day) { match = true; break; }
                 if (match && c.getTimeInMillis() > now.getTimeInMillis()) {
@@ -127,7 +191,6 @@ public class AlarmReceiver extends BroadcastReceiver {
                 }
                 c.add(Calendar.DAY_OF_YEAR, 1);
             }
-            // fallback one day later
             c.add(Calendar.DAY_OF_YEAR, 1);
             return c.getTimeInMillis();
         } else {

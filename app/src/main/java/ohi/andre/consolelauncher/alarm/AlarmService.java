@@ -41,8 +41,8 @@ public class AlarmService extends Service {
         Notification n = buildNotification();
         startForeground(NOTIF_ID, n);
 
-        // re-arm any alarms that might have been lost
-        AlarmReceiver.rescheduleAll(this);
+        // Do NOT reschedule here — it causes a re-arm race with AlarmActivity.
+        // Alarms are only re-armed on BOOT_COMPLETED (see AlarmReceiver).
 
         return START_STICKY;
     }
@@ -74,11 +74,25 @@ public class AlarmService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pi = PendingIntent.getActivity(this, 1, open, flags);
 
+        // Find earliest enabled alarm
+        AlarmModel next = null;
+        long nextTime = Long.MAX_VALUE;
+        for (AlarmModel m : AlarmStore.load(this)) {
+            if (!m.enabled) continue;
+            long t = AlarmReceiver.nextTrigger(m);
+            if (t < nextTime) { nextTime = t; next = m; }
+        }
+
+        String title = "Alarm active";
+        String text = next == null ? "No alarms" : "Next: " + next.formattedAmPm()
+                                                   + (next.label == null || next.label.isEmpty() ? "" : " • " + next.label);
+
         NotificationCompat.Builder b = new NotificationCompat.Builder(this, CH_ID)
-                .setSmallIcon(R.drawable.ic_file)
-                .setContentTitle("Alarms active")
-                .setContentText("Next alarm will fire on schedule.")
+                .setSmallIcon(R.drawable.ic_alarm)
+                .setContentTitle(title)
+                .setContentText(text)
                 .setOngoing(true)
+                .setSilent(true)
                 .setPriority(NotificationCompat.PRIORITY_MIN)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .setContentIntent(pi);
