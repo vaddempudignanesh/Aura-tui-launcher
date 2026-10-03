@@ -14,9 +14,7 @@ public class gallery implements CommandAbstraction {
         MainPack mainPack = (MainPack) pack;
 
         Intent intent = new Intent(mainPack.context, GalleryActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         mainPack.context.startActivity(intent);
         return "Opening Gallery...";
     }

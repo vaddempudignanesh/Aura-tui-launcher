@@ -96,7 +96,7 @@
             android:launchMode="singleTask"
             android:resumeWhilePausing="true"
             android:stateNotNeeded="true"
-            android:taskAffinity=""
+            android:taskAffinity="ohi.andre.consolelauncher.home"
             android:windowSoftInputMode="stateAlwaysVisible|adjustResize"
             android:exported="true">
             <intent-filter>
@@ -206,6 +206,9 @@
             android:theme="@style/Theme.Transparent"
             android:exported="false"
             android:screenOrientation="portrait"
+            android:taskAffinity="ohi.andre.consolelauncher.calculator"
+            android:documentLaunchMode="intoExisting"
+            android:launchMode="standard"
             android:windowSoftInputMode="adjustResize"/>
 
 
@@ -214,7 +217,9 @@
             android:name=".musicplayer.MusicPlayerActivity"
             android:exported="false"
             android:theme="@style/MusicTheme"
-            android:launchMode="singleTop"
+            android:taskAffinity="ohi.andre.consolelauncher.music"
+            android:documentLaunchMode="intoExisting"
+            android:launchMode="standard"
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
 
@@ -232,6 +237,9 @@
             android:name=".gallery.GalleryActivity"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode"
             android:exported="true"
+            android:taskAffinity="ohi.andre.consolelauncher.gallery"
+            android:documentLaunchMode="intoExisting"
+            android:launchMode="standard"
             android:theme="@style/AppTheme" />
 
         <activity
@@ -247,7 +255,9 @@
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:launchMode="singleTop"
+            android:taskAffinity="ohi.andre.consolelauncher.alarm"
+            android:documentLaunchMode="intoExisting"
+            android:launchMode="standard"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
@@ -287,6 +297,9 @@
             android:name=".mediareader.PdfViewerActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar"
+            android:taskAffinity="ohi.andre.consolelauncher.pdf"
+            android:documentLaunchMode="intoExisting"
+            android:launchMode="standard"
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
@@ -294,6 +307,9 @@
             android:label="@string/browser_label"
             android:theme="@style/Theme.Transparent"
             android:exported="true"
+            android:taskAffinity="ohi.andre.consolelauncher.browser"
+            android:documentLaunchMode="intoExisting"
+            android:launchMode="standard"
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation"
             android:windowSoftInputMode="adjustResize" />
 
@@ -302,8 +318,10 @@
             android:exported="true"
             android:theme="@style/Theme.AppCompat.NoActionBar"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:launchMode="singleTop"
-            android:excludeFromRecents="true"
+            android:taskAffinity="ohi.andre.consolelauncher.filemanager"
+            android:documentLaunchMode="intoExisting"
+            android:launchMode="standard"
+            android:excludeFromRecents="false"
             android:windowSoftInputMode="adjustResize"
             android:hardwareAccelerated="true">
 

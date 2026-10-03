@@ -15,7 +15,7 @@ public class filemanager implements CommandAbstraction {
         MainPack mainPack = (MainPack) pack;
 
         Intent intent = new Intent(mainPack.context, FileManagerActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         mainPack.context.startActivity(intent);
         return null;
     }
