@@ -563,11 +563,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 popup.setElevation(dp(6));
             }
 
+            // Inside showUrlBarPopup()
             row.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
             int popupWidth = row.getMeasuredWidth();
             int barWidth = etUrl.getWidth();
             int xOffset = Math.max(0, (barWidth - popupWidth) / 2);
-            int yOffset = -(etUrl.getHeight() + row.getMeasuredHeight() + dp(6));
+
+// Change yOffset to place it below the address bar instead of above
+            int yOffset = dp(4);
 
             popup.showAsDropDown(etUrl, xOffset, yOffset);
             urlBarPopup = popup;
@@ -687,6 +690,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
                             int s = Math.max(0, etUrl.getSelectionStart());
                             int e = Math.max(0, etUrl.getSelectionEnd());
                             etUrl.getText().replace(s, e, clip);
+
+                            // Automatically trigger URL loading after paste
+                            loadFromBar();
                         }
                     }
                     break;
