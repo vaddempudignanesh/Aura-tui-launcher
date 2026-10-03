@@ -79,6 +79,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
     public static final String EXTRA_INCOGNITO = "aura_incognito";
     public static final String DEFAULT_HOME    = "https://www.google.com";
 
+    private Dialog downloadPanelDialog = null;
+
     // ── File chooser request codes ────────────────────────────────────
     private static final int REQ_FILE_CHOOSER          = 1001;
     private static final int REQ_CAMERA_CAPTURE        = 1002;
@@ -102,6 +104,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private boolean forceDark = true;
     private static final String PREFS_BROWSER = "aura_browser";
     private static final String PREF_DARK     = "force_dark";
+    private static final String KEY_RESTORED  = "aura_restored_tabs";
     private boolean isPageLoading = false;
     private int blockedPopupsThisSession = 0;
     private ActionMode currentSelectionActionMode;
@@ -221,7 +224,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     "function retry(){" +
                     "var attempts=0;" +
                     "var timer=setInterval(function(){" +
-                    "if(applied()||attempts>=24){" +
+                    "if(applied()||attempts>=60){" +
                     "clearInterval(timer);return;" +
                     "}" +
                     "attempts++;" +
@@ -334,45 +337,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         forceDark = prefs.getBoolean(PREF_DARK, true);   // default = true
         updateDarkIconTint();
 
-        // ═══════════════════════════════════════════════════════════
-        // URL BAR — tap cycle + typing lock
-        //
-        // Tap #1 → focus + select-all (fast replace)
-        // Tap #2 → clear selection, place cursor for editing
-        // ═══════════════════════════════════════════════════════════
-        etUrl.setOnClickListener(v -> {
-            urlBarUserEditing = true;
-
-            if (!etUrl.hasFocus()) {
-                // Focus will come via the focus listener → do nothing yet
-                return;
-            }
-
-            if (!urlBarJustSelectedAll) {
-                // First tap while focused: select everything for quick replace.
-                etUrl.selectAll();
-                urlBarJustSelectedAll = true;
-            } else {
-                // Second tap: drop selection, put blinking cursor at end.
-                int len = etUrl.getText().length();
-                etUrl.setSelection(len);
-                urlBarJustSelectedAll = false;
-            }
-        });
-
-        etUrl.setOnFocusChangeListener((v, hasFocus) -> {
-            urlBarUserEditing = hasFocus;
-            if (hasFocus) {
-                // Fresh focus → select all so the first keystroke replaces.
-                etUrl.post(() -> {
-                    etUrl.selectAll();
-                    urlBarJustSelectedAll = true;
-                });
-            } else {
-                urlBarJustSelectedAll = false;
-            }
-        });
-
         etUrl.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) {
@@ -390,6 +354,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
             return false;
         });
+
+        installUrlBarTextActions();
 
         btnDarkMode.setOnClickListener(v -> toggleForceDark());
         updateDarkIconTint();
@@ -455,23 +421,310 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         cleanupOrphanedIncognitoProfiles();
 
+// ★ Make dark-mode persistent across process death:
+//   the shared-pref value is authoritative; the TabStore value is the
+//   belt-and-braces backup for the case where the local pref wasn't
+//   written before a crash.
+        boolean storedDark = TabStore.loadDarkMode(this, forceDark);
+        if (storedDark != forceDark) {
+            forceDark = storedDark;
+            getSharedPreferences(PREFS_BROWSER, MODE_PRIVATE)
+                    .edit().putBoolean(PREF_DARK, forceDark).commit();
+        }
+        updateDarkIconTint();
+
         Intent intent = getIntent();
         boolean startIncognito = intent != null && intent.getBooleanExtra(EXTRA_INCOGNITO, false);
         String startUrl = intent != null ? intent.getStringExtra(EXTRA_URL) : null;
-        newTab(startUrl, startIncognito);
+
+// ★ Two entry modes:
+//   A) Caller passed an explicit URL/incognito → single fresh tab, ignore history.
+//   B) Cold launch with no intent data → restore last session's tabs.
+        boolean explicitOpen = (startUrl != null && !startUrl.trim().isEmpty()) || startIncognito;
+
+        if (explicitOpen) {
+            // We're being asked to open a specific URL — clear the stored session
+            // so it doesn't fight with what the user is asking for now.
+            TabStore.clear(this);
+            newTab(startUrl, startIncognito);
+        } else {
+            TabStore.Snapshot snap = TabStore.load(this);
+
+            if (snap.urls.isEmpty()) {
+                // First launch ever.
+                newTab(null, false);
+            } else {
+                // ★ Restore every tab in order, then jump to the last-active one.
+                for (String u : snap.urls) {
+                    newTab(u, false);
+                }
+                int idx = Math.max(0, Math.min(snap.activeIndex, tabs.size() - 1));
+                if (idx != currentTabIndex) switchToTab(idx);
+            }
+        }
+    }
+
+
+
+    private android.widget.PopupWindow urlBarPopup = null;
+
+    private void installUrlBarTextActions() {
+        etUrl.setLongClickable(true);
+        etUrl.setTextIsSelectable(true);
+
+        etUrl.setOnClickListener(v -> {
+            urlBarUserEditing = true;
+            if (!etUrl.hasFocus()) {
+                etUrl.requestFocus();
+            }
+            if (etUrl.getText() != null && etUrl.getText().length() > 0) {
+                etUrl.selectAll();
+            }
+            showUrlBarPopup();
+        });
+
+        etUrl.setOnLongClickListener(v -> {
+            urlBarUserEditing = true;
+            if (!etUrl.hasFocus()) {
+                etUrl.requestFocus();
+            }
+            showUrlBarPopup();
+            return true;
+        });
+
+        etUrl.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                urlBarUserEditing = true;
+                if (!etUrl.hasFocus()) {
+                    etUrl.requestFocus();
+                    if (etUrl.getText() != null && etUrl.getText().length() > 0) {
+                        etUrl.selectAll();
+                    }
+                    showUrlBarPopup();
+                }
+            }
+            return false;
+        });
+
+        etUrl.setOnFocusChangeListener((v, hasFocus) -> {
+            urlBarUserEditing = hasFocus;
+            if (!hasFocus) {
+                dismissUrlBarPopup();
+            }
+        });
+    }
+
+    private void showUrlBarPopup() {
+        dismissUrlBarPopup();
+        try {
+            int s = Math.max(0, etUrl.getSelectionStart());
+            int e = Math.max(0, etUrl.getSelectionEnd());
+            boolean hasSelection = e > s;
+            boolean hasText = etUrl.getText() != null && etUrl.getText().length() > 0;
+
+            if (!hasSelection && hasText) {
+                etUrl.selectAll();
+                hasSelection = true;
+            }
+
+            boolean hasClip = false;
+            try {
+                android.content.ClipboardManager cm =
+                        (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                hasClip = cm != null && cm.hasPrimaryClip();
+            } catch (Exception ignored) {}
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            int padH = dp(4), padV = dp(2);
+            row.setPadding(padH, padV, padH, padV);
+
+            android.graphics.drawable.GradientDrawable bg =
+                    new android.graphics.drawable.GradientDrawable();
+            bg.setColor(0xFF1E1E1E);
+            bg.setCornerRadius(dp(8));
+            bg.setStroke(dp(1), 0xFF333333);
+            row.setBackground(bg);
+
+            if (hasSelection) addPopupItem(row, "Cut", 0xFFFFFFFF, 1, false);
+            if (hasSelection) addPopupItem(row, "Copy", 0xFFFFFFFF, 2, false);
+            addPopupItem(row, "Paste", hasClip ? 0xFFFFFFFF : 0xFF666666, 3, false);
+            if (hasText) addPopupItem(row, "Select all", 0xFF33FF33, 4, true);
+
+            android.widget.PopupWindow popup = new android.widget.PopupWindow(
+                    row,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    false);
+            popup.setOutsideTouchable(true);
+            popup.setFocusable(false);
+            popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                popup.setElevation(dp(6));
+            }
+
+            row.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+            int popupWidth = row.getMeasuredWidth();
+            int barWidth = etUrl.getWidth();
+            int xOffset = Math.max(0, (barWidth - popupWidth) / 2);
+            int yOffset = -(etUrl.getHeight() + row.getMeasuredHeight() + dp(6));
+
+            popup.showAsDropDown(etUrl, xOffset, yOffset);
+            urlBarPopup = popup;
+        } catch (Exception ex) {
+            Log.w("AuraBrowser", "showUrlBarPopup failed", ex);
+        }
+    }
+
+    private void addPopupItem(LinearLayout row, String label, int color,
+                              int actionId, boolean isLast) {
+        // Insert a divider BEFORE every item except the first.
+        if (row.getChildCount() > 0) {
+            View sep = new View(this);
+            LinearLayout.LayoutParams sepLp = new LinearLayout.LayoutParams(
+                    dp(1), ViewGroup.LayoutParams.MATCH_PARENT);
+            sepLp.topMargin = dp(6);
+            sepLp.bottomMargin = dp(6);
+            sep.setLayoutParams(sepLp);
+            sep.setBackgroundColor(0xFF333333);
+            row.addView(sep);
+        }
+
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setTextColor(color);
+        tv.setTextSize(13);
+        tv.setPadding(dp(16), dp(10), dp(16), dp(10));
+        tv.setSingleLine(true);
+        tv.setGravity(Gravity.CENTER);
+        tv.setBackgroundColor(0x00000000);
+        tv.setClickable(true);
+        tv.setFocusable(true);
+
+        tv.setOnClickListener(v -> {
+            dismissUrlBarPopup();
+            handleUrlBarTextAction(actionId);
+        });
+
+        row.addView(tv);
+    }
+
+    private void dismissUrlBarPopup() {
+        try {
+            if (urlBarPopup != null && urlBarPopup.isShowing()) {
+                urlBarPopup.dismiss();
+            }
+        } catch (Exception ignored) {}
+        urlBarPopup = null;
+    }
+
+    private void showUrlBarTextMenu() {
+        int selStart = Math.max(0, etUrl.getSelectionStart());
+        int selEnd   = Math.max(0, etUrl.getSelectionEnd());
+        boolean hasSelection = selEnd > selStart;
+        boolean hasText      = etUrl.getText() != null && etUrl.getText().length() > 0;
+        boolean hasClip      = false;
+        try {
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            hasClip = cm != null && cm.hasPrimaryClip();
+        } catch (Exception ignored) {}
+
+        final java.util.List<CharSequence> labels  = new java.util.ArrayList<>();
+        final java.util.List<Integer>      actions = new java.util.ArrayList<>();
+
+        if (hasSelection) { labels.add("Cut");          actions.add(1); }
+        if (hasSelection) { labels.add("Copy");         actions.add(2); }
+        if (hasClip)      { labels.add("Paste");        actions.add(3); }
+        if (hasText)      { labels.add("Select all");   actions.add(4); }
+
+        if (labels.isEmpty()) {
+            labels.add("Select all");
+            actions.add(4);
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Address bar")
+                .setItems(labels.toArray(new CharSequence[0]), (d, which) ->
+                        handleUrlBarTextAction(actions.get(which)))
+                .show();
+    }
+
+    private void handleUrlBarTextAction(int actionId) {
+        try {
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+
+            switch (actionId) {
+                case 1: {   // Cut
+                    int s = Math.max(0, etUrl.getSelectionStart());
+                    int e = Math.max(0, etUrl.getSelectionEnd());
+                    if (e > s) {
+                        CharSequence sel = etUrl.getText().subSequence(s, e);
+                        if (cm != null) {
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("URL", sel));
+                        }
+                        etUrl.getText().delete(s, e);
+                    }
+                    break;
+                }
+                case 2: {   // Copy
+                    int s = Math.max(0, etUrl.getSelectionStart());
+                    int e = Math.max(0, etUrl.getSelectionEnd());
+                    if (e > s) {
+                        CharSequence sel = etUrl.getText().subSequence(s, e);
+                        if (cm != null) {
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("URL", sel));
+                        }
+                    }
+                    break;
+                }
+                case 3: {   // Paste
+                    if (cm != null && cm.hasPrimaryClip()) {
+                        CharSequence clip = cm.getPrimaryClip()
+                                .getItemAt(0).coerceToText(this);
+                        if (clip != null) {
+                            int s = Math.max(0, etUrl.getSelectionStart());
+                            int e = Math.max(0, etUrl.getSelectionEnd());
+                            etUrl.getText().replace(s, e, clip);
+                        }
+                    }
+                    break;
+                }
+                case 4: {   // Select all
+                    etUrl.selectAll();
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            Log.w("AuraBrowser", "URL bar action failed", e);
+        }
+    }
+
+
+    private void persistTabs() {
+        try {
+            List<String> urls = new ArrayList<>();
+            int activeNonIncognito = 0;
+            int nonIncognitoCount = 0;
+
+            for (int i = 0; i < tabs.size(); i++) {
+                Tab t = tabs.get(i);
+                if (t.incognito) continue;
+                String u = t.url;
+                if (u == null || u.isEmpty() || "about:blank".equals(u)) continue;
+                if (i == currentTabIndex) activeNonIncognito = nonIncognitoCount;
+                urls.add(u);
+                nonIncognitoCount++;
+            }
+
+            TabStore.save(this, urls, activeNonIncognito);
+        } catch (Exception ignored) {}
     }
 
     private void onPopupBlocked() {
         blockedPopupsThisSession++;
-        if (blockedPopupsThisSession <= 3) {
-            runOnUiThread(() -> Toast.makeText(this,
-                    "Popup blocked", Toast.LENGTH_SHORT).show());
-        }
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // URL BAR — programmatic updates that respect user typing
-    // ═══════════════════════════════════════════════════════════════════
 
     private void setUrlBarText(String url) {
         if (urlBarUserEditing || etUrl.hasFocus()) return;
@@ -479,15 +732,18 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
 
-
     private void toggleForceDark() {
         forceDark = !forceDark;
+
+        // ★ Sync save to BOTH stores so a crash or process-kill cannot
+        //   revert the choice. commit() is synchronous and durable.
         getSharedPreferences(PREFS_BROWSER, MODE_PRIVATE)
-                .edit().putBoolean(PREF_DARK, forceDark).apply();
+                .edit().putBoolean(PREF_DARK, forceDark).commit();
+        TabStore.saveDarkMode(this, forceDark);
+
         updateDarkIconTint();
         applyDarkReaderToAllTabs();
     }
-
     private void applyDarkReaderToAllTabs() {
         for (Tab t : tabs) {
             if (t.webView == null) continue;
@@ -822,7 +1078,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             wv = new WebView(this);
         } catch (Throwable t) {
             Log.e("AuraBrowser", "WebView construction failed", t);
-            Toast.makeText(this, "Could not open browser view", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -830,9 +1085,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (incognito) {
             profileName = attachFreshIncognitoProfile(wv);
             if (profileName == null) {
-                Toast.makeText(this,
-                        "Incognito mode is unavailable on this WebView",
-                        Toast.LENGTH_LONG).show();
+                Log.w("AuraBrowser", "Incognito mode is unavailable on this WebView");
                 wv.destroy();
                 return;
             }
@@ -881,6 +1134,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         wv.loadUrl(normalized);
         switchToTab(tabs.size() - 1);
         updateTabCountBadge();
+        persistTabs();
     }
 
     private static final String INCOGNITO_PROFILE_PREFIX = "aura_incognito_";
@@ -937,12 +1191,26 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (index < 0 || index >= tabs.size()) return;
 
         Tab old = currentTab();
-        if (old != null) old.webView.setVisibility(View.GONE);
+        if (old != null) {
+            old.webView.setVisibility(View.GONE);
+            // ★ Fix bug #5 — kill any audio/video playing in the tab we're
+            //   leaving, plus pause the WebView itself.
+            try {
+                old.webView.evaluateJavascript(
+                        "(function(){try{" +
+                                "var m=document.querySelectorAll('video,audio');" +
+                                "for(var i=0;i<m.length;i++){try{m[i].pause();}catch(e){}}" +
+                                "}catch(e){}})();", null);
+            } catch (Throwable ignored) {}
+            try { old.webView.onPause(); } catch (Throwable ignored) {}
+        }
 
         currentTabIndex = index;
         Tab t = tabs.get(index);
         t.webView.setVisibility(View.VISIBLE);
         t.webView.requestFocus();
+        // ★ Resume the WebView we just switched to.
+        try { t.webView.onResume(); } catch (Throwable ignored) {}
         setUrlBarText(t.url != null ? t.url : DEFAULT_HOME);
 
         updateTabCountBadge();
@@ -950,6 +1218,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
         isPageLoading = false;
         progressBar.setVisibility(View.GONE);
         btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
+
+        persistTabs();   // ★ ADD THIS LINE
     }
 
     private void closeTab(int index) {
@@ -974,20 +1244,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (currentTabIndex >= tabs.size()) currentTabIndex = tabs.size() - 1;
         switchToTab(currentTabIndex);
         updateTabCountBadge();
+        persistTabs();
     }
 
     private void updateTabCountBadge() {
         tabCountView.setText(String.valueOf(tabs.size()));
     }
 
-    // ═════════════════════════════════════════════════════════════
-    //  DOWNLOADS — native engine wired to AuraDownloadService
-    // ═════════════════════════════════════════════════════════════
-
-    /**
-     * Launch the native downloader foreground service for the given URL.
-     * This replaces the previous aria2c-based pipeline.
-     */
     private void startNativeDownload(String url, String userAgent,
                                      String contentDisposition, String mimeType) {
         try {
@@ -1005,15 +1268,25 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 startService(svc);
             }
 
-            Toast.makeText(this, "Download started", Toast.LENGTH_SHORT).show();
+            // ★ Auto-open the download panel so the user sees live progress
+            //   without having to tap the download icon. If it's already
+            //   open, do nothing (avoid stacking dialogs).
+            runOnUiThread(() -> {
+                if (downloadPanelDialog != null && downloadPanelDialog.isShowing()) {
+                    return;
+                }
+                // Small delay so the service has a moment to register the
+                // task before we render the panel.
+                new Handler(Looper.getMainLooper()).postDelayed(
+                        this::showDownloadPanel, 250);
+            });
+
         } catch (Exception e) {
             Log.e("AuraBrowser", "Failed to start download service", e);
-            Toast.makeText(this, "Could not start download: " + e.getMessage(),
-                    Toast.LENGTH_LONG).show();
         }
     }
 
-    /** True if two hosts share the same registrable domain (e.g. youtube.com ↔ www.youtube.com). */
+
     private static boolean isSameRegistrableDomain(String a, String b) {
         if (a == null || b == null) return false;
         String ra = registrableDomain(a);
@@ -1045,9 +1318,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
         return secondLast + "." + last;
     }
-
     private void showDownloadPanel() {
+        if (downloadPanelDialog != null && downloadPanelDialog.isShowing()) return;
+
         final Dialog dialog = new Dialog(this);
+        downloadPanelDialog = dialog;
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setCancelable(true);
 
@@ -1143,8 +1418,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }, "aura-poll");
         pollThread.start();
 
-        dialog.setOnDismissListener(d -> alive[0] = false);
+        dialog.setOnDismissListener(d -> {
+            alive[0] = false;
+            if (downloadPanelDialog == d) downloadPanelDialog = null;
+        });
         dialog.show();
+
     }
 
     private static final String EMPTY_TAG = "__aura_empty__";
@@ -1479,8 +1758,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     AuraDownloadHistory.get(this).remove(g)));
         }
     }
-
-    // ★ New formatters, same logic as service
 
     private String formatElapsed(long ms) {
         if (ms < 0) ms = 0;
@@ -1916,6 +2193,21 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
                 }
                 updateTabUrl(view, url);
+
+                // ★ Bug #3 fallback: if DOCUMENT_START_SCRIPT is
+                //   unsupported, the bootstrap may never have run for
+                //   this page. Force one injection now.
+                try {
+                    final String js =
+                            "(function(){try{" +
+                                    "window.__auraDarkReaderDesired=" + (forceDark ? "true" : "false") + ";" +
+                                    "if(typeof window.__auraDarkReaderControl==='function'){" +
+                                    "window.__auraDarkReaderControl(" + (forceDark ? "true" : "false") + ");" +
+                                    "}" +
+                                    "}catch(e){}})();";
+                    view.evaluateJavascript(js, null);
+                } catch (Throwable ignored) {}
+
                 baseSecurity.onPageFinished(view, url);
             }
         });
@@ -1966,7 +2258,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     && mimeType != null && mimeType.startsWith("image/")) {
                 return;
             }
-            Toast.makeText(this, "Starting download...", Toast.LENGTH_SHORT).show();
             startNativeDownload(url, userAgent, contentDisposition, mimeType);
         });
     }
@@ -1980,10 +2271,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
         Tab t = currentTab();
         return t != null ? t.webView : null;
     }
-
     private void updateTabUrl(WebView wv, String url) {
         for (Tab t : tabs) {
-            if (t.webView == wv) { t.url = url; return; }
+            if (t.webView == wv) {
+                t.url = url;
+                persistTabs();
+                return;
+            }
         }
     }
 
@@ -2003,6 +2297,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         t.hostTracker.reset();
         t.webView.loadUrl(finalUrl);
         t.url = finalUrl;
+        persistTabs();
 
         urlBarUserEditing = false;
         urlBarJustSelectedAll = false;
@@ -2384,10 +2679,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             if (cm != null) {
                 cm.setPrimaryClip(android.content.ClipData.newPlainText(label, value));
-                Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
             }
         } catch (Exception e) {
-            Toast.makeText(this, "Copy failed", Toast.LENGTH_SHORT).show();
+            Log.w("AuraBrowser", "Copy failed", e);
         }
     }
 
@@ -2398,7 +2692,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             send.putExtra(Intent.EXTRA_TEXT, value);
             startActivity(Intent.createChooser(send, "Share"));
         } catch (Exception e) {
-            Toast.makeText(this, "Share failed", Toast.LENGTH_SHORT).show();
+            Log.w("AuraBrowser", "Share failed", e);
         }
     }
 
@@ -2439,11 +2733,22 @@ public class AuraBrowserActivity extends AppCompatActivity {
             super.onBackPressed();
         }
     }
-
     @Override
     protected void onPause() {
         super.onPause();
-        for (Tab t : tabs) t.webView.onPause();
+        for (Tab t : tabs) {
+            try { t.webView.onPause(); } catch (Throwable ignored) {}
+            // ★ Stop any video/audio even when only the app (not the tab)
+            //   loses focus.
+            try {
+                t.webView.evaluateJavascript(
+                        "(function(){try{" +
+                                "var m=document.querySelectorAll('video,audio');" +
+                                "for(var i=0;i<m.length;i++){try{m[i].pause();}catch(e){}}" +
+                                "}catch(e){}})();", null);
+            } catch (Throwable ignored) {}
+        }
+        persistTabs();   // ★ save session on background
     }
 
     @Override
@@ -2456,6 +2761,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        // ★ Persist tab URLs BEFORE tearing down the WebViews. This is
+        //   what makes tabs survive a process kill / reboot.
+        persistTabs();
+
         for (Tab t : tabs) {
             try {
                 t.webView.loadUrl("about:blank");
