@@ -698,6 +698,39 @@ public class GalleryActivity extends AppCompatActivity {
         prefs.edit().putString(PREF_FAVORITES, sb.toString()).apply();
     }
 
+    /**
+     * Single item favorite toggle (used in fullscreen viewer / single actions).
+     */
+    private boolean toggleFavoriteForPath(String path) {
+        if (path == null) return false;
+        Set<String> favs = loadFavoritePaths();
+        boolean nowFav;
+
+        if (favs.contains(path)) {
+            favs.remove(path);
+            nowFav = false;
+        } else {
+            favs.add(path);
+            nowFav = true;
+        }
+
+        saveFavoritePaths(favs);
+
+        for (MediaItem item : mediaItems) {
+            if (item.path.equals(path)) {
+                item.isFavorite = nowFav;
+                break;
+            }
+        }
+
+        // ★ Refresh adapter and filter instantly
+        if (adapter != null) {
+            adapter.notifyDataSetChanged();
+        }
+        applyFilter();
+
+        return nowFav;
+    }
     private void updateFullscreenFavoriteIcon(String path) {
         if (path == null) return;
         boolean fav = false;
@@ -2942,7 +2975,7 @@ public class GalleryActivity extends AppCompatActivity {
         if (anyChanged) {
             saveFavoritePaths(favs);
 
-            // ★ Fix Bug 1 & 3: Immediately notify adapter and re-apply filter/ui updates
+            // ★ Immediately notify adapter and re-apply filter/ui updates
             if (adapter != null) {
                 adapter.notifyDataSetChanged();
             }
@@ -2952,40 +2985,6 @@ public class GalleryActivity extends AppCompatActivity {
         }
 
         clearSelection();
-    }
-
-    /**
-     * Single item favorite toggle (used in fullscreen viewer / single actions).
-     */
-    private boolean toggleFavoriteForPath(String path) {
-        if (path == null) return false;
-        Set<String> favs = loadFavoritePaths();
-        boolean nowFav;
-
-        if (favs.contains(path)) {
-            favs.remove(path);
-            nowFav = false;
-        } else {
-            favs.add(path);
-            nowFav = true;
-        }
-
-        saveFavoritePaths(favs);
-
-        for (MediaItem item : mediaItems) {
-            if (item.path.equals(path)) {
-                item.isFavorite = nowFav;
-                break;
-            }
-        }
-
-        // ★ Fix Bug 1 & 3: Refresh adapter and filter instantly
-        if (adapter != null) {
-            adapter.notifyDataSetChanged();
-        }
-        applyFilter();
-
-        return nowFav;
     }
 
     @Override

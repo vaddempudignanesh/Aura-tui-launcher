@@ -3,6 +3,8 @@ package ohi.andre.consolelauncher.gallery;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -30,9 +32,6 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         void onImageVisible(int position);
         void onVideoVisible(CustomVideoView videoView, int position);
     }
-
-    /** ★ NEW: forwards raw touch events from the video surface to the activity
-     *  so double-tap and long-press gestures can be detected. */
     public interface VideoTouchForwarder {
         void onTouch(MotionEvent event);
     }
@@ -41,8 +40,9 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
     private final Context context;
     private TapCallback tapCallback;
     private PageTypeCallback pageTypeCallback;
-    private VideoTouchForwarder videoTouchForwarder;   // ★ NEW
+    private VideoTouchForwarder videoTouchForwarder;
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     public FullscreenAdapter(List<String> paths, Context context) {
         this.paths = paths;
@@ -50,18 +50,9 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         Log.d(LOG_TAG, src() + " constructor called, context=" + context.getClass().getName());
     }
 
-    public void setTapCallback(TapCallback cb) {
-        this.tapCallback = cb;
-    }
-
-    public void setPageTypeCallback(PageTypeCallback cb) {
-        this.pageTypeCallback = cb;
-    }
-
-    /** ★ NEW */
-    public void setVideoTouchForwarder(VideoTouchForwarder f) {
-        this.videoTouchForwarder = f;
-    }
+    public void setTapCallback(TapCallback cb) { this.tapCallback = cb; }
+    public void setPageTypeCallback(PageTypeCallback cb) { this.pageTypeCallback = cb; }
+    public void setVideoTouchForwarder(VideoTouchForwarder f) { this.videoTouchForwarder = f; }
 
     private void log(String msg) { Log.d(LOG_TAG, src() + " " + msg); }
 
@@ -129,13 +120,10 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 }
             });
 
-            // Legacy single-tap callback (kept for compatibility)
             holder.videoView.setOnTapListener(() -> {
                 if (tapCallback != null) tapCallback.onTap();
             });
 
-            // Forward raw touches — the activity's gesture detector handles
-            // single tap, double tap, and long press.
             holder.videoView.setOnTouchListener((v, event) -> {
                 if (videoTouchForwarder != null) {
                     videoTouchForwarder.onTouch(event);
@@ -149,12 +137,21 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
                 return true;
             });
 
-            try {
-                holder.videoView.setVideoPath(path);
-            } catch (Exception e) {
-                Log.e(LOG_TAG, src() + " setVideoPath threw", e);
-                holder.progressBar.setVisibility(View.GONE);
-            }
+            // ★ ONLY CHANGE ON VIDEO PATH: defer setVideoPath one frame.
+            //   setVideoPath creates MediaPlayer + setDataSource + prepareAsync
+            //   which is heavy (tens of ms). Doing it inside onBind blocks the
+            //   ViewPager2 swipe. Posting it lets the swipe frame complete first.
+            final String videoPath = path;
+            mainHandler.post(() -> {
+                int adapterPosition = holder.getBindingAdapterPosition();
+                if (adapterPosition != boundPosition) return;
+                try {
+                    holder.videoView.setVideoPath(videoPath);
+                } catch (Exception e) {
+                    Log.e(LOG_TAG, src() + " setVideoPath threw", e);
+                    holder.progressBar.setVisibility(View.GONE);
+                }
+            });
             return;
         }
 
@@ -164,6 +161,22 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
             holder.videoView.setOnPreparedListener(null);
             holder.videoView.setOnTapListener(null);
             holder.videoView.setOnTouchListener(null);
+        }
+
+        // ★ ONLY CHANGE ON IMAGE PATH: skip re-decode if the same path is
+        //   already showing in this holder. Prevents flicker + wasted work
+        //   during swipe when ViewPager2 rebinds an offscreen page.
+        Object tag = holder.imageView.getTag();
+        if (path.equals(tag) && holder.imageView.getDrawable() != null) {
+            holder.progressBar.setVisibility(View.GONE);
+            holder.imageView.setVisibility(View.VISIBLE);
+            holder.imageView.setOnTapListener(() -> {
+                if (tapCallback != null) tapCallback.onTap();
+            });
+            if (pageTypeCallback != null) {
+                pageTypeCallback.onImageVisible(boundPosition);
+            }
+            return;
         }
 
         holder.imageView.setImageDrawable(null);
@@ -197,6 +210,7 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
             });
         });
     }
+
     private static boolean isVideoPath(String path) {
         if (path == null) return false;
         String lower = path.toLowerCase(java.util.Locale.ROOT);
@@ -217,7 +231,9 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
 
             BitmapFactory.Options o2 = new BitmapFactory.Options();
             o2.inSampleSize = scale;
-            o2.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            // ★ ONLY CHANGE: RGB_565 halves memory bandwidth during swipe.
+            //   Visual difference on a phone screen is imperceptible.
+            o2.inPreferredConfig = Bitmap.Config.RGB_565;
             return BitmapFactory.decodeFile(path, o2);
         } catch (Exception e) { return null; }
     }
@@ -229,9 +245,10 @@ public class FullscreenAdapter extends RecyclerView.Adapter<FullscreenAdapter.Vi
         holder.videoView.setVisibility(View.GONE);
         holder.videoView.setOnPreparedListener(null);
         holder.videoView.setOnTapListener(null);
-        holder.videoView.setOnTouchListener(null);   // ★ NEW
+        holder.videoView.setOnTouchListener(null);
         holder.imageView.setVisibility(View.GONE);
         holder.imageView.setImageDrawable(null);
+        holder.imageView.setTag(null);
         holder.progressBar.setVisibility(View.GONE);
         super.onViewRecycled(holder);
     }

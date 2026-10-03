@@ -192,7 +192,13 @@ public class ZoomableImageView extends AppCompatImageView {
     public void setImageDrawable(@Nullable Drawable drawable) {
         super.setImageDrawable(drawable);
         log("setImageDrawable");
-        post(this::resetToFit);
+        // ★ ONLY CHANGE: no post(resetToFit) here.
+        //   onSizeChanged already calls resetToFit when the view is laid out,
+        //   and the drawable is set before the first layout. Posting on every
+        //   bind caused a setImageMatrix → relayout on the swipe frame.
+        if (getWidth() > 0 && getHeight() > 0) {
+            resetToFit();
+        }
     }
 
     @Override
