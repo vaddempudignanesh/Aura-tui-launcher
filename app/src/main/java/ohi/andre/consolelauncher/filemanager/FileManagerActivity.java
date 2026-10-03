@@ -33,6 +33,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.webkit.MimeTypeMap;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -77,11 +78,9 @@ import ohi.andre.consolelauncher.R;
 import ohi.andre.consolelauncher.permissionhandler.StorageAdapter;
 import ohi.andre.consolelauncher.permissionhandler.StoragePermissionHelper;
 
-public class FileManagerActivity extends AppCompatActivity implements FileManagerAdapter.OnFileClickListener {
-
+public class FileManagerActivity extends AppCompatActivity {
     private static final String HOME_DIR = Environment.getExternalStorageDirectory().getAbsolutePath();
 
-    // Sort modes
     private static final int SORT_NAME_ASC   = 0;
     private static final int SORT_NAME_DESC  = 1;
     private static final int SORT_DATE_NEW   = 2;
@@ -89,6 +88,18 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private static final int SORT_SIZE_BIG   = 4;
     private static final int SORT_SIZE_SMALL = 5;
 
+    private static final String[] CATEGORY_IDS = {
+            "all", "images", "videos", "documents", "audio", "other", "apks", "whatsapp_status"
+    };
+
+    private static final String[] CATEGORY_LABELS = {
+            "All", "Images", "Videos", "Documents", "Audio", "Other", "APKs", "WhatsaApp Status"
+    };
+
+    private HorizontalScrollView categoryScroller;
+    private LinearLayout categoryContainer;
+
+    private String currentCategory = "";
 
     private static final int REQUEST_INSTALL_PACKAGES = 12345;
 
@@ -97,13 +108,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
     private int currentSortMode = SORT_NAME_ASC;
 
-    // Unfiltered directory contents (what's on disk)
     private List<File> currentFileList = new ArrayList<>();
-
-    // What the adapter is currently showing (after search filter)
     private List<File> displayedFileList = new ArrayList<>();
-
-    // Active search query ("" means no filter)
     private String currentSearchQuery = "";
 
     private File pendingApkInstall = null;
@@ -111,7 +117,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private boolean rootAvailable = false;
     private boolean rootGranted = false;
 
-    // Views
     private DrawerLayout drawerLayout;
     private RecyclerView recyclerFiles;
     private RecyclerView recyclerStorage;
@@ -131,10 +136,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private ImageView btnMore;
     private ImageView btnCloseSelection;
 
-
     private volatile int searchGeneration = 0;
 
-    // Footer
     private LinearLayout footerBar;
     private LinearLayout footerActions;
     private LinearLayout footerProgress;
@@ -157,8 +160,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final java.util.Map<String, Long> sizeCache = new java.util.HashMap<>();
 
-    // ==================== Lifecycle ====================
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -170,7 +171,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         setContentView(R.layout.activity_file_manager);
         launchedForIncomingFile = isIncomingFileIntent(getIntent());
-
+        currentCategory = "all";
         initViews();
         setupRecyclerViews();
         setupListeners();
@@ -178,10 +179,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         currentDir = new File(HOME_DIR);
 
-// Do NOT probe root at startup. `hasRootGranted()` runs `su -c id`,
-// which triggers the superuser prompt the moment the app launches.
-// Root state is checked lazily in `ensureRoot()`, only when the user
-// actually navigates into a root path.
         rootAvailable = false;
         rootGranted = false;
 
@@ -189,8 +186,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             loadDirectory(currentDir);
         }
     }
-
-
 
     private boolean isIncomingFileIntent(Intent intent) {
         if (intent == null) return false;
@@ -216,19 +211,11 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         thumbExecutor.shutdownNow();
     }
 
-    /**
-     * Called by FileManagerAdapter for image files.
-     *  - Cached by absolute path only (mtime ignored) → no scroll cache misses.
-     *  - Deduped via thumbInFlight → no duplicate decodes.
-     *  - Decoded on 2 threads → no UI stutter.
-     *  - View recycling is detected by re-checking the tag before committing.
-     */
     public void loadThumbnail(final File file,
                               final ImageView target,
                               final android.graphics.drawable.Drawable fallbackIcon) {
         final String key = file.getAbsolutePath();
 
-        // ── 1. Cache hit ────────────────────────────────────────────────
         Bitmap cached = thumbCache.get(key);
         if (cached != null && !cached.isRecycled()) {
             target.setImageBitmap(cached);
@@ -237,14 +224,12 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             return;
         }
 
-        // ── 2. Fallback while we wait ────────────────────────────────────
         target.setImageDrawable(fallbackIcon);
         target.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         int pad = dp(10);
         target.setPadding(pad, pad, pad, pad);
         target.setTag(R.id.iv_icon, key);
 
-        // ── 3. Already queued? just wait ────────────────────────────────
         if (!thumbInFlight.add(key)) return;
 
         final int sizePx = dp(THUMB_SIZE_DP);
@@ -288,16 +273,11 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 thumbCache.put(key, finalBmp);
             }
 
-            // Committing the bitmap must be on the UI thread.
             mainHandler.post(() -> {
                 if (finalBmp == null) return;
-
                 Object tag = target.getTag(R.id.iv_icon);
-                if (!key.equals(tag)) return; // view was recycled to another file
-
-                // Detect recycled bitmaps defensively
+                if (!key.equals(tag)) return;
                 if (finalBmp.isRecycled()) return;
-
                 target.setImageBitmap(finalBmp);
                 target.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 target.setPadding(0, 0, 0, 0);
@@ -383,7 +363,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     }
 
     private boolean ensureRoot() {
-        // Only probe su availability the first time we're actually asked.
         if (!rootAvailable) rootAvailable = FileManagerRootHelper.isRootAvailable();
 
         if (!rootAvailable) {
@@ -403,7 +382,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
         return rootGranted;
     }
-    // ==================== Incoming File Handling ====================
 
     private boolean handleIncomingIntent(Intent intent) {
         if (intent == null) return false;
@@ -817,9 +795,62 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         tvProgressStats = findViewById(R.id.tv_progress_stats);
         tvProgressPath = findViewById(R.id.tv_progress_path);
         progressBar = findViewById(R.id.progress_bar);
-
+        categoryScroller = findViewById(R.id.category_scroller);
+        categoryContainer = findViewById(R.id.category_container);
+        buildCategoryChips();
         drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED);
         drawerLayout.setScrimColor(0x99000000);
+    }
+
+    private void buildCategoryChips() {
+        categoryContainer.removeAllViews();
+
+        for (int i = 0; i < CATEGORY_IDS.length; i++) {
+            final String id = CATEGORY_IDS[i];
+            final String label = CATEGORY_LABELS[i];
+
+            final TextView chip = new TextView(this);
+            chip.setText(label);
+            chip.setTextSize(12);
+            chip.setTypeface(android.graphics.Typeface.MONOSPACE);
+            chip.setPadding(dp(14), dp(8), dp(14), dp(8));
+            chip.setSingleLine(true);
+
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.setMarginEnd(dp(8));
+            chip.setLayoutParams(lp);
+
+            applyChipStyle(chip, id.equals(currentCategory));
+
+            chip.setOnClickListener(v -> {
+                String newCategory = id.equals(currentCategory) ? "all" : id;
+                currentCategory = newCategory;
+
+                for (int c = 0; c < categoryContainer.getChildCount(); c++) {
+                    View child = categoryContainer.getChildAt(c);
+                    if (child instanceof TextView) {
+                        applyChipStyle((TextView) child,
+                                CATEGORY_IDS[c].equals(currentCategory));
+                    }
+                }
+
+                applySearchFilter();
+            });
+
+            categoryContainer.addView(chip);
+        }
+    }
+
+    private void applyChipStyle(TextView chip, boolean selected) {
+        if (selected) {
+            chip.setTextColor(0xFF000000);
+            chip.setBackgroundColor(0xFF00FF00);
+        } else {
+            chip.setTextColor(0xFF00FF00);
+            chip.setBackgroundColor(0xFF1A1A1A);
+        }
     }
 
     private void setupRecyclerViews() {
@@ -827,15 +858,37 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         recyclerFiles.setLayoutManager(glm);
         recyclerFiles.setNestedScrollingEnabled(false);
         recyclerFiles.setHasFixedSize(true);
-        recyclerFiles.setItemAnimator(null);   // ← no cross-fade on bind
+        recyclerFiles.setItemAnimator(null);
 
-        adapter = new FileManagerAdapter(this, this);
+        adapter = new FileManagerAdapter(this, recyclerFiles, new FileManagerAdapter.OnFileClickListener() {
+            @Override
+            public void onFileClick(File file, int position) {
+                FileManagerActivity.this.onFileClick(file, position);
+            }
+
+            @Override
+            public void onFileLongClick(File file, int position) {
+                FileManagerActivity.this.onFileLongClick(file, position);
+            }
+
+            @Override
+            public void onSelectionChanged(int count) {
+                updateSelectionUI();
+            }
+        });
         recyclerFiles.setAdapter(adapter);
 
         recyclerStorage.setLayoutManager(new LinearLayoutManager(this));
         recyclerStorage.setNestedScrollingEnabled(false);
         storageAdapter = new StorageAdapter(this, item -> {
             drawerLayout.closeDrawers();
+            currentCategory = "all";
+            for (int c = 0; c < categoryContainer.getChildCount(); c++) {
+                View child = categoryContainer.getChildAt(c);
+                if (child instanceof TextView) {
+                    applyChipStyle((TextView) child, CATEGORY_IDS[c].equals("all"));
+                }
+            }
             currentDir = new File(item.path);
             loadDirectory(currentDir);
         });
@@ -847,7 +900,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         btnMore.setOnClickListener(v -> showActionsMenu(v));
         btnSort.setOnClickListener(v -> showSortMenu(v));
 
-        // ── Batch 2: search icon toggles the search bar ────────────
         btnSearch.setOnClickListener(v -> toggleSearchBar());
 
         btnSearchClear.setOnClickListener(v -> {
@@ -960,10 +1012,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // Batch 2 — Search bar show / hide / filter
-    // ═══════════════════════════════════════════════════════════════════
-
     private void toggleSearchBar() {
         if (searchBar.getVisibility() == View.VISIBLE) {
             hideSearchBar();
@@ -981,15 +1029,17 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             if (imm != null) imm.showSoftInput(etSearch, InputMethodManager.SHOW_IMPLICIT);
         }, 100);
     }
+
     private void hideSearchBar() {
         hideKeyboard();
         searchBar.setVisibility(View.GONE);
         etSearch.setText("");
         currentSearchQuery = "";
         searchGeneration++;
-        adapter.setSearchResults(null);     // clear sub-path line
-        applySearchFilter();                 // repopulates with currentFileList
+        adapter.setSearchResults(null);
+        applySearchFilter();
     }
+
     private void hideKeyboard() {
         InputMethodManager imm = (InputMethodManager)
                 getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -998,8 +1048,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     }
 
     private void applySearchFilter() {
-        // No query → show the plain current directory.
-        if (currentSearchQuery.isEmpty()) {
+        boolean noQuery = currentSearchQuery.isEmpty();
+        boolean allCategories = "all".equals(currentCategory);
+
+        if (noQuery && allCategories) {
             displayedFileList = new ArrayList<>(currentFileList);
             adapter.setFiles(displayedFileList);
             adapter.setSearchResults(null);
@@ -1013,20 +1065,29 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         final File root = currentDir;
         final String query = currentSearchQuery;
+        final String category = currentCategory;
         final int generation = ++searchGeneration;
         final int sortModeAtStart = currentSortMode;
 
-        tvEmpty.setText("Searching…");
+        tvEmpty.setText(noQuery ? "Filtering…" : "Searching…");
         tvEmpty.setVisibility(View.VISIBLE);
         recyclerFiles.setVisibility(View.GONE);
 
         executor.execute(() -> {
             List<SearchResult> results = new ArrayList<>();
-            recursiveSearch(root, root, query, results, generation);
+
+            if (noQuery) {
+                if ("whatsapp_status".equals(category)) {
+                    collectWhatsAppStatus(results, generation);
+                } else {
+                    categoryOnlyScan(root, root, category, results, generation);
+                }
+            } else {
+                recursiveSearch(root, root, query, category, results, generation);
+            }
 
             if (generation != searchGeneration) return;
 
-            // Pre-compute directory sizes only if the active sort needs them.
             if (sortModeAtStart == SORT_SIZE_BIG || sortModeAtStart == SORT_SIZE_SMALL) {
                 for (SearchResult r : results) {
                     String key = r.file.getAbsolutePath();
@@ -1036,10 +1097,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 }
             }
 
-            // Sort search results using the SAME comparator as the directory
-            // list, so the user's chosen sort mode is respected everywhere.
-            // Ties are broken by shorter relative path, then alpha, so nested
-            // matches stay grouped.
             Collections.sort(results, (a, b) -> {
                 int cmp = buildComparator().compare(a.file, b.file);
                 if (cmp != 0) return cmp;
@@ -1062,21 +1119,116 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 recyclerFiles.setVisibility(empty ? View.GONE : View.VISIBLE);
                 tvEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
                 if (empty) {
-                    tvEmpty.setText("No matches for \"" + query + "\"");
+                    if (noQuery) {
+                        if ("whatsapp_status".equals(category)) {
+                            tvEmpty.setText("No WhatsApp status files found");
+                        } else {
+                            tvEmpty.setText("No " + CATEGORY_LABELS[categoryIndex(category)]
+                                    + " files here");
+                        }
+                    } else {
+                        tvEmpty.setText("No matches for \"" + query + "\"");
+                    }
                 }
             });
         });
     }
 
-    /**
-     * Depth-first search for files whose name contains `query` (case-insensitive).
-     * Adds matches as SearchResult(file, relativePathFromRoot).
-     * Directories are traversed but not added to results themselves.
-     * Aborts early if the generation counter changes.
-     */
+    private static int categoryIndex(String id) {
+        for (int i = 0; i < CATEGORY_IDS.length; i++) {
+            if (CATEGORY_IDS[i].equals(id)) return i;
+        }
+        return 0;
+    }
+
+    private void collectWhatsAppStatus(List<SearchResult> out, int generation) {
+        final String base = Environment.getExternalStorageDirectory().getAbsolutePath()
+                + "/Android/media/com.whatsapp/WhatsApp";
+
+        String[] directDirs = {
+                base + "/Media/.Statuses",
+                base + "/Media/.Status"
+        };
+        for (String path : directDirs) {
+            if (generation != searchGeneration) return;
+            addFilesFromDir(new File(path), out);
+        }
+
+        File accountsDir = new File(base + "/Accounts");
+        if (accountsDir.exists() && accountsDir.isDirectory()) {
+            File[] accounts = accountsDir.listFiles();
+            if (accounts != null) {
+                for (File account : accounts) {
+                    if (generation != searchGeneration) return;
+                    if (!account.isDirectory()) continue;
+
+                    File mediaDir = new File(account, "Media");
+                    if (!mediaDir.exists() || !mediaDir.isDirectory()) continue;
+
+                    addFilesFromDir(new File(mediaDir, ".Statuses"), out);
+                    addFilesFromDir(new File(mediaDir, ".Status"), out);
+                }
+            }
+        }
+    }
+
+    private void addFilesFromDir(File dir, List<SearchResult> out) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) return;
+        File[] children = dir.listFiles();
+        if (children == null) return;
+
+        for (File child : children) {
+            if (child.isFile()) {
+                out.add(new SearchResult(child, whatsAppRelativePath(child)));
+            }
+        }
+    }
+
+    private static String whatsAppRelativePath(File file) {
+        String path = file.getAbsolutePath();
+        int idx = path.indexOf("com.whatsapp/WhatsApp/");
+        if (idx >= 0) {
+            return path.substring(idx + "com.whatsapp/WhatsApp/".length());
+        }
+        return path;
+    }
+
+    private void categoryOnlyScan(File root,
+                                  File current,
+                                  String category,
+                                  List<SearchResult> out,
+                                  int generation) {
+        if (generation != searchGeneration) return;
+        if (out.size() >= 2000) return;
+
+        File[] children = current.listFiles();
+        if (children == null) return;
+
+        for (File child : children) {
+            if (generation != searchGeneration) return;
+
+            String name = child.getName();
+            if (name.startsWith(".")) continue;
+
+            if (current.getName().equals("Android")
+                    && (name.equals("data") || name.equals("obb"))) {
+                continue;
+            }
+
+            if (!child.isDirectory() && fileMatchesCategory(child, category)) {
+                out.add(new SearchResult(child, relativize(root, child)));
+            }
+
+            if (child.isDirectory()) {
+                categoryOnlyScan(root, child, category, out, generation);
+            }
+        }
+    }
+
     private void recursiveSearch(File root,
                                  File current,
                                  String query,
+                                 String category,
                                  List<SearchResult> out,
                                  int generation) {
         if (generation != searchGeneration) return;
@@ -1088,29 +1240,28 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         for (File child : children) {
             if (generation != searchGeneration) return;
 
-            // Skip Android/data + Android/obb — permission-protected and huge.
             String name = child.getName();
+            if (name.startsWith(".")) continue;
+
             if (current.getName().equals("Android")
                     && (name.equals("data") || name.equals("obb"))) {
                 continue;
             }
 
             String lower = name.toLowerCase(Locale.US);
-            if (lower.contains(query)) {
-                String rel = relativize(root, child);
-                out.add(new SearchResult(child, rel));
+            boolean nameMatch = lower.contains(query);
+            boolean categoryMatch = fileMatchesCategory(child, category);
+
+            if (!child.isDirectory() && nameMatch && categoryMatch) {
+                out.add(new SearchResult(child, relativize(root, child)));
             }
 
             if (child.isDirectory()) {
-                recursiveSearch(root, child, query, out, generation);
+                recursiveSearch(root, child, query, category, out, generation);
             }
         }
     }
 
-    /**
-     * Returns the path of `child` relative to `root`, with forward slashes.
-     * Example: root=/sdcard, child=/sdcard/a/b.txt → "a/b.txt"
-     */
     private static String relativize(File root, File child) {
         String rootPath = root.getAbsolutePath();
         String childPath = child.getAbsolutePath();
@@ -1121,6 +1272,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
         return childPath;
     }
+
     private void setupStorageDrawer() {
         List<StorageAdapter.StorageItem> items = new ArrayList<>();
 
@@ -1129,8 +1281,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             items.add(new StorageAdapter.StorageItem("Internal Storage", internal.getAbsolutePath()));
         }
 
-        // Root at the bottom so it doesn't draw attention and isn't the first
-        // thing the user taps.
         items.add(new StorageAdapter.StorageItem("Root (needs su)", "/"));
 
         File[] externalDirs = getExternalFilesDirs(null);
@@ -1154,8 +1304,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private AlertDialog.Builder blackDialogBuilder() {
         return new AlertDialog.Builder(new ContextThemeWrapper(this, R.style.BlackDialog));
     }
-
-    // ==================== Sort ====================
 
     private void showSortMenu(View anchor) {
         ContextThemeWrapper wrapper = new ContextThemeWrapper(this, R.style.PopupMenu_Black);
@@ -1183,9 +1331,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     }
 
     private void applySortAndRefresh() {
-        // If a search is active, don't bother re-sorting the unfiltered
-        // directory list — applySearchFilter() will re-run the search and
-        // sort the results with the new comparator.
         if (!currentSearchQuery.isEmpty()) {
             applySearchFilter();
             return;
@@ -1274,10 +1419,8 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         boolean isRootPath = FileManagerRootHelper.needsRoot(dir.getAbsolutePath());
 
         if (isRootPath) {
-            // Request root the first time the user opens /
             if (!ensureRoot()) return;
         } else {
-            // Normal user storage — same checks as before
             if (!dir.exists() || !dir.canRead()) return;
         }
 
@@ -1306,9 +1449,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 if (files != null) fileList.addAll(Arrays.asList(files));
             }
 
-            // Size sort uses the same sizeCache; when using root we can still
-            // compute sizes but they'll be 0 for entries that can't be stat'd,
-            // which is acceptable — they'll sink to the bottom.
+            if (!isRootPath) {
+                fileList.removeIf(f -> f.getName().startsWith("."));
+            }
+
             if (sortModeSnapshot == SORT_SIZE_BIG || sortModeSnapshot == SORT_SIZE_SMALL) {
                 precomputeSizes(fileList);
             }
@@ -1323,7 +1467,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             });
         });
     }
-    // ==================== UI Updates ====================
 
     private void updateSelectionUI() {
         boolean selectionMode = adapter.isSelectionMode();
@@ -1357,11 +1500,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    @Override
     public void onFileClick(File file, int position) {
         if (adapter.isSelectionMode()) {
             adapter.toggleSelection(file);
-            updateSelectionUI();
             return;
         }
 
@@ -1373,14 +1514,12 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
         openFileWithMime(file, getMimeType(file));
     }
-    @Override
+
     public void onFileLongClick(File file, int position) {
         adapter.setSelectionMode(true);
         adapter.toggleSelection(file);
         updateSelectionUI();
     }
-
-    // ==================== UNIVERSAL FILE OPENING ====================
 
     private void openFileWithMime(File file, String mimeType) {
         if (FileManagerRootHelper.needsRoot(file.getAbsolutePath())) {
@@ -1445,10 +1584,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         tryOpenWithDefaultApp(file, mimeType);
     }
 
-    /**
-     * Copies a root-only file to our cache dir so external apps can open it.
-     * Returns the local copy, or null on failure.
-     */
     private File copyRootFileToCache(File rootFile) {
         try {
             File cacheDir = new File(getCacheDir(), "root");
@@ -1464,25 +1599,12 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-
-    /**
-     * Show a full-screen image preview dialog.
-     *
-     * Features:
-     *  - Scales the image to fit the screen (FIT_CENTER).
-     *  - Pinch-to-zoom + pan (via built-in zoom controls).
-     *  - Double-tap toggles between fit and 2× zoom.
-     *  - Tap on the image closes the dialog.
-     *  - Loaded on a background thread to avoid blocking the UI.
-     *  - Info bar shows name + size.
-     */
     private void openImagePreview(File imageFile) {
         if (!imageFile.exists() || !imageFile.canRead()) {
             Toast.makeText(this, "Cannot read image", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // ── Build the dialog shell on the UI thread first ──
         final Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
 
@@ -1490,7 +1612,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(0xFF000000);
 
-        // Info bar
         TextView infoBar = new TextView(this);
         infoBar.setText(imageFile.getName() + "  •  "
                 + FileManagerAdapter.formatSize(imageFile.length()));
@@ -1505,7 +1626,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // Loading indicator while the bitmap decodes
         final ProgressBar spinner = new ProgressBar(this);
         spinner.setIndeterminate(true);
         LinearLayout.LayoutParams spinnerLp = new LinearLayout.LayoutParams(
@@ -1515,7 +1635,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         spinnerLp.topMargin = 40;
         root.addView(spinner, spinnerLp);
 
-        // Zoomable image container
         final android.widget.HorizontalScrollView hScroll =
                 new android.widget.HorizontalScrollView(this);
         hScroll.setBackgroundColor(0xFF000000);
@@ -1534,7 +1653,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         root.addView(hScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // Bottom bar with action buttons
         LinearLayout bottomBar = new LinearLayout(this);
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setBackgroundColor(0xFF001100);
@@ -1559,11 +1677,9 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         dialog.setContentView(root);
         dialog.show();
 
-        // ── Decode the bitmap on a background thread ──
         executor.execute(() -> {
             Bitmap bmp = null;
             try {
-                // First pass: get the dimensions without loading the full bitmap
                 android.graphics.BitmapFactory.Options bounds =
                         new android.graphics.BitmapFactory.Options();
                 bounds.inJustDecodeBounds = true;
@@ -1607,13 +1723,10 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 imageView.setImageBitmap(finalBmp);
                 hScroll.setVisibility(View.VISIBLE);
 
-                // ── Enable pinch-zoom + pan via Matrix ──
-                // (ImageView doesn't natively zoom; wire up a ScaleGestureDetector.)
                 final android.graphics.Matrix matrix = new android.graphics.Matrix();
                 imageView.setScaleType(android.widget.ImageView.ScaleType.MATRIX);
                 imageView.setImageMatrix(matrix);
 
-                // Center the image initially
                 final Runnable centerImage = () -> {
                     float vw = imageView.getWidth();
                     float vh = imageView.getHeight();
@@ -1630,8 +1743,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                     imageView.setImageMatrix(matrix);
                 };
                 imageView.post(centerImage);
-
-                final float[] baseScale = { 1f };
 
                 final android.view.ScaleGestureDetector scaleDetector =
                         new android.view.ScaleGestureDetector(this,
@@ -1653,29 +1764,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
                 final float[] lastTouch = { 0f, 0f };
 
-                imageView.setOnTouchListener((v, ev) -> {
-                    scaleDetector.onTouchEvent(ev);
-
-                    switch (ev.getActionMasked()) {
-                        case MotionEvent.ACTION_DOWN:
-                            lastTouch[0] = ev.getX();
-                            lastTouch[1] = ev.getY();
-                            return true;
-                        case MotionEvent.ACTION_MOVE: {
-                            if (ev.getPointerCount() > 1) return true;
-                            float dx = ev.getX() - lastTouch[0];
-                            float dy = ev.getY() - lastTouch[1];
-                            lastTouch[0] = ev.getX();
-                            lastTouch[1] = ev.getY();
-                            matrix.postTranslate(dx, dy);
-                            imageView.setImageMatrix(matrix);
-                            return true;
-                        }
-                    }
-                    return true;
-                });
-
-                // Double-tap toggles between fit and 2× zoom
                 final android.view.GestureDetector gesture =
                         new android.view.GestureDetector(this,
                                 new android.view.GestureDetector.SimpleOnGestureListener() {
@@ -1737,7 +1825,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
 
         dialog.setOnDismissListener(d -> {
-            // Free the bitmap to avoid leaking memory
             android.graphics.drawable.Drawable dr = imageView.getDrawable();
             if (dr instanceof android.graphics.drawable.BitmapDrawable) {
                 Bitmap b = ((android.graphics.drawable.BitmapDrawable) dr).getBitmap();
@@ -1747,7 +1834,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         });
     }
 
-    /** Extract the current uniform scale factor from a Matrix. */
     private static float getMatrixScale(android.graphics.Matrix m) {
         float[] v = new float[9];
         m.getValues(v);
@@ -1755,6 +1841,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         float sy = v[android.graphics.Matrix.MSCALE_Y];
         return (float) Math.sqrt(sx * sx + sy * sy);
     }
+
     private boolean isOfficeDocument(String mimeType, String fileName) {
         if (mimeType == null) return false;
         if (mimeType.contains("msword")) return true;
@@ -1865,8 +1952,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== APK INSTALL ====================
-
     private void requestInstallApk(File apkFile) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             PackageManager pm = getPackageManager();
@@ -1949,8 +2034,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .show();
     }
 
-    // ==================== ZIP Options ====================
-
     private void showZipFileOptions(File zipFile) {
         blackDialogBuilder()
                 .setTitle(zipFile.getName())
@@ -1969,8 +2052,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 })
                 .show();
     }
-
-    // ==================== Open With Default App ====================
 
     private void tryOpenWithDefaultApp(File file, String mimeType) {
         if (!file.exists()) {
@@ -2080,8 +2161,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .setNegativeButton("Close", null)
                 .show();
     }
-
-    // ==================== Text Editor ====================
 
     private void openTextEditor(File file) {
         executor.execute(() -> {
@@ -2811,8 +2890,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Actions Menu ====================
-
     private void showActionsMenu(View anchor) {
         List<File> selected = new ArrayList<>(adapter.getSelectedFiles());
         boolean hasSelection = !selected.isEmpty();
@@ -2894,8 +2971,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         } catch (Exception ignored) { }
     }
 
-    // ==================== Clipboard ====================
-
     private void doCopy(List<File> selected) {
         clipboard.clear();
         clipboard.addAll(selected);
@@ -2913,8 +2988,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateSelectionUI();
         updateFooterBar();
     }
-
-    // ==================== Paste ====================
 
     private void startPaste() {
         if (clipboard.isEmpty()) return;
@@ -2995,8 +3068,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Delete ====================
-
     private void confirmDelete(List<File> files) {
         blackDialogBuilder()
                 .setTitle("Delete")
@@ -3064,8 +3135,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Extract ====================
-
     private void startExtract(File zipFile) {
         long totalBytes = Math.max(zipFile.length(), 1);
         final long finalTotal = totalBytes;
@@ -3116,8 +3185,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             });
         });
     }
-
-    // ==================== Zip ====================
 
     private void startZip(List<File> files) {
         final List<File> targets = new ArrayList<>(files);
@@ -3187,8 +3254,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ==================== Progress ====================
-
     private void beginProgress(String title) {
         isTransferring = true;
         updateFooterBar();
@@ -3255,8 +3320,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
     private interface ProgressCallback { void onBytes(long bytes); }
     private interface FileCompletedCallback { void onFileCompleted(); }
 
-    // ==================== Rename ====================
-
     private void showRenameDialog(File file) {
         EditText input = new EditText(this);
         input.setText(file.getName());
@@ -3281,8 +3344,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
                 .setNegativeButton("Cancel", null)
                 .show();
     }
-
-    // ==================== Share Multiple ====================
 
     private void shareFiles(List<File> selected) {
         if (selected.isEmpty()) return;
@@ -3332,8 +3393,6 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         updateSelectionUI();
     }
 
-    // ==================== File Info ====================
-
     private void showFileInfo(File file) {
         String info = "Name: " + file.getName() + "\n"
                 + "Path: " + file.getAbsolutePath() + "\n"
@@ -3355,7 +3414,7 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
 
     static class SearchResult {
         final File file;
-        final String relativePath;   // e.g. "subdir/nested/deep.txt" or "" for top-level
+        final String relativePath;
 
         SearchResult(File file, String relativePath) {
             this.file = file;
@@ -3363,33 +3422,28 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
         }
     }
 
-    // ── Thumbnail infra ─────────────────────────────────────────────────
     private static final int THUMB_SIZE_DP = 80;
 
-    /** Cache key is the file's absolute path ONLY. mtime is not part of the key
-     *  so scrolling doesn't cause a cache miss every frame. */
     private final android.util.LruCache<String, Bitmap> thumbCache =
-            new android.util.LruCache<String, Bitmap>(8 * 1024 * 1024) { // 8 MB
+            new android.util.LruCache<String, Bitmap>(8 * 1024 * 1024) {
                 @Override
                 protected int sizeOf(String key, Bitmap value) {
                     return value.getByteCount();
                 }
             };
 
-    /** Paths currently being decoded. Prevents duplicate work. */
     private final java.util.Set<String> thumbInFlight =
             java.util.Collections.newSetFromMap(
                     new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
 
-    /** Two decode threads — enough to hide latency, not enough to thrash I/O. */
     private final ExecutorService thumbExecutor = Executors.newFixedThreadPool(2);
 
-    /** Notified once when the whole batch is ready, so we call notifyDataSetChanged once. */
     private final android.os.Handler thumbBatchHandler =
             new android.os.Handler(android.os.Looper.getMainLooper());
     private final java.util.concurrent.atomic.AtomicInteger pendingThumbs =
             new java.util.concurrent.atomic.AtomicInteger(0);
     private boolean thumbBatchScheduled = false;
+
     private long getFolderSize(File dir) {
         long size = 0;
         File[] files = dir.listFiles();
@@ -3399,5 +3453,47 @@ public class FileManagerActivity extends AppCompatActivity implements FileManage
             }
         }
         return size;
+    }
+
+    private static boolean fileMatchesCategory(File f, String category) {
+        if (category == null || category.isEmpty() || "all".equals(category)) return true;
+        if (f.isDirectory()) return true;
+
+        String name = f.getName().toLowerCase(Locale.US);
+
+        switch (category) {
+            case "images":
+                return name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png")
+                        || name.endsWith(".gif") || name.endsWith(".webp") || name.endsWith(".bmp")
+                        || name.endsWith(".heic") || name.endsWith(".heif") || name.endsWith(".svg");
+            case "videos":
+                return name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".avi")
+                        || name.endsWith(".mov") || name.endsWith(".webm") || name.endsWith(".3gp")
+                        || name.endsWith(".flv") || name.endsWith(".m4v");
+            case "documents":
+                return name.endsWith(".pdf")
+                        || name.endsWith(".doc") || name.endsWith(".docx")
+                        || name.endsWith(".xls") || name.endsWith(".xlsx")
+                        || name.endsWith(".ppt") || name.endsWith(".pptx")
+                        || name.endsWith(".odt") || name.endsWith(".ods") || name.endsWith(".odp")
+                        || name.endsWith(".rtf") || name.endsWith(".txt")
+                        || name.endsWith(".md") || name.endsWith(".csv")
+                        || name.endsWith(".epub") || name.endsWith(".mobi");
+            case "audio":
+                return name.endsWith(".mp3") || name.endsWith(".wav") || name.endsWith(".ogg")
+                        || name.endsWith(".flac") || name.endsWith(".m4a") || name.endsWith(".aac")
+                        || name.endsWith(".opus") || name.endsWith(".wma");
+            case "apks":
+                return name.endsWith(".apk") || name.endsWith(".apks")
+                        || name.endsWith(".xapk") || name.endsWith(".aab");
+            case "other":
+                return !fileMatchesCategory(f, "images")
+                        && !fileMatchesCategory(f, "videos")
+                        && !fileMatchesCategory(f, "documents")
+                        && !fileMatchesCategory(f, "audio")
+                        && !fileMatchesCategory(f, "apks");
+            default:
+                return true;
+        }
     }
 }
