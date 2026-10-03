@@ -698,19 +698,6 @@ public class GalleryActivity extends AppCompatActivity {
         prefs.edit().putString(PREF_FAVORITES, sb.toString()).apply();
     }
 
-    private boolean toggleFavoriteForPath(String path) {
-        if (path == null) return false;
-        Set<String> favs = loadFavoritePaths();
-        boolean nowFav;
-        if (favs.contains(path)) { favs.remove(path); nowFav = false; }
-        else { favs.add(path); nowFav = true; }
-        saveFavoritePaths(favs);
-        for (MediaItem item : mediaItems) {
-            if (item.path.equals(path)) { item.isFavorite = nowFav; break; }
-        }
-        return nowFav;
-    }
-
     private void updateFullscreenFavoriteIcon(String path) {
         if (path == null) return;
         boolean fav = false;
@@ -2922,20 +2909,83 @@ public class GalleryActivity extends AppCompatActivity {
         catch (Exception e) { return path; }
     }
 
+    /**
+     * Bulk toggle favorites for all selected items.
+     * - Un-favorited items in the selection get added to favorites.
+     * - Already favorited items in the selection get removed from favorites.
+     * - Instantly refreshes the adapter and re-applies filters.
+     */
     private void addSelectedToFavorites() {
         if (selectedItems.isEmpty()) return;
+
         Set<String> favs = loadFavoritePaths();
+        boolean anyChanged = false;
+
         for (String path : selectedItems) {
-            File f = new File(path);
-            if (!f.exists()) continue;
-            favs.add(path);
+            if (favs.contains(path)) {
+                favs.remove(path);
+                anyChanged = true;
+            } else {
+                favs.add(path);
+                anyChanged = true;
+            }
+
+            // Update in-memory MediaItem objects
             for (MediaItem item : mediaItems) {
-                if (item.path.equals(path)) { item.isFavorite = true; break; }
+                if (item.path.equals(path)) {
+                    item.isFavorite = favs.contains(path);
+                    break;
+                }
             }
         }
-        saveFavoritePaths(favs);
+
+        if (anyChanged) {
+            saveFavoritePaths(favs);
+
+            // ★ Fix Bug 1 & 3: Immediately notify adapter and re-apply filter/ui updates
+            if (adapter != null) {
+                adapter.notifyDataSetChanged();
+            }
+            applyFilter();
+
+            Toast.makeText(this, "Favorites updated", Toast.LENGTH_SHORT).show();
+        }
+
         clearSelection();
+    }
+
+    /**
+     * Single item favorite toggle (used in fullscreen viewer / single actions).
+     */
+    private boolean toggleFavoriteForPath(String path) {
+        if (path == null) return false;
+        Set<String> favs = loadFavoritePaths();
+        boolean nowFav;
+
+        if (favs.contains(path)) {
+            favs.remove(path);
+            nowFav = false;
+        } else {
+            favs.add(path);
+            nowFav = true;
+        }
+
+        saveFavoritePaths(favs);
+
+        for (MediaItem item : mediaItems) {
+            if (item.path.equals(path)) {
+                item.isFavorite = nowFav;
+                break;
+            }
+        }
+
+        // ★ Fix Bug 1 & 3: Refresh adapter and filter instantly
+        if (adapter != null) {
+            adapter.notifyDataSetChanged();
+        }
         applyFilter();
+
+        return nowFav;
     }
 
     @Override
