@@ -6,10 +6,6 @@ import ohi.andre.consolelauncher.commands.CommandAbstraction;
 import ohi.andre.consolelauncher.commands.ExecutePack;
 import ohi.andre.consolelauncher.commands.main.MainPack;
 
-/**
- * T-UI command: browser [url]
- * Opens AuraBrowser (lightweight WebView browser).
- */
 public class browser implements CommandAbstraction {
 
     @Override
@@ -34,29 +30,11 @@ public class browser implements CommandAbstraction {
                 url != null ? url : "home");
     }
 
-    @Override
-    public int[] argType() {
-        return new int[] { CommandAbstraction.PLAIN_TEXT };
-    }
-
-    @Override
-    public int priority() {
-        return 3;
-    }
-
-    @Override
-    public int helpRes() {
-        return R.string.help_browser;
-    }
-
-    @Override
-    public String onArgNotFound(ExecutePack pack, int index) {
-        return null;
-    }
-
-    @Override
-    public String onNotArgEnough(ExecutePack pack, int nArgs) {
-        // No args? Just open the browser on the home page.
+    @Override public int[] argType() { return new int[0]; }
+    @Override public int priority() { return 3; }
+    @Override public int helpRes() { return R.string.help_browser; }
+    @Override public String onArgNotFound(ExecutePack pack, int index) { return null; }
+    @Override public String onNotArgEnough(ExecutePack pack, int nArgs) {
         MainPack info = (MainPack) pack;
         AuraBrowserActivity.open(info.context, null);
         return info.res.getString(R.string.output_openingbrowser, "home");
