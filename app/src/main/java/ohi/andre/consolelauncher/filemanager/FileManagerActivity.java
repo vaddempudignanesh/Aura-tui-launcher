@@ -1449,9 +1449,9 @@ public class FileManagerActivity extends AppCompatActivity {
                 if (files != null) fileList.addAll(Arrays.asList(files));
             }
 
-            if (!isRootPath) {
-                fileList.removeIf(f -> f.getName().startsWith("."));
-            }
+            // Hidden files are now shown while navigating directories.
+            // They are filtered out only when a category chip / search is active
+            // (see categoryOnlyScan / recursiveSearch).
 
             if (sortModeSnapshot == SORT_SIZE_BIG || sortModeSnapshot == SORT_SIZE_SMALL) {
                 precomputeSizes(fileList);
