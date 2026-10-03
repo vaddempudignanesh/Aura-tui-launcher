@@ -276,10 +276,9 @@
             android:theme="@style/Theme.AppCompat.NoActionBar"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:launchMode="singleTop"
-            android:excludeFromRecents="false"
+            android:excludeFromRecents="true"
             android:windowSoftInputMode="adjustResize"
-            android:hardwareAccelerated="true"
-            android:taskAffinity="">
+            android:hardwareAccelerated="true">
 
             <!-- Text files -->
             <intent-filter android:priority="100">

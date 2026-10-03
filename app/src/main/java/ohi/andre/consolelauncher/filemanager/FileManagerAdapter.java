@@ -2,15 +2,11 @@ package ohi.andre.consolelauncher.filemanager;
 
 import android.content.Context;
 import android.graphics.Color;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.GestureDetector;
-import android.view.HapticFeedbackConstants;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.AnimationUtils;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -33,13 +29,9 @@ public class FileManagerAdapter
     public interface OnFileClickListener {
         void onFileClick(File file, int position);
         void onFileLongClick(File file, int position);
+        /** Called whenever the selection set changes so the host can update its toolbar. */
         void onSelectionChanged(int count);
     }
-
-    private static final int AUTO_SCROLL_INTERVAL_MS = 16;
-    private static final int AUTO_SCROLL_STEP_PX = 12;
-    private static final int EDGE_ZONE_DP = 72;
-    private static final int TAP_SLOP_DP = 12;
 
     private final Context context;
     private final List<File> files = new ArrayList<>();
@@ -48,50 +40,46 @@ public class FileManagerAdapter
     private boolean selectionMode = false;
     private java.util.List<FileManagerActivity.SearchResult> searchResults = null;
 
+    // ── Swipe-select state ──
+    // While a long-press is active AND the finger keeps moving vertically,
+    // every row we pass through is added to (or removed from) the selection.
     private boolean swipeSelecting = false;
+    /** true = add on enter, false = remove on enter. Decided at the start of the swipe. */
     private boolean swipeSelectAdds = true;
+    /** The row index where the swipe started. The initial toggled row. */
     private int swipeAnchor = -1;
-    private int lastTouchedPosition = -1;
-
-    private float downX, downY;
-    private boolean dragStarted = false;
-    private boolean longPressFired = false;
+    /** Selection state that existed immediately after the swipe was started. */
+    private final Set<File> swipeBaseSelection = new HashSet<>();
+    /** Current range endpoint during this continuous drag. */
+    private int swipeCurrentPosition = RecyclerView.NO_POSITION;
+    private int autoScrollDirection = 0; // -1 = up, +1 = down
 
     private final RecyclerView recycler;
-    private final Handler autoScrollHandler = new Handler(Looper.getMainLooper());
-    private final int edgeZonePx;
-    private final int tapSlopPx;
-    private final int autoScrollStepPx;
-    private int autoScrollDirection = 0;
 
-    private final Runnable autoScrollRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (autoScrollDirection == 0) return;
-            int scrolled = recycler.canScrollVertically(autoScrollDirection)
-                    ? autoScrollDirection * autoScrollStepPx : 0;
-            if (scrolled != 0) {
-                recycler.scrollBy(0, scrolled);
-                extendSelectionAtEdge();
-            }
-            autoScrollHandler.postDelayed(this, AUTO_SCROLL_INTERVAL_MS);
-        }
-    };
+    // ── Bottom-edge auto-scroll selection ───────────────────────────────
+    // When the user long-presses a file and drags to the bottom edge,
+    // RecyclerView keeps scrolling while every newly reached row is selected.
+    private final android.os.Handler autoScrollHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private boolean autoScrollRunning = false;
+    private int lastAutoSelectedPosition = RecyclerView.NO_POSITION;
+    private int lastAutoSelectedRow = RecyclerView.NO_POSITION;
+    private static final int AUTO_SCROLL_EDGE_DP = 72;
+    private static final int AUTO_SCROLL_STEP_DP = 18;
+    private static final long AUTO_SCROLL_INTERVAL_MS = 32L;
 
     public FileManagerAdapter(Context context, RecyclerView recycler,
                               OnFileClickListener listener) {
         this.context = context;
         this.recycler = recycler;
         this.listener = listener;
-        this.edgeZonePx = (int) (EDGE_ZONE_DP * context.getResources().getDisplayMetrics().density);
-        this.tapSlopPx = (int) (TAP_SLOP_DP * context.getResources().getDisplayMetrics().density);
-        this.autoScrollStepPx = (int) (AUTO_SCROLL_STEP_PX * context.getResources().getDisplayMetrics().density);
 
+        // Central gesture handling — no per-item OnLongClickListener.
+        // This is the piece that makes long-press feel instant.
         final GestureDetector detector =
                 new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
                     @Override
                     public void onLongPress(MotionEvent e) {
-                        longPressFired = true;
                         int pos = positionFromEvent(e);
                         if (pos == RecyclerView.NO_POSITION) return;
 
@@ -101,19 +89,28 @@ public class FileManagerAdapter
                             selectedFiles.clear();
                             selectedFiles.add(f);
                             swipeAnchor = pos;
+                            // Decide add-vs-remove based on whether we just
+                            // toggled the item off (impossible on first long
+                            // press) or on (always true here).
                             swipeSelectAdds = true;
                             swipeSelecting = true;
-                            lastTouchedPosition = pos;
-                            notifyItemChanged(pos);
+                            swipeBaseSelection.clear();
+                            swipeBaseSelection.addAll(selectedFiles);
+                            swipeCurrentPosition = pos;
+                            notifyDataSetChanged();
                             listener.onSelectionChanged(selectedFiles.size());
                             haptic();
                         } else {
+                            // Already in selection mode — long-press starts
+                            // a swipe-select from this row.
                             swipeAnchor = pos;
                             swipeSelectAdds = !selectedFiles.contains(f);
-                            toggleSelectionQuiet(f);
-                            notifyItemChanged(pos);
+                            toggleSelection(f);
+                            if (!selectionMode) return;
                             swipeSelecting = true;
-                            lastTouchedPosition = pos;
+                            swipeBaseSelection.clear();
+                            swipeBaseSelection.addAll(selectedFiles);
+                            swipeCurrentPosition = pos;
                             haptic();
                         }
                     }
@@ -123,73 +120,27 @@ public class FileManagerAdapter
             @Override
             public boolean onInterceptTouchEvent(@NonNull RecyclerView rv,
                                                  @NonNull MotionEvent e) {
-                switch (e.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        downX = e.getX();
-                        downY = e.getY();
-                        dragStarted = false;
-                        longPressFired = false;
-                        lastTouchedPosition = positionFromEvent(e);
-                        detector.onTouchEvent(e);
-                        return false;
-                    case MotionEvent.ACTION_MOVE:
-                        float dx = Math.abs(e.getX() - downX);
-                        float dy = Math.abs(e.getY() - downY);
-
-                        if (!dragStarted && (dx > tapSlopPx || dy > tapSlopPx)) {
-                            dragStarted = true;
-                            if (selectionMode && lastTouchedPosition != RecyclerView.NO_POSITION) {
-                                File f = files.get(lastTouchedPosition);
-                                swipeAnchor = lastTouchedPosition;
-                                swipeSelectAdds = !selectedFiles.contains(f);
-                                swipeSelecting = true;
-                            }
-                        }
-
-                        detector.onTouchEvent(e);
-                        if (swipeSelecting) {
-                            handleSwipeMove(e);
-                            updateAutoScroll(e);
-                            return true;
-                        }
-                        return false;
-                }
-                return false;
+                detector.onTouchEvent(e);
+                // Keep MOVE events under our control after long-press selection
+                // starts. Bottom-edge auto-scroll below moves RecyclerView itself.
+                return swipeSelecting && e.getActionMasked() == MotionEvent.ACTION_MOVE;
             }
 
             @Override
             public void onTouchEvent(@NonNull RecyclerView rv, @NonNull MotionEvent e) {
+                handleSwipeMove(e);
                 detector.onTouchEvent(e);
 
-                switch (e.getActionMasked()) {
-                    case MotionEvent.ACTION_MOVE:
-                        if (swipeSelecting) {
-                            handleSwipeMove(e);
-                            updateAutoScroll(e);
-                        }
-                        break;
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        stopAutoScroll();
-                        if (swipeSelecting) {
-                            swipeSelecting = false;
-                            swipeAnchor = -1;
-                            lastTouchedPosition = -1;
-                        } else if (!longPressFired && !dragStarted
-                                && lastTouchedPosition != RecyclerView.NO_POSITION
-                                && lastTouchedPosition < files.size()) {
-                            View child = rv.findChildViewUnder(e.getX(), e.getY());
-                            if (child != null) {
-                                int pos = rv.getChildAdapterPosition(child);
-                                if (pos == lastTouchedPosition) {
-                                    listener.onFileClick(files.get(pos), pos);
-                                }
-                            }
-                        }
-                        longPressFired = false;
-                        dragStarted = false;
-                        lastTouchedPosition = -1;
-                        break;
+                if (e.getActionMasked() == MotionEvent.ACTION_UP
+                        || e.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                    stopBottomAutoScroll();
+                    swipeSelecting = false;
+                    swipeAnchor = -1;
+                    swipeCurrentPosition = RecyclerView.NO_POSITION;
+                    swipeBaseSelection.clear();
+                    lastAutoSelectedPosition = RecyclerView.NO_POSITION;
+                    lastAutoSelectedRow = RecyclerView.NO_POSITION;
+                    autoScrollDirection = 0;
                 }
             }
 
@@ -201,13 +152,8 @@ public class FileManagerAdapter
 
     private void haptic() {
         try {
-            recycler.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-        } catch (Exception ignored) { }
-    }
-
-    private void selectionHaptic() {
-        try {
-            recycler.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+            recycler.performHapticFeedback(
+                    android.view.HapticFeedbackConstants.LONG_PRESS);
         } catch (Exception ignored) { }
     }
 
@@ -221,110 +167,181 @@ public class FileManagerAdapter
         if (!swipeSelecting) return;
         if (e.getActionMasked() != MotionEvent.ACTION_MOVE) return;
 
+        final float y = e.getY();
+        final int height = recycler.getHeight();
+        final int edgePx = dp(AUTO_SCROLL_EDGE_DP);
+
+        // Bottom edge = scroll downward. Top edge = scroll upward.
+        if (height > 0 && y >= height - edgePx) {
+            startEdgeAutoScroll(1);
+            return;
+        }
+
+        if (height > 0 && y <= edgePx) {
+            startEdgeAutoScroll(-1);
+            return;
+        }
+
+        stopBottomAutoScroll();
+
         int pos = positionFromEvent(e);
-        if (pos == RecyclerView.NO_POSITION) return;
-        if (pos < 0 || pos >= files.size()) return;
-
-        if (pos == lastTouchedPosition) return;
-
-        int lo = Math.min(lastTouchedPosition, pos);
-        int hi = Math.max(lastTouchedPosition, pos);
-
-        boolean changed = false;
-        if (swipeSelectAdds) {
-            for (int i = lo; i <= hi; i++) {
-                File f = files.get(i);
-                if (!selectedFiles.contains(f)) {
-                    selectedFiles.add(f);
-                    notifyItemChanged(i);
-                    changed = true;
-                }
-            }
-        } else {
-            for (int i = lo; i <= hi; i++) {
-                File f = files.get(i);
-                if (selectedFiles.contains(f)) {
-                    selectedFiles.remove(f);
-                    notifyItemChanged(i);
-                    changed = true;
-                }
-            }
-        }
-
-        lastTouchedPosition = pos;
-
-        if (changed) {
-            selectionHaptic();
-            listener.onSelectionChanged(selectedFiles.size());
+        if (pos != RecyclerView.NO_POSITION) {
+            applySwipeEndpoint(pos);
         }
     }
 
-    private void extendSelectionAtEdge() {
-        int first = recycler.getChildCount() > 0
-                ? recycler.getChildAdapterPosition(recycler.getChildAt(0))
-                : RecyclerView.NO_POSITION;
-        int last = recycler.getChildCount() > 0
-                ? recycler.getChildAdapterPosition(recycler.getChildAt(recycler.getChildCount() - 1))
-                : RecyclerView.NO_POSITION;
+    /**
+     * Rebuild the selection for the current drag endpoint from the state that
+     * existed when the long-press swipe began. This makes reverse dragging
+     * genuinely undo the range instead of only adding more files.
+     */
+    private void applySwipeEndpoint(int targetPosition) {
+        if (!swipeSelecting || targetPosition < 0 || targetPosition >= files.size()) return;
+        if (swipeAnchor < 0 || swipeAnchor >= files.size()) return;
 
-        if (first == RecyclerView.NO_POSITION || last == RecyclerView.NO_POSITION) return;
+        swipeCurrentPosition = targetPosition;
 
-        int target = autoScrollDirection > 0 ? last : first;
-        if (target < 0 || target >= files.size()) return;
+        int first = Math.min(swipeAnchor, targetPosition);
+        int last = Math.max(swipeAnchor, targetPosition);
 
-        int lo = Math.min(swipeAnchor, target);
-        int hi = Math.max(swipeAnchor, target);
-
-        boolean changed = false;
-        if (swipeSelectAdds) {
-            for (int i = lo; i <= hi; i++) {
-                File f = files.get(i);
-                if (!selectedFiles.contains(f)) {
-                    selectedFiles.add(f);
-                    notifyItemChanged(i);
-                    changed = true;
-                }
-            }
-        } else {
-            for (int i = lo; i <= hi; i++) {
-                File f = files.get(i);
-                if (selectedFiles.contains(f)) {
-                    selectedFiles.remove(f);
-                    notifyItemChanged(i);
-                    changed = true;
-                }
+        Set<File> newSelection = new HashSet<>(swipeBaseSelection);
+        for (int position = first; position <= last; position++) {
+            File file = files.get(position);
+            if (swipeSelectAdds) {
+                newSelection.add(file);
+            } else {
+                newSelection.remove(file);
             }
         }
 
-        lastTouchedPosition = target;
-        if (changed) listener.onSelectionChanged(selectedFiles.size());
+        boolean changed = !selectedFiles.equals(newSelection);
+        if (!changed) return;
+
+        selectedFiles.clear();
+        selectedFiles.addAll(newSelection);
+
+        if (selectedFiles.isEmpty()) {
+            selectionMode = false;
+            stopBottomAutoScroll();
+            swipeSelecting = false;
+            notifyDataSetChanged();
+            listener.onSelectionChanged(0);
+            return;
+        }
+
+        notifyDataSetChanged();
+        listener.onSelectionChanged(selectedFiles.size());
     }
 
-    private void updateAutoScroll(MotionEvent e) {
-        float y = e.getY();
-        int h = recycler.getHeight();
-
-        int newDir;
-        if (y < edgeZonePx) {
-            newDir = -1;
-        } else if (y > h - edgeZonePx) {
-            newDir = 1;
-        } else {
-            newDir = 0;
-        }
-
-        if (newDir != autoScrollDirection) {
-            autoScrollDirection = newDir;
-            autoScrollHandler.removeCallbacks(autoScrollRunnable);
-            if (newDir != 0) {
-                autoScrollHandler.post(autoScrollRunnable);
-            }
-        }
+    private void selectPositionForSwipe(int pos) {
+        applySwipeEndpoint(pos);
     }
 
-    private void stopAutoScroll() {
+    private void startEdgeAutoScroll(int direction) {
+        if (!swipeSelecting || files.isEmpty()) return;
+
+        autoScrollDirection = direction;
+
+        int endpoint = direction > 0
+                ? getLastVisibleAdapterPosition()
+                : getFirstVisibleAdapterPosition();
+
+        if (endpoint == RecyclerView.NO_POSITION) return;
+
+        applySwipeEndpoint(endpoint);
+
+        // Already at the corresponding end of the adapter: there is nothing
+        // further to scroll, but the endpoint itself remains selected.
+        if ((direction > 0 && endpoint >= files.size() - 1)
+                || (direction < 0 && endpoint <= 0)) {
+            stopBottomAutoScroll();
+            return;
+        }
+
+        if (autoScrollRunning) return;
+
+        autoScrollRunning = true;
+        autoScrollHandler.removeCallbacks(autoScrollRunnable);
+        autoScrollHandler.post(autoScrollRunnable);
+    }
+
+    private final Runnable autoScrollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!swipeSelecting || !autoScrollRunning || files.isEmpty()) return;
+
+            int direction = autoScrollDirection;
+            if (direction == 0) {
+                stopBottomAutoScroll();
+                return;
+            }
+
+            int endpointBefore = direction > 0
+                    ? getLastVisibleAdapterPosition()
+                    : getFirstVisibleAdapterPosition();
+
+            if (endpointBefore == RecyclerView.NO_POSITION) {
+                stopBottomAutoScroll();
+                return;
+            }
+
+            applySwipeEndpoint(endpointBefore);
+            if (!swipeSelecting) return;
+
+            if ((direction > 0 && endpointBefore >= files.size() - 1)
+                    || (direction < 0 && endpointBefore <= 0)) {
+                stopBottomAutoScroll();
+                return;
+            }
+
+            int distance = Math.max(1, dp(AUTO_SCROLL_STEP_DP));
+            recycler.scrollBy(0, direction * distance);
+
+            int endpointAfter = direction > 0
+                    ? getLastVisibleAdapterPosition()
+                    : getFirstVisibleAdapterPosition();
+
+            if (endpointAfter != RecyclerView.NO_POSITION) {
+                applySwipeEndpoint(endpointAfter);
+                if (!swipeSelecting) return;
+            }
+
+            if ((direction > 0 && endpointAfter >= files.size() - 1)
+                    || (direction < 0 && endpointAfter <= 0)) {
+                stopBottomAutoScroll();
+                return;
+            }
+
+            autoScrollHandler.postDelayed(this, AUTO_SCROLL_INTERVAL_MS);
+        }
+    };
+
+    private void stopBottomAutoScroll() {
+        autoScrollRunning = false;
         autoScrollDirection = 0;
         autoScrollHandler.removeCallbacks(autoScrollRunnable);
+    }
+
+    private int getLastVisibleAdapterPosition() {
+        RecyclerView.LayoutManager lm = recycler.getLayoutManager();
+        if (lm instanceof androidx.recyclerview.widget.LinearLayoutManager) {
+            return ((androidx.recyclerview.widget.LinearLayoutManager) lm)
+                    .findLastVisibleItemPosition();
+        }
+        return RecyclerView.NO_POSITION;
+    }
+
+    private int getFirstVisibleAdapterPosition() {
+        RecyclerView.LayoutManager lm = recycler.getLayoutManager();
+        if (lm instanceof androidx.recyclerview.widget.LinearLayoutManager) {
+            return ((androidx.recyclerview.widget.LinearLayoutManager) lm)
+                    .findFirstVisibleItemPosition();
+        }
+        return RecyclerView.NO_POSITION;
+    }
+
+    private int dp(int value) {
+        return Math.round(value * context.getResources().getDisplayMetrics().density);
     }
 
     public void setSearchResults(java.util.List<FileManagerActivity.SearchResult> results) {
@@ -354,10 +371,13 @@ public class FileManagerAdapter
         this.selectionMode = mode;
         if (!mode) {
             selectedFiles.clear();
+            stopBottomAutoScroll();
             swipeSelecting = false;
             swipeAnchor = -1;
-            lastTouchedPosition = -1;
-            stopAutoScroll();
+            swipeCurrentPosition = RecyclerView.NO_POSITION;
+            swipeBaseSelection.clear();
+            lastAutoSelectedPosition = RecyclerView.NO_POSITION;
+            lastAutoSelectedRow = RecyclerView.NO_POSITION;
         }
         notifyDataSetChanged();
         listener.onSelectionChanged(selectedFiles.size());
@@ -371,20 +391,14 @@ public class FileManagerAdapter
         }
         if (selectedFiles.isEmpty()) {
             selectionMode = false;
+            stopBottomAutoScroll();
+            swipeSelecting = false;
+            swipeAnchor = -1;
+            swipeCurrentPosition = RecyclerView.NO_POSITION;
+            swipeBaseSelection.clear();
         }
         notifyDataSetChanged();
         listener.onSelectionChanged(selectedFiles.size());
-    }
-
-    private void toggleSelectionQuiet(File file) {
-        if (selectedFiles.contains(file)) {
-            selectedFiles.remove(file);
-        } else {
-            selectedFiles.add(file);
-        }
-        if (selectedFiles.isEmpty()) {
-            selectionMode = false;
-        }
     }
 
     public void selectAll() {
@@ -426,6 +440,7 @@ public class FileManagerAdapter
                     : formatSize(file.length()));
         }
 
+        // ── Icon / thumbnail ─────────────────────────────────
         holder.ivIcon.setTag(R.id.iv_icon, null);
         holder.ivIcon.setImageDrawable(null);
         holder.ivIcon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
@@ -449,27 +464,26 @@ public class FileManagerAdapter
             holder.ivIcon.setImageResource(R.drawable.ic_file);
         }
 
+        // ── Colours ─────────────────────────────────────────────
         if (isSelected) {
             holder.itemContainer.setBackgroundColor(Color.parseColor("#FF003300"));
             holder.tvName.setTextColor(Color.parseColor("#FF00FF00"));
             holder.tvSize.setTextColor(Color.parseColor("#FF00FF00"));
-            holder.itemContainer.setScaleX(0.94f);
-            holder.itemContainer.setScaleY(0.94f);
         } else {
             holder.itemContainer.setBackgroundColor(Color.parseColor("#FF000000"));
             holder.tvName.setTextColor(Color.parseColor("#FF00FF00"));
             holder.tvSize.setTextColor(Color.parseColor("#FF00AA00"));
-            holder.itemContainer.setScaleX(1f);
-            holder.itemContainer.setScaleY(1f);
         }
 
+        // ── Clicks ──────────────────────────────────────────────
         holder.itemContainer.setOnClickListener(v -> {
             int pos = holder.getAdapterPosition();
             if (pos == RecyclerView.NO_POSITION) return;
-            v.startAnimation(AnimationUtils.loadAnimation(
-                    context, android.R.anim.fade_in));
             listener.onFileClick(files.get(pos), pos);
         });
+
+        // No setOnLongClickListener — long-press is handled globally by the
+        // OnItemTouchListener above, which fires instantly.
     }
 
     private static boolean isImageFile(File f) {
@@ -491,6 +505,14 @@ public class FileManagerAdapter
         if (bytes < 1024 * 1024) return String.format(Locale.US, "%.1f KB", bytes / 1024.0);
         if (bytes < 1024 * 1024 * 1024) return String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024));
         return String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024));
+    }
+
+    @Override
+    public void onDetachedFromRecyclerView(@NonNull RecyclerView recyclerView) {
+        stopBottomAutoScroll();
+        lastAutoSelectedPosition = RecyclerView.NO_POSITION;
+        lastAutoSelectedRow = RecyclerView.NO_POSITION;
+        super.onDetachedFromRecyclerView(recyclerView);
     }
 
     @Override
