@@ -1,99 +1,181 @@
 <?xml version="1.0" encoding="utf-8"?>
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/calc_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent"
-    android:padding="16dp">
+    android:orientation="vertical"
+    android:background="#000000"
+    android:fitsSystemWindows="true">
 
-    <!-- BLUR TARGET - make it match parent and behind glass -->
-    <View
-        android:id="@+id/blur_target"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@android:color/transparent" />
-
-    <!-- GLASS PANEL - full width, wrap content height -->
-    <RelativeLayout
-        android:id="@+id/glass_panel"
+    <!-- Title bar -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_centerInParent="true"
-        android:background="@drawable/bg_glass_panel"
-        android:padding="20dp"
-        android:elevation="24dp">
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:padding="12dp"
+        android:background="#001100">
 
-        <!-- Back Button -->
         <ImageButton
             android:id="@+id/btn_back"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:src="@drawable/ic_back"
-            android:background="#33FFFFFF"
-            android:layout_alignParentTop="true"
-            android:layout_alignParentStart="true"
+            android:background="#00000000"
             android:padding="8dp"
-            android:tint="#FFFFFF" />
+            app:tint="#00FF00" />
 
-        <!-- Display -->
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="CALCULATOR"
+            android:textColor="#00FF00"
+            android:textSize="16sp"
+            android:letterSpacing="0.25"
+            android:typeface="monospace"
+            android:gravity="center" />
+
+        <ImageButton
+            android:id="@+id/btn_history"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:src="@drawable/ic_file"
+            android:background="#00000000"
+            android:padding="8dp"
+            app:tint="#00FF00" />
+    </LinearLayout>
+
+    <!-- Display area -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/calc_expression"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="end"
+            android:textColor="#00AA00"
+            android:textSize="16sp"
+            android:typeface="monospace"
+            android:singleLine="true"
+            android:ellipsize="start"/>
+
         <TextView
             android:id="@+id/calc_display"
             android:layout_width="match_parent"
-            android:layout_height="80dp"
-            android:layout_below="@id/btn_back"
-            android:layout_marginTop="4dp"
-            android:background="#0DFFFFFF"
-            android:gravity="end|center_vertical"
-            android:padding="16dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="end"
             android:text="0"
-            android:textSize="40sp"
-            android:textColor="#FFFFFF"
+            android:textColor="#00FF00"
+            android:textSize="48sp"
             android:textStyle="bold"
-            android:scrollHorizontally="true"
+            android:typeface="monospace"
             android:singleLine="true"
-            android:ellipsize="none"
-            android:marqueeRepeatLimit="marquee_forever"/>
+            android:ellipsize="start"/>
+    </LinearLayout>
 
-        <!-- Grid Layout for Buttons -->
-        <GridLayout
-            android:id="@+id/calc_grid"
+    <!-- History panel (hidden by default) -->
+    <LinearLayout
+        android:id="@+id/calc_history_panel"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:background="#001100"
+        android:visibility="gone">
+
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_below="@id/calc_display"
-            android:layout_marginTop="16dp"
-            android:columnCount="4"
-            android:rowCount="5">
+            android:orientation="horizontal"
+            android:padding="10dp">
 
-            <!-- Row 1 -->
-            <Button android:id="@+id/btn_clear" style="@style/CalcButtonOp" android:text="C"/>
-            <Button android:id="@+id/btn_backspace" style="@style/CalcButtonOp" android:text="⌫"/>
-            <Button android:id="@+id/btn_divide" style="@style/CalcButtonOp" android:text="÷"/>
-            <Button android:id="@+id/btn_multiply" style="@style/CalcButtonOp" android:text="×"/>
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="HISTORY"
+                android:textColor="#00FF00"
+                android:textSize="13sp"
+                android:letterSpacing="0.25"
+                android:typeface="monospace"/>
 
-            <!-- Row 2 -->
-            <Button android:id="@+id/btn_7" style="@style/CalcButton" android:text="7"/>
-            <Button android:id="@+id/btn_8" style="@style/CalcButton" android:text="8"/>
-            <Button android:id="@+id/btn_9" style="@style/CalcButton" android:text="9"/>
-            <Button android:id="@+id/btn_minus" style="@style/CalcButtonOp" android:text="-"/>
+            <TextView
+                android:id="@+id/btn_clear_history"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="6dp"
+                android:text="CLEAR"
+                android:textColor="#FF5555"
+                android:textSize="12sp"
+                android:typeface="monospace"/>
+        </LinearLayout>
 
-            <!-- Row 3 -->
-            <Button android:id="@+id/btn_4" style="@style/CalcButton" android:text="4"/>
-            <Button android:id="@+id/btn_5" style="@style/CalcButton" android:text="5"/>
-            <Button android:id="@+id/btn_6" style="@style/CalcButton" android:text="6"/>
-            <Button android:id="@+id/btn_plus" style="@style/CalcButtonOp" android:text="+"/>
+        <ScrollView
+            android:id="@+id/calc_history_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp">
 
-            <!-- Row 4 -->
-            <Button android:id="@+id/btn_1" style="@style/CalcButton" android:text="1"/>
-            <Button android:id="@+id/btn_2" style="@style/CalcButton" android:text="2"/>
-            <Button android:id="@+id/btn_3" style="@style/CalcButton" android:text="3"/>
-            <Button android:id="@+id/btn_equals" style="@style/CalcButtonEquals" android:text="="/>
+            <LinearLayout
+                android:id="@+id/calc_history_list"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"/>
+        </ScrollView>
 
-            <!-- Row 5 -->
-            <Button android:id="@+id/btn_0" style="@style/CalcButton" android:text="0" android:layout_columnSpan="2"/>
-            <Button android:id="@+id/btn_decimal" style="@style/CalcButton" android:text="."/>
-            <Button android:id="@+id/btn_history" style="@style/CalcButtonOp" android:text="📜"/>
+        <TextView
+            android:id="@+id/calc_history_empty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="16dp"
+            android:gravity="center"
+            android:text="No history yet"
+            android:textColor="#00AA00"
+            android:textSize="13sp"
+            android:typeface="monospace"
+            android:visibility="gone"/>
+    </LinearLayout>
 
-        </GridLayout>
-    </RelativeLayout>
-</RelativeLayout>
+    <!-- Keypad (always visible below the history area) -->
+    <GridLayout
+        android:id="@+id/calc_grid"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="8dp"
+        android:columnCount="4"
+        android:rowCount="5">
+
+        <Button android:id="@+id/btn_clear"     style="@style/CalcButtonOp"     android:text="C"/>
+        <Button android:id="@+id/btn_backspace" style="@style/CalcButtonOp"     android:text="⌫"/>
+        <Button android:id="@+id/btn_divide"    style="@style/CalcButtonOp"     android:text="÷"/>
+        <Button android:id="@+id/btn_multiply"  style="@style/CalcButtonOp"     android:text="×"/>
+
+        <Button android:id="@+id/btn_7" style="@style/CalcButton" android:text="7"/>
+        <Button android:id="@+id/btn_8" style="@style/CalcButton" android:text="8"/>
+        <Button android:id="@+id/btn_9" style="@style/CalcButton" android:text="9"/>
+        <Button android:id="@+id/btn_minus" style="@style/CalcButtonOp" android:text="-"/>
+
+        <Button android:id="@+id/btn_4" style="@style/CalcButton" android:text="4"/>
+        <Button android:id="@+id/btn_5" style="@style/CalcButton" android:text="5"/>
+        <Button android:id="@+id/btn_6" style="@style/CalcButton" android:text="6"/>
+        <Button android:id="@+id/btn_plus" style="@style/CalcButtonOp" android:text="+"/>
+
+        <Button android:id="@+id/btn_1" style="@style/CalcButton" android:text="1"/>
+        <Button android:id="@+id/btn_2" style="@style/CalcButton" android:text="2"/>
+        <Button android:id="@+id/btn_3" style="@style/CalcButton" android:text="3"/>
+        <Button android:id="@+id/btn_equals" style="@style/CalcButtonEquals" android:text="="/>
+
+        <Button android:id="@+id/btn_0" style="@style/CalcButton" android:text="0" android:layout_columnSpan="2"/>
+        <Button android:id="@+id/btn_decimal" style="@style/CalcButton" android:text="."/>
+        <Button android:id="@+id/btn_history_toggle" style="@style/CalcButtonOp" android:text="📜" android:visibility="gone"/>
+    </GridLayout>
+</LinearLayout>

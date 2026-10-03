@@ -1,37 +1,29 @@
 package ohi.andre.consolelauncher.commands.main.raw;
 
 import android.content.Intent;
+
 import ohi.andre.consolelauncher.calculator.CalculatorActivity;
+import ohi.andre.consolelauncher.commands.CommandAbstraction;
 import ohi.andre.consolelauncher.commands.ExecutePack;
 import ohi.andre.consolelauncher.commands.main.MainPack;
-import ohi.andre.consolelauncher.commands.main.specific.ParamCommand;
 
-public class calculator extends ParamCommand {
+public class calculator implements CommandAbstraction {
 
     @Override
-    protected ohi.andre.consolelauncher.commands.main.Param paramForString(MainPack pack, String param) {
+    public String exec(ExecutePack pack) throws Exception {
+        MainPack mainPack = (MainPack) pack;
+
+        Intent intent = new Intent(mainPack.context, CalculatorActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        mainPack.context.startActivity(intent);
         return null;
     }
 
-    @Override
-    protected String doThings(ExecutePack pack) {
-        Intent intent = new Intent(pack.context, CalculatorActivity.class);
-        pack.context.startActivity(intent);
-        return null;
-    }
-
-    @Override
-    public String[] params() {
-        return new String[0];
-    }
-
-    @Override
-    public int priority() {
-        return 3;
-    }
-
-    @Override
-    public int helpRes() {
-        return -1; // No help string needed
-    }
+    @Override public int[] argType() { return new int[0]; }
+    @Override public int priority() { return 3; }
+    @Override public int helpRes() { return -1; }
+    @Override public String onArgNotFound(ExecutePack pack, int index) { return null; }
+    @Override public String onNotArgEnough(ExecutePack pack, int nArgs) { return null; }
 }
