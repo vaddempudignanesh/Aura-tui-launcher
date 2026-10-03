@@ -414,16 +414,6 @@ public class LauncherActivity extends AppCompatActivity implements Reloadable {
         LocalBroadcastManager.getInstance(this.getApplicationContext()).sendBroadcast(new Intent(UIManager.ACTION_UPDATE_SUGGESTIONS));
     }
 
-    @Override
-    protected void onPause() {
-        super.onPause();
-
-        if (ui != null && main != null) {
-            ui.pause();
-            main.dispose();
-        }
-    }
-
     private boolean disposed = false;
     private void dispose() {
         if(disposed) return;
@@ -625,6 +615,23 @@ public class LauncherActivity extends AppCompatActivity implements Reloadable {
         } catch (Exception e) {}
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (ui != null) ui.onResume();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+
+        if (ui != null) ui.onPause();
+
+        if (ui != null && main != null) {
+            ui.pause();
+            main.dispose();
+        }
+    }
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);

@@ -548,28 +548,7 @@ public class MainManager {
         @Override
         public boolean trigger(MainPack info, String input) {
 
-            String trimmedInput = input.trim().toLowerCase();
-            if (trimmedInput.equals("calculator") || trimmedInput.equals("calc")) {
-                try {
-                    Intent calcIntent = new Intent(mContext, CalculatorActivity.class);
-                    calcIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    mContext.startActivity(calcIntent);
-                    return true;
-                } catch (Exception e) {
-                    return false;
-                }
-            }
 
-            if (trimmedInput.equals("gallery") || trimmedInput.equals("gal")) {
-                try {
-                    Intent galleryIntent = new Intent(mContext, GalleryActivity.class);
-                    galleryIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    mContext.startActivity(galleryIntent);
-                    return true;
-                } catch (Exception e) {
-                    return false;
-                }
-            }
 
             AppsManager.LaunchInfo i = appsManager.findLaunchInfoWithLabel(input, AppsManager.SHOWN_APPS);
             return i != null && performLaunch(info, i, input);
@@ -580,35 +559,6 @@ public class MainManager {
 
         @Override
         public boolean trigger(final MainPack info, final String input) throws Exception {
-
-
-            String trimmedInput = input.trim().toLowerCase();
-            if (trimmedInput.equals("calculator") || trimmedInput.equals("calc")) {
-                // Launch built-in calculator
-                try {
-                    Intent calcIntent = new Intent(mContext, CalculatorActivity.class);
-                    calcIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    mContext.startActivity(calcIntent);
-                    return true;
-                } catch (Exception e) {
-                    Tuils.sendOutput(mContext, "Error launching calculator: " + e.getMessage());
-                    return true;
-                }
-            }
-
-            if (trimmedInput.equals("gallery") || trimmedInput.equals("gal")) {
-                try {
-                    Intent galleryIntent = new Intent(mContext, GalleryActivity.class);
-                    galleryIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    mContext.startActivity(galleryIntent);
-                    return true;
-                } catch (Exception e) {
-                    Tuils.sendOutput(mContext, "Error launching gallery: " + e.getMessage());
-                    return true;
-                }
-            }
-
-
 
             final Command command = CommandTuils.parse(input, info);
             if(command == null) return false;
