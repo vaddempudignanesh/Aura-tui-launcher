@@ -706,11 +706,12 @@ public class UIManager implements OnTouchListener {
         boolean[] show = new boolean[Label.values().length];
         show[Label.notes.ordinal()] = XMLPrefsManager.getBoolean(Ui.show_notes);
         show[Label.ram.ordinal()] = XMLPrefsManager.getBoolean(Ui.show_ram);
-        show[Label.device.ordinal()] = XMLPrefsManager.getBoolean(Ui.show_device_name);
-        show[Label.time.ordinal()] = XMLPrefsManager.getBoolean(Ui.show_time);
+// ★ Force OFF: device / time / storage lines are removed from the home screen
+        show[Label.device.ordinal()] = false;
+        show[Label.time.ordinal()] = false;
         show[Label.battery.ordinal()] = XMLPrefsManager.getBoolean(Ui.show_battery);
         show[Label.network.ordinal()] = false;
-        show[Label.storage.ordinal()] = XMLPrefsManager.getBoolean(Ui.show_storage_info);
+        show[Label.storage.ordinal()] = false;
         show[Label.weather.ordinal()] = XMLPrefsManager.getBoolean(Ui.show_weather);
         show[Label.unlock.ordinal()] = XMLPrefsManager.getBoolean(Ui.show_unlock_counter);
 
@@ -837,34 +838,6 @@ public class UIManager implements OnTouchListener {
             handler.post(ramRunnable);
         }
 
-        if (show[Label.storage.ordinal()]) {
-            storageRunnable = new StorageRunnable();
-            handler.post(storageRunnable);
-        }
-
-        if (show[Label.device.ordinal()]) {
-            Pattern USERNAME = Pattern.compile("%u", Pattern.CASE_INSENSITIVE | Pattern.LITERAL);
-            Pattern DV = Pattern.compile("%d", Pattern.CASE_INSENSITIVE | Pattern.LITERAL);
-
-            String deviceFormat = XMLPrefsManager.get(Behavior.device_format);
-
-            String username = XMLPrefsManager.get(Ui.username);
-            String deviceName = XMLPrefsManager.get(Ui.deviceName);
-            if (deviceName == null || deviceName.length() == 0) {
-                deviceName = Build.DEVICE;
-            }
-
-            deviceFormat = USERNAME.matcher(deviceFormat).replaceAll(Matcher.quoteReplacement(username != null ? username : "null"));
-            deviceFormat = DV.matcher(deviceFormat).replaceAll(Matcher.quoteReplacement(deviceName));
-            deviceFormat = Tuils.patternNewline.matcher(deviceFormat).replaceAll(Matcher.quoteReplacement(Tuils.NEWLINE));
-
-            updateText(Label.device, Tuils.span(mContext, deviceFormat, XMLPrefsManager.getColor(Theme.device_color), labelSizes[Label.device.ordinal()]));
-        }
-
-        if (show[Label.time.ordinal()]) {
-            timeRunnable = new TimeRunnable();
-            handler.post(timeRunnable);
-        }
 
         if (show[Label.battery.ordinal()]) {
             batteryUpdate = new BatteryUpdate();
