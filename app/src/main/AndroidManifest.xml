@@ -235,12 +235,7 @@
 
         <activity
             android:name=".gallery.GalleryActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode"
-            android:exported="true"
-            android:taskAffinity="ohi.andre.consolelauncher.gallery"
-            android:documentLaunchMode="intoExisting"
-            android:launchMode="standard"
-            android:theme="@style/AppTheme" />
+            android:theme="@style/GalleryTheme" />
 
         <activity
             android:name=".gallery.ImageViewerActivity"

@@ -14,6 +14,7 @@ import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.storage.StorageManager;
@@ -28,6 +29,7 @@ import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.RelativeLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -51,6 +53,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -63,7 +66,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import ohi.andre.consolelauncher.R;
 
 public class GalleryActivity extends AppCompatActivity {
-
     private static final String PREFS_NAME = "gallery_prefs";
     private static final String PREF_FAVORITES = "favorite_paths";
     private SharedPreferences prefs;
@@ -75,6 +77,7 @@ public class GalleryActivity extends AppCompatActivity {
     private RecyclerView recyclerView;
     private RecyclerView albumRecycler;
     private GalleryAdapter adapter;
+    private ProgressBar loadingSpinner;
 
     private static final int AUTO_SCROLL_EDGE_DP = 80;
     private static final long AUTO_SCROLL_TICK_MS = 16L;
@@ -112,9 +115,10 @@ public class GalleryActivity extends AppCompatActivity {
     private final HashMap<String, String> canonicalAlbumCache = new HashMap<>();
     private boolean albumsCacheValid = false;
 
-    private List<MediaItem> cachedTrashedItems = null;
-    private long cachedTrashedTimestamp = 0L;
-    private static final long TRASHED_CACHE_TTL_MS = 2000L;
+    private final LinkedHashMap<String, MediaItem> trashedByPath = new LinkedHashMap<>();
+    private boolean trashedIndexDirty = true;
+    private boolean whatsappOnly = false;
+    private String whatsappPath = null;
 
     private static final int GRID_COLUMNS = 3;
     private final Set<String> selectionBeforeDrag = new HashSet<>();
@@ -221,7 +225,6 @@ public class GalleryActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_gallery);
-
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -286,6 +289,7 @@ public class GalleryActivity extends AppCompatActivity {
         btnHome.setOnClickListener(v -> {
             currentFilter = FilterMode.ALL;
             currentAlbum = null;
+            whatsappOnly = false;
             titleView.setText("Gallery");
             showAlbums = false;
             albumRecycler.setVisibility(View.GONE);
@@ -303,9 +307,10 @@ public class GalleryActivity extends AppCompatActivity {
                 applyFilter();
             } else {
                 showAlbums = true;
-                loadAlbums();
+                if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
+                albumRecycler.setVisibility(View.GONE);
                 recyclerView.setVisibility(View.GONE);
-                albumRecycler.setVisibility(View.VISIBLE);
+                loadAlbums();
                 sortOptions.setVisibility(View.GONE);
             }
             updateBarsVisibility();
@@ -320,7 +325,12 @@ public class GalleryActivity extends AppCompatActivity {
         fullscreenInfoName = findViewById(R.id.fullscreenInfoName);
         fullscreenInfoDetails = findViewById(R.id.fullscreenInfoDetails);
         fullscreenInfoPath = findViewById(R.id.fullscreenInfoPath);
-
+        loadingSpinner = findViewById(R.id.loadingSpinner);
+        if (loadingSpinner != null) {
+            int strokePx = Math.round(3 * getResources().getDisplayMetrics().density);
+            loadingSpinner.setIndeterminateDrawable(
+                    new HexRingDrawable(strokePx, Color.WHITE));
+        }
         videoControlContainer = findViewById(R.id.videoControlContainer);
         btnCenterPlayPause = findViewById(R.id.btnCenterPlayPause);
         btnSkipForwardOverlay = findViewById(R.id.btnSkipForward);
@@ -471,6 +481,13 @@ public class GalleryActivity extends AppCompatActivity {
                     currentFullscreenVideoPosition = -1;
                 }
                 videoHandler.removeCallbacks(overlayProgressRunnable);
+
+                // Belt-and-braces: hide the video control container
+                // in case the page-change callback already missed it.
+                if (videoControlContainer != null) {
+                    videoControlContainer.setVisibility(View.GONE);
+                }
+                overlayControlsVisible = false;
             }
 
             @Override
@@ -528,22 +545,41 @@ public class GalleryActivity extends AppCompatActivity {
 
             @Override
             public void onPageSelected(int position) {
+                // Always tear down the previous video's state
                 if (currentFullscreenVideo != null
                         && currentFullscreenVideoPosition != position) {
                     try { currentFullscreenVideo.pause(); } catch (Exception ignored) {}
                     currentFullscreenVideo = null;
                     currentFullscreenVideoPosition = -1;
-                    currentFullscreenPageIsVideo = false;
-                    isOverlayVideoPlaying = false;
-                    videoHandler.removeCallbacks(overlayProgressRunnable);
                 }
+                videoHandler.removeCallbacks(overlayProgressRunnable);
+
                 overlayPendingSeekMs = -1;
                 fullscreenCurrentPosition = position;
                 fullscreenCurrentIndex = position;
+
+                // Look at the destination page: is it a video or an image?
+                String path = (position >= 0 && position < fullscreenMediaPaths.size())
+                        ? fullscreenMediaPaths.get(position) : null;
+                boolean targetIsVideo = isVideoPath(path);
+
+                if (targetIsVideo) {
+                    currentFullscreenPageIsVideo = true;
+                    // showAllControlsWithTimeout() is called later by onVideoVisible
+                } else {
+                    // Landing on an image → hide video controls immediately
+                    currentFullscreenPageIsVideo = false;
+                    isOverlayVideoPlaying = false;
+                    if (videoControlContainer != null) {
+                        videoControlContainer.setVisibility(View.GONE);
+                    }
+                    overlayControlsVisible = false;
+                }
+
                 updateFullscreenInfo(position);
-                if (position >= 0 && position < fullscreenMediaPaths.size()) {
-                    String path = fullscreenMediaPaths.get(position);
-                    if (isVideoPath(path)) findAndStartVideoForPosition(position);
+
+                if (targetIsVideo) {
+                    findAndStartVideoForPosition(position);
                 }
             }
         });
@@ -555,30 +591,62 @@ public class GalleryActivity extends AppCompatActivity {
 
         sortImages.setOnClickListener(v -> {
             currentFilter = FilterMode.IMAGES; currentAlbum = null;
-            titleView.setText("Images"); applyFilter();
-            sortOptions.setVisibility(View.GONE); updateBarsVisibility();
+            showAlbums = false;
+            whatsappOnly = false;
+            albumRecycler.setVisibility(View.GONE);
+            recyclerView.setVisibility(View.VISIBLE);
+            titleView.setText("Images");
+            sortOptions.setVisibility(View.GONE);
+            applyFilter();
+            updateBarsVisibility();
+            updateTopNavBar();
         });
         sortVideos.setOnClickListener(v -> {
             currentFilter = FilterMode.VIDEOS; currentAlbum = null;
-            titleView.setText("Videos"); applyFilter();
-            sortOptions.setVisibility(View.GONE); updateBarsVisibility();
+            showAlbums = false;
+            whatsappOnly = false;
+            albumRecycler.setVisibility(View.GONE);
+            recyclerView.setVisibility(View.VISIBLE);
+            titleView.setText("Videos");
+            sortOptions.setVisibility(View.GONE);
+            applyFilter();
+            updateBarsVisibility();
+            updateTopNavBar();
         });
         sortFavorites.setOnClickListener(v -> {
             currentFilter = FilterMode.FAVORITES; currentAlbum = null;
-            titleView.setText("Favorites"); applyFilter();
-            sortOptions.setVisibility(View.GONE); updateBarsVisibility();
+            showAlbums = false;
+            whatsappOnly = false;
+            albumRecycler.setVisibility(View.GONE);
+            recyclerView.setVisibility(View.VISIBLE);
+            titleView.setText("Favorites");
+            sortOptions.setVisibility(View.GONE);
+            applyFilter();
+            updateBarsVisibility();
+            updateTopNavBar();
         });
         sortBin.setOnClickListener(v -> {
             currentFilter = FilterMode.BIN; currentAlbum = null;
-            titleView.setText("Bin"); applyFilter();
-            sortOptions.setVisibility(View.GONE); updateBarsVisibility();
+            showAlbums = false;
+            whatsappOnly = false;
+            albumRecycler.setVisibility(View.GONE);
+            recyclerView.setVisibility(View.VISIBLE);
+            titleView.setText("Bin");
+            sortOptions.setVisibility(View.GONE);
+            applyFilter();
+            updateBarsVisibility();
+            updateTopNavBar();
         });
 
         setupVideoControls();
-        checkAndRequestMediaPermissions();
 
         View topNavBar = findViewById(R.id.topNavBar);
         if (topNavBar != null) updateTopNavBar();
+
+        if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
+        recyclerView.setVisibility(View.GONE);
+
+        recyclerView.post(() -> checkAndRequestMediaPermissions());
     }
 
     private boolean userIsSwiping = false;
@@ -698,9 +766,6 @@ public class GalleryActivity extends AppCompatActivity {
         prefs.edit().putString(PREF_FAVORITES, sb.toString()).apply();
     }
 
-    /**
-     * Single item favorite toggle (used in fullscreen viewer / single actions).
-     */
     private boolean toggleFavoriteForPath(String path) {
         if (path == null) return false;
         Set<String> favs = loadFavoritePaths();
@@ -723,14 +788,12 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        // ★ Refresh adapter and filter instantly
-        if (adapter != null) {
-            adapter.notifyDataSetChanged();
-        }
+        if (adapter != null) adapter.notifyDataSetChanged();
         applyFilter();
 
         return nowFav;
     }
+
     private void updateFullscreenFavoriteIcon(String path) {
         if (path == null) return;
         boolean fav = false;
@@ -750,6 +813,7 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void showAllControlsWithTimeout() {
         setFullscreenChromeVisible(true);
+
         if (currentFullscreenPageIsVideo && videoControlContainer != null) {
             videoControlContainer.setVisibility(View.VISIBLE);
             overlayControlsVisible = true;
@@ -759,11 +823,16 @@ public class GalleryActivity extends AppCompatActivity {
             }
             overlayControlsVisible = false;
         }
+
         videoHandler.removeCallbacks(overlayHideControlsRunnable);
-        overlayHideControlsRunnable = () -> {
-            if (!userIsSwiping) hideAllControls();
-        };
-        videoHandler.postDelayed(overlayHideControlsRunnable, OVERLAY_CONTROLS_TIMEOUT);
+
+        // Only auto-hide when there are actually video controls to hide.
+        if (currentFullscreenPageIsVideo) {
+            overlayHideControlsRunnable = () -> {
+                if (!userIsSwiping) hideAllControls();
+            };
+            videoHandler.postDelayed(overlayHideControlsRunnable, OVERLAY_CONTROLS_TIMEOUT);
+        }
     }
 
     private void hideAllControls() {
@@ -843,7 +912,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
         pendingMediaRefresh = () -> {
             albumsCacheValid = false;
-            cachedTrashedItems = null;
+            trashedIndexDirty = true;
             loadMedia();
             pendingMediaRefresh = null;
         };
@@ -948,13 +1017,13 @@ public class GalleryActivity extends AppCompatActivity {
             startOverlayProgressUpdate();
         }
 
-        // Remember the new state so it survives onPause/onResume.
         savedVideoPositionMs = getEffectivePositionMs();
         savedVideoPath = currentFullscreenVideoPosition >= 0
                 && currentFullscreenVideoPosition < fullscreenMediaPaths.size()
                 ? fullscreenMediaPaths.get(currentFullscreenVideoPosition) : null;
         savedVideoWasPlaying = isOverlayVideoPlaying;
     }
+
     private void startOverlayProgressUpdate() {
         videoHandler.removeCallbacks(overlayProgressRunnable);
         overlayProgressRunnable = new Runnable() {
@@ -997,6 +1066,7 @@ public class GalleryActivity extends AppCompatActivity {
                 || lower.endsWith(".avi") || lower.endsWith(".mov") || lower.endsWith(".3gp")
                 || lower.endsWith(".m4v") || lower.endsWith(".flv") || lower.endsWith(".wmv");
     }
+
     private void findAndStartVideoForPosition(int targetPosition) {
         try {
             RecyclerView rv = (RecyclerView) fullscreenViewPager.getChildAt(0);
@@ -1030,7 +1100,6 @@ public class GalleryActivity extends AppCompatActivity {
                             } catch (Exception ignored) {}
                         });
 
-                        // Already bound to the same view → just restore state
                         if (currentFullscreenVideo == vv
                                 && currentFullscreenVideoPosition == targetPosition) {
                             restoreSavedPlaybackState(vv, targetPosition);
@@ -1104,10 +1173,6 @@ public class GalleryActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
     }
 
-    /**
-     * Drives the play/pause icon from the *actual* MediaPlayer state, not
-     * from a stale boolean. Call after any state change to the video.
-     */
     private void syncOverlayPlayPauseIcon() {
         boolean playing = false;
         if (currentFullscreenVideo != null) {
@@ -1321,10 +1386,16 @@ public class GalleryActivity extends AppCompatActivity {
         TextView title = findViewById(R.id.titleGallery);
         if (btnBack == null || title == null) return;
 
-        boolean showBack = currentFilter == FilterMode.BIN || currentAlbum != null || showAlbums;
+        boolean showBack = currentFilter == FilterMode.BIN || currentAlbum != null
+                || showAlbums || whatsappOnly;
         btnBack.setVisibility(showBack ? View.VISIBLE : View.GONE);
 
         if (currentFilter == FilterMode.BIN) title.setText("Bin");
+        else if (whatsappOnly) {
+            String shown = whatsappPath != null
+                    ? albumDisplayNames.get(whatsappPath) : null;
+            title.setText(shown != null ? shown : "WhatsApp");
+        }
         else if (currentAlbum != null) {
             String shown = albumDisplayNames.get(currentAlbum);
             title.setText(shown != null ? shown : new File(currentAlbum).getName());
@@ -1336,6 +1407,16 @@ public class GalleryActivity extends AppCompatActivity {
             if (currentFilter == FilterMode.BIN) {
                 currentFilter = FilterMode.ALL;
                 applyFilter(); updateTopNavBar(); updateBarsVisibility();
+            } else if (whatsappOnly) {
+                whatsappOnly = false;
+                whatsappPath = null;
+                showAlbums = true;
+                loadAlbums();
+                albumRecycler.setVisibility(View.VISIBLE);
+                recyclerView.setVisibility(View.GONE);
+                titleView.setText("Albums");
+                updateTopNavBar();
+                updateBarsVisibility();
             } else if (currentAlbum != null || showAlbums) {
                 navigateBackFromAlbum();
             } else {
@@ -1371,6 +1452,23 @@ public class GalleryActivity extends AppCompatActivity {
         View emptyView = findViewById(R.id.emptyStateContainer);
         if (emptyView == null) return;
 
+        boolean binLoading = currentFilter == FilterMode.BIN
+                && trashedIndexDirty
+                && trashedByPath.isEmpty();
+
+        boolean mediaLoading = displayedItems.isEmpty()
+                && mediaItems.isEmpty()
+                && currentFilter != FilterMode.BIN;
+
+        if (binLoading || mediaLoading) {
+            emptyView.setVisibility(View.GONE);
+            recyclerView.setVisibility(View.GONE);
+            if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
+            return;
+        }
+
+        if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
+
         if (displayedItems.isEmpty()) {
             emptyView.setVisibility(View.VISIBLE);
             TextView emptyText = findViewById(R.id.emptyStateText);
@@ -1386,15 +1484,19 @@ public class GalleryActivity extends AppCompatActivity {
     }
 
     private void navigateBackFromAlbum() {
+        whatsappOnly = false;
+        whatsappPath = null;
         if (currentAlbum != null) {
             currentAlbum = null;
             showAlbums = true;
             recyclerView.setVisibility(View.GONE);
+
+            if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
+            albumRecycler.setVisibility(View.GONE);
+
             loadAlbums();
-            albumRecycler.setVisibility(View.VISIBLE);
             albumRecycler.setBackgroundColor(Color.parseColor("#FF000000"));
             titleView.setText("Albums");
-            applyFilter();
             updateBarsVisibility();
             updateTopNavBar();
         } else if (showAlbums) {
@@ -1491,9 +1593,11 @@ public class GalleryActivity extends AppCompatActivity {
             List<File> roots = getStorageDirectoriesProper();
             for (File root : roots) {
                 if (root != null && root.exists()) {
-                    scanFilesystemForMedia(root, newItems, knownPaths, 0, 6);
+                    scanFilesystemForMedia(root, newItems, knownPaths, 0, 8);
                 }
             }
+
+            scanWhatsAppImagesTopLevel(newItems, knownPaths);
 
             for (MediaItem item : newItems) {
                 try {
@@ -1515,12 +1619,126 @@ public class GalleryActivity extends AppCompatActivity {
                 if (!isActivityAlive()) return;
                 mediaItems.clear();
                 mediaItems.addAll(result);
+
+                if (loadingSpinner != null) {
+                    loadingSpinner.setVisibility(View.GONE);
+                }
+
+                trashedIndexDirty = true;
                 applyFilter();
                 if (fullRefreshFinal) {
                     setupRecyclerView();
                 }
                 showEmptyState();
             });
+        });
+    }
+
+    private void scanWhatsAppImagesTopLevel(List<MediaItem> out, Set<String> knownPaths) {
+        File root = Environment.getExternalStorageDirectory();
+        if (root == null) return;
+
+        File waImages1 = new File(root,
+                "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images");
+        addTopLevelWaFiles(waImages1, out, knownPaths);
+
+        File accountsDir = new File(root,
+                "Android/media/com.whatsapp/WhatsApp/accounts");
+        if (accountsDir.exists() && accountsDir.isDirectory()) {
+            File[] accounts = accountsDir.listFiles();
+            if (accounts != null) {
+                for (File acc : accounts) {
+                    if (acc != null && acc.isDirectory()) {
+                        File waImages = new File(acc, "Media/WhatsApp Images");
+                        addTopLevelWaFiles(waImages, out, knownPaths);
+                    }
+                }
+            }
+        }
+    }
+
+    private void addTopLevelWaFiles(File dir,
+                                    List<MediaItem> out,
+                                    Set<String> knownPaths) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) return;
+
+        File[] files = dir.listFiles();
+        if (files == null) return;
+
+        for (File f : files) {
+            if (f == null || !f.isFile()) continue;
+
+            String fileName = f.getName();
+            if (fileName.startsWith(".")) continue;
+
+            String lower = fileName.toLowerCase(Locale.ROOT);
+            boolean isImage = lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+                    || lower.endsWith(".png") || lower.endsWith(".gif")
+                    || lower.endsWith(".bmp") || lower.endsWith(".webp")
+                    || lower.endsWith(".heic") || lower.endsWith(".heif");
+            if (!isImage) continue;
+
+            String path;
+            try { path = f.getCanonicalPath(); }
+            catch (Exception e) { path = f.getAbsolutePath(); }
+
+            if (knownPaths.contains(path)) continue;
+            knownPaths.add(path);
+
+            long date = resolveTimestamp(path, 0);
+            String parent = f.getParent();
+            String albumKey = parent != null ? getCachedCanonical(parent) : "";
+            out.add(new MediaItem(path, fileName, MediaItem.TYPE_IMAGE, date, false, albumKey));
+        }
+    }
+
+    private void showWhatsAppOnly(String virtualPath) {
+        if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
+        recyclerView.setVisibility(View.GONE);
+
+        recyclerView.post(() -> {
+            final List<MediaItem> wa = new ArrayList<>();
+
+            if (virtualPath == null || virtualPath.equals("whatsapp://all")) {
+                for (MediaItem item : mediaItems) {
+                    if (item.path == null) continue;
+                    if (item.path.contains(".trashed.")) continue;
+                    if (!item.path.contains("/com.whatsapp/")) continue;
+                    if (!item.path.contains("/Media/WhatsApp Images/")) continue;
+
+                    String afterMarker = item.path.substring(
+                            item.path.indexOf("/Media/WhatsApp Images/")
+                                    + "/Media/WhatsApp Images/".length());
+                    if (afterMarker.contains("/")) continue;
+
+                    wa.add(item);
+                }
+            } else {
+                String accountId = virtualPath.substring("whatsapp://".length());
+                String needle = "/Media/WhatsApp Images/";
+                for (MediaItem item : mediaItems) {
+                    if (item.path == null) continue;
+                    if (item.path.contains(".trashed.")) continue;
+                    if (!item.path.contains("/com.whatsapp/")) continue;
+                    if (!item.path.contains(needle)) continue;
+                    if (!item.path.contains("/accounts/" + accountId + "/")) continue;
+                    wa.add(item);
+                }
+            }
+
+            displayedItems = wa;
+            if (adapter == null) {
+                setupRecyclerView();
+            } else {
+                adapter.updateItems(wa);
+                adapter.updateSelectedItems(selectedItems);
+            }
+            updateSelectionUI();
+            showEmptyState();
+            updateTopNavBar();
+
+            if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
+            recyclerView.setVisibility(View.VISIBLE);
         });
     }
 
@@ -1537,6 +1755,9 @@ public class GalleryActivity extends AppCompatActivity {
                                         Set<String> knownPaths, int depth, int maxDepth) {
         if (depth > maxDepth || directory == null
                 || !directory.exists() || !directory.isDirectory()) return;
+
+        String dirPath = directory.getAbsolutePath();
+        if (dirPath.contains("/com.whatsapp/")) return;
 
         String dirName = directory.getName().toLowerCase(Locale.ROOT);
         if (dirName.equals("android") || dirName.equals("system")
@@ -1580,10 +1801,8 @@ public class GalleryActivity extends AppCompatActivity {
     private void getTrashedFilesAsync(boolean forceRescan, OnTrashedFilesReady callback) {
         if (callback == null) return;
 
-        long now = System.currentTimeMillis();
-        if (!forceRescan && cachedTrashedItems != null
-                && (now - cachedTrashedTimestamp) < TRASHED_CACHE_TTL_MS) {
-            final List<MediaItem> snapshot = cachedTrashedItems;
+        if (!forceRescan && !trashedIndexDirty) {
+            final List<MediaItem> snapshot = new ArrayList<>(trashedByPath.values());
             runOnMain(() -> {
                 if (isActivityAlive()) callback.onReady(snapshot);
             });
@@ -1591,30 +1810,98 @@ public class GalleryActivity extends AppCompatActivity {
         }
 
         executor.execute(() -> {
-            List<MediaItem> trashedItems = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
+            trashedByPath.clear();
 
             for (MediaItem item : new ArrayList<>(mediaItems)) {
                 if (item.path != null && item.path.contains(".trashed.")) {
-                    if (seen.add(item.path)) trashedItems.add(item);
+                    trashedByPath.put(item.path, item);
                 }
             }
 
             List<File> directories = getStorageDirectoriesProper();
             for (File dir : directories) {
                 if (dir != null && dir.exists()) {
-                    scanDirectoryForTrashedFiles(dir, trashedItems, seen, 0, 6);
+                    scanDirectoryForTrashedFiles(dir, trashedByPath, 0, 10);
                 }
             }
 
-            cachedTrashedItems = trashedItems;
-            cachedTrashedTimestamp = System.currentTimeMillis();
+            scanWhatsAppForTrashed();
 
-            final List<MediaItem> result = trashedItems;
+            trashedIndexDirty = false;
+            final List<MediaItem> snapshot = new ArrayList<>(trashedByPath.values());
+
             runOnMain(() -> {
-                if (isActivityAlive()) callback.onReady(result);
+                if (isActivityAlive()) callback.onReady(snapshot);
             });
         });
+    }
+
+    private void scanWhatsAppForTrashed() {
+        File root = Environment.getExternalStorageDirectory();
+        if (root == null) return;
+
+        File whatsappBase1 = new File(root,
+                "Android/media/com.whatsapp/WhatsApp/Media");
+        scanDirForTrashedRecursive(whatsappBase1, 0, 6);
+
+        File accountsDir = new File(root,
+                "Android/media/com.whatsapp/WhatsApp/accounts");
+        if (accountsDir.exists() && accountsDir.isDirectory()) {
+            File[] accounts = accountsDir.listFiles();
+            if (accounts != null) {
+                for (File acc : accounts) {
+                    if (acc != null && acc.isDirectory()) {
+                        File accMedia = new File(acc, "Media");
+                        scanDirForTrashedRecursive(accMedia, 0, 6);
+                    }
+                }
+            }
+        }
+    }
+
+    private void scanDirForTrashedRecursive(File dir, int depth, int maxDepth) {
+        if (depth > maxDepth || dir == null
+                || !dir.exists() || !dir.isDirectory()) return;
+
+        File[] files = dir.listFiles();
+        if (files == null) return;
+
+        for (File f : files) {
+            if (f.isDirectory()) {
+                if (!f.getName().startsWith(".")) {
+                    scanDirForTrashedRecursive(f, depth + 1, maxDepth);
+                }
+                continue;
+            }
+            if (!f.isFile()) continue;
+
+            String fileName = f.getName();
+            if (!fileName.contains(".trashed.")) continue;
+
+            String lower = fileName.toLowerCase(Locale.ROOT);
+            boolean isImage = lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+                    || lower.endsWith(".png") || lower.endsWith(".gif")
+                    || lower.endsWith(".bmp") || lower.endsWith(".webp")
+                    || lower.endsWith(".heic") || lower.endsWith(".heif");
+            boolean isVideo = lower.endsWith(".mp4") || lower.endsWith(".avi")
+                    || lower.endsWith(".mkv") || lower.endsWith(".mov")
+                    || lower.endsWith(".wmv") || lower.endsWith(".flv")
+                    || lower.endsWith(".3gp") || lower.endsWith(".m4v")
+                    || lower.endsWith(".webm");
+            if (!isImage && !isVideo) continue;
+
+            String path;
+            try { path = f.getCanonicalPath(); }
+            catch (Exception e) { path = f.getAbsolutePath(); }
+
+            if (trashedByPath.containsKey(path)) continue;
+
+            String album = f.getParentFile() != null
+                    ? f.getParentFile().getName() : "";
+            long dateModified = f.lastModified() / 1000;
+            int type = isImage ? MediaItem.TYPE_IMAGE : MediaItem.TYPE_VIDEO;
+            trashedByPath.put(path, new MediaItem(path, fileName, type, dateModified, true, album));
+        }
     }
 
     public interface OnTrashedFilesReady {
@@ -1717,114 +2004,98 @@ public class GalleryActivity extends AppCompatActivity {
         return unique;
     }
 
-    private void scanDirectoryForTrashedFiles(File directory, List<MediaItem> items,
-                                              Set<String> seen, int depth, int maxDepth) {
-        if (depth > maxDepth || directory == null || !directory.exists() || !directory.isDirectory()) return;
+    private void scanDirectoryForTrashedFiles(File directory,
+                                              LinkedHashMap<String, MediaItem> out,
+                                              int depth, int maxDepth) {
+        if (depth > maxDepth || directory == null
+                || !directory.exists() || !directory.isDirectory()) return;
 
-        try {
-            try {
-                String cp = directory.getCanonicalPath();
-                if (cp.equals("/storage/emulated/0")
-                        && !directory.getAbsolutePath().equals("/storage/emulated/0")) return;
-            } catch (Exception ignored) {}
+        File[] files;
+        try { files = directory.listFiles(); }
+        catch (Exception e) { return; }
+        if (files == null) return;
 
-            File[] files = directory.listFiles();
-            if (files == null) return;
-
-            for (File file : files) {
-                if (file.isDirectory()) {
-                    String name = file.getName().toLowerCase();
-                    if (!name.startsWith(".") && !name.equals("android") && !name.equals("system")
-                            && !name.equals("cache") && !name.equals("tmp") && !name.equals("lost+found")
-                            && !name.equals("app") && !name.equals("data") && !name.equals("obb")
-                            && !name.equals("media")) {
-                        scanDirectoryForTrashedFiles(file, items, seen, depth + 1, maxDepth);
-                    }
-                } else if (file.getName().contains(".trashed.")) {
-                    String fileName = file.getName().toLowerCase();
-                    boolean isImage = fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")
-                            || fileName.endsWith(".png") || fileName.endsWith(".gif")
-                            || fileName.endsWith(".bmp") || fileName.endsWith(".webp")
-                            || fileName.endsWith(".heic") || fileName.endsWith(".heif");
-                    boolean isVideo = fileName.endsWith(".mp4") || fileName.endsWith(".avi")
-                            || fileName.endsWith(".mkv") || fileName.endsWith(".mov")
-                            || fileName.endsWith(".wmv") || fileName.endsWith(".flv")
-                            || fileName.endsWith(".3gp") || fileName.endsWith(".m4v")
-                            || fileName.endsWith(".webm");
-
-                    if (isImage || isVideo) {
-                        String path;
-                        try { path = file.getCanonicalPath(); }
-                        catch (Exception e) { path = file.getAbsolutePath(); }
-                        if (!seen.add(path)) continue;
-
-                        String album = file.getParentFile() != null ? file.getParentFile().getName() : "";
-                        long dateModified = file.lastModified() / 1000;
-                        int type = isImage ? MediaItem.TYPE_IMAGE : MediaItem.TYPE_VIDEO;
-                        items.add(new MediaItem(path, file.getName(), type, dateModified, true, album));
-                    }
-                }
+        for (File file : files) {
+            if (file.isDirectory()) {
+                String name = file.getName().toLowerCase(Locale.ROOT);
+                if (name.startsWith(".")) continue;
+                scanDirectoryForTrashedFiles(file, out, depth + 1, maxDepth);
+                continue;
             }
-        } catch (Exception ignored) {}
+
+            String fileName = file.getName();
+            if (!fileName.contains(".trashed.")) continue;
+
+            String lower = fileName.toLowerCase(Locale.ROOT);
+            boolean isImage = lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+                    || lower.endsWith(".png") || lower.endsWith(".gif")
+                    || lower.endsWith(".bmp") || lower.endsWith(".webp")
+                    || lower.endsWith(".heic") || lower.endsWith(".heif");
+            boolean isVideo = lower.endsWith(".mp4") || lower.endsWith(".avi")
+                    || lower.endsWith(".mkv") || lower.endsWith(".mov")
+                    || lower.endsWith(".wmv") || lower.endsWith(".flv")
+                    || lower.endsWith(".3gp") || lower.endsWith(".m4v")
+                    || lower.endsWith(".webm");
+            if (!isImage && !isVideo) continue;
+
+            String path;
+            try { path = file.getCanonicalPath(); }
+            catch (Exception e) { path = file.getAbsolutePath(); }
+
+            if (out.containsKey(path)) continue;
+
+            String album = file.getParentFile() != null
+                    ? file.getParentFile().getName() : "";
+            long dateModified = file.lastModified() / 1000;
+            int type = isImage ? MediaItem.TYPE_IMAGE : MediaItem.TYPE_VIDEO;
+            out.put(path, new MediaItem(path, fileName, type, dateModified, true, album));
+        }
     }
 
     private void applyFilter() {
         if (!isActivityAlive()) return;
 
         if (currentFilter == FilterMode.BIN) {
-            // Clear first so the home list never lingers while the bin scan runs.
-            runOnMain(() -> {
-                if (!isActivityAlive()) return;
-                if (currentFilter != FilterMode.BIN) return;
-                displayedItems = new ArrayList<>();
-                if (adapter == null) {
-                    setupRecyclerView();
-                    showEmptyState();
-                    updateTopNavBar();
-                } else {
-                    adapter.updateItems(new ArrayList<>());
-                    adapter.updateSelectedItems(selectedItems);
-                    updateSelectionUI();
-                    showEmptyState();
-                    updateTopNavBar();
-                }
-            });
-
-            if (cachedTrashedItems != null) {
-                final List<MediaItem> cachedSnapshot = new ArrayList<>(cachedTrashedItems);
-                runOnMain(() -> {
-                    if (!isActivityAlive()) return;
-                    if (currentFilter != FilterMode.BIN) return;
-                    displayedItems = cachedSnapshot;
-                    if (adapter != null) {
-                        adapter.updateItems(cachedSnapshot);
-                        adapter.updateSelectedItems(selectedItems);
-                        updateSelectionUI();
-                        showEmptyState();
-                        updateTopNavBar();
-                    }
-                });
+            if (trashedIndexDirty && trashedByPath.isEmpty()) {
+                if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
+                recyclerView.setVisibility(View.GONE);
+                View emptyView = findViewById(R.id.emptyStateContainer);
+                if (emptyView != null) emptyView.setVisibility(View.GONE);
             }
+
+            List<MediaItem> snapshot = new ArrayList<>(trashedByPath.values());
+            displayedItems = snapshot;
+            if (adapter == null) {
+                setupRecyclerView();
+            } else {
+                adapter.updateItems(snapshot);
+                adapter.updateSelectedItems(selectedItems);
+            }
+            updateSelectionUI();
+            showEmptyState();
+            updateTopNavBar();
 
             getTrashedFilesAsync(false, trashed -> {
                 if (!isActivityAlive()) return;
                 if (currentFilter != FilterMode.BIN) return;
-                final List<MediaItem> snapshot = new ArrayList<>(trashed);
+                final List<MediaItem> fresh = new ArrayList<>(trashed);
                 runOnMain(() -> {
                     if (!isActivityAlive()) return;
                     if (currentFilter != FilterMode.BIN) return;
-                    displayedItems = snapshot;
+
+                    if (loadingSpinner != null) {
+                        loadingSpinner.setVisibility(View.GONE);
+                    }
+                    displayedItems = fresh;
                     if (adapter == null) {
                         setupRecyclerView();
-                        showEmptyState();
-                        updateTopNavBar();
                     } else {
-                        adapter.updateItems(snapshot);
+                        adapter.updateItems(fresh);
                         adapter.updateSelectedItems(selectedItems);
-                        updateSelectionUI();
-                        showEmptyState();
-                        updateTopNavBar();
                     }
+                    updateSelectionUI();
+                    showEmptyState();
+                    updateTopNavBar();
                 });
             });
             return;
@@ -1843,6 +2114,25 @@ public class GalleryActivity extends AppCompatActivity {
                 matchesAlbum = itemCanon != null && itemCanon.equals(targetCanon);
             }
             if (!matchesAlbum) continue;
+
+            if (targetCanon == null && item.path != null
+                    && item.path.contains("/com.whatsapp/")) {
+                int idxImages = item.path.indexOf("/Media/WhatsApp Images/");
+                int idxVideos = item.path.indexOf("/Media/WhatsApp Video/");
+
+                boolean isTopLevelWhatsApp = false;
+                if (idxImages >= 0) {
+                    String after = item.path.substring(
+                            idxImages + "/Media/WhatsApp Images/".length());
+                    if (!after.contains("/")) isTopLevelWhatsApp = true;
+                } else if (idxVideos >= 0) {
+                    String after = item.path.substring(
+                            idxVideos + "/Media/WhatsApp Video/".length());
+                    if (!after.contains("/")) isTopLevelWhatsApp = true;
+                }
+
+                if (!isTopLevelWhatsApp) continue;
+            }
 
             boolean isCurrentlyTrashed = item.path.contains(".trashed.");
             item.isTrashed = isCurrentlyTrashed;
@@ -1892,8 +2182,11 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        if (allGranted) loadMedia();
-        else requestMultiplePermissionsLauncher.launch(toRequest);
+        if (allGranted) {
+            loadMedia();
+        } else {
+            requestMultiplePermissionsLauncher.launch(toRequest);
+        }
     }
 
     private void setupRecyclerView() {
@@ -2232,9 +2525,8 @@ public class GalleryActivity extends AppCompatActivity {
                 break;
             }
         }
-
         albumsCacheValid = false;
-        cachedTrashedItems = null;
+        trashedIndexDirty = true;
         applyFilter();
     }
 
@@ -2276,7 +2568,7 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        cachedTrashedItems = null;
+        trashedIndexDirty = true;
         return true;
     }
 
@@ -2325,7 +2617,7 @@ public class GalleryActivity extends AppCompatActivity {
                 if (!isActivityAlive()) return;
 
                 clearSelection();
-                cachedTrashedItems = null;
+                trashedIndexDirty = true;
 
                 applyFilter();
                 loadMediaQuiet();
@@ -2380,7 +2672,7 @@ public class GalleryActivity extends AppCompatActivity {
         }
 
         albumsCacheValid = false;
-        cachedTrashedItems = null;
+        trashedIndexDirty = true;
         return item.path;
     }
 
@@ -2425,7 +2717,7 @@ public class GalleryActivity extends AppCompatActivity {
                 if (!isActivityAlive()) return;
 
                 clearSelection();
-                cachedTrashedItems = null;
+                trashedIndexDirty = true;
 
                 applyFilter();
                 loadMediaQuiet();
@@ -2479,7 +2771,7 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        cachedTrashedItems = null;
+        trashedIndexDirty = true;
         return item.path;
     }
 
@@ -2524,7 +2816,7 @@ public class GalleryActivity extends AppCompatActivity {
                             }
 
                             albumsCacheValid = false;
-                            cachedTrashedItems = null;
+                            trashedIndexDirty = true;
                             clearSelection();
 
                             applyFilter();
@@ -2722,13 +3014,61 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void loadAlbums() {
         if (albumsCacheValid && !albumList.isEmpty()) {
-            runOnUiThread(this::showAlbumGrid);
+            runOnUiThread(() -> {
+                if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
+                albumRecycler.setVisibility(View.VISIBLE);
+                showAlbumGrid();
+            });
             return;
         }
 
         executor.execute(() -> {
             LinkedHashMap<String, String> albums = new LinkedHashMap<>();
 
+            // ── 1. WhatsApp virtual albums ──
+            File root = Environment.getExternalStorageDirectory();
+            if (root != null) {
+                File waImages1 = new File(root,
+                        "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images");
+                if (waImages1.exists() && waImages1.isDirectory()) {
+                    File[] top = waImages1.listFiles();
+                    boolean hasAny = false;
+                    if (top != null) {
+                        for (File f : top) {
+                            if (f != null && f.isFile()) { hasAny = true; break; }
+                        }
+                    }
+                    if (hasAny) albums.put("whatsapp://all", "WhatsApp");
+                }
+
+                File accountsDir = new File(root,
+                        "Android/media/com.whatsapp/WhatsApp/accounts");
+                if (accountsDir.exists() && accountsDir.isDirectory()) {
+                    File[] accounts = accountsDir.listFiles();
+                    if (accounts != null) {
+                        for (File acc : accounts) {
+                            if (acc == null || !acc.isDirectory()) continue;
+                            File waImages = new File(acc, "Media/WhatsApp Images");
+                            if (!waImages.exists() || !waImages.isDirectory()) continue;
+
+                            File[] top = waImages.listFiles();
+                            boolean hasAny = false;
+                            if (top != null) {
+                                for (File f : top) {
+                                    if (f != null && f.isFile()) { hasAny = true; break; }
+                                }
+                            }
+                            if (!hasAny) continue;
+
+                            String accName = acc.getName();
+                            albums.put("whatsapp://" + accName,
+                                    "WhatsApp (" + accName + ")");
+                        }
+                    }
+                }
+            }
+
+            // ── 2. MediaStore image sweep ──
             String[] imgProjection = {
                     MediaStore.Images.Media.DATA,
                     MediaStore.Images.Media.BUCKET_DISPLAY_NAME
@@ -2745,8 +3085,9 @@ public class GalleryActivity extends AppCompatActivity {
                         String path = dataIdx >= 0 ? imgCursor.getString(dataIdx) : null;
                         String name = nameIdx >= 0 ? imgCursor.getString(nameIdx) : null;
                         if (path == null) continue;
+                        if (path.contains("/com.whatsapp/")) continue;
                         File parent = new File(path).getParentFile();
-                        if (parent == null) continue;
+                        if (parent == null || !parent.exists() || !parent.isDirectory()) continue;
                         String parentPath = getCachedCanonical(parent.getAbsolutePath());
                         String display = (name != null && !name.isEmpty()) ? name : parent.getName();
                         if (!albums.containsKey(parentPath)) albums.put(parentPath, display);
@@ -2755,6 +3096,7 @@ public class GalleryActivity extends AppCompatActivity {
             } catch (Exception ignored) {
             } finally { if (imgCursor != null) imgCursor.close(); }
 
+            // ── 3. MediaStore video sweep ──
             String[] vidProjection = {
                     MediaStore.Video.Media.DATA,
                     MediaStore.Video.Media.BUCKET_DISPLAY_NAME
@@ -2771,8 +3113,9 @@ public class GalleryActivity extends AppCompatActivity {
                         String path = dataIdx >= 0 ? vidCursor.getString(dataIdx) : null;
                         String name = nameIdx >= 0 ? vidCursor.getString(nameIdx) : null;
                         if (path == null) continue;
+                        if (path.contains("/com.whatsapp/")) continue;
                         File parent = new File(path).getParentFile();
-                        if (parent == null) continue;
+                        if (parent == null || !parent.exists() || !parent.isDirectory()) continue;
                         String parentPath = getCachedCanonical(parent.getAbsolutePath());
                         String display = (name != null && !name.isEmpty()) ? name : parent.getName();
                         if (!albums.containsKey(parentPath)) albums.put(parentPath, display);
@@ -2781,15 +3124,66 @@ public class GalleryActivity extends AppCompatActivity {
             } catch (Exception ignored) {
             } finally { if (vidCursor != null) vidCursor.close(); }
 
+            // ── 4. Filesystem sweep ──
             List<File> roots = getStorageDirectoriesProper();
-            for (File root : roots) {
-                if (root != null && root.exists()) {
-                    scanFoldersForMedia(root, albums, 0, 5);
+            for (File r : roots) {
+                if (r != null && r.exists()) {
+                    scanFoldersForMedia(r, albums, 0, 8);
                 }
             }
 
+            // ── 5. Validate: drop empty albums and the storage root ──
+            File storageRoot = Environment.getExternalStorageDirectory();
+            String storageRootPath = storageRoot != null
+                    ? getCachedCanonical(storageRoot.getAbsolutePath()) : null;
+
+            Iterator<Map.Entry<String, String>> it = albums.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<String, String> e = it.next();
+                String key = e.getKey();
+
+                if (key.startsWith("whatsapp://")) continue;
+
+                if (storageRootPath != null && key.equals(storageRootPath)) {
+                    it.remove();
+                    continue;
+                }
+
+                File dir = new File(key);
+                if (!dir.exists() || !dir.isDirectory()) { it.remove(); continue; }
+
+                File[] children = dir.listFiles();
+                if (children == null || children.length == 0) { it.remove(); continue; }
+
+                boolean hasAnyMedia = false;
+                for (File f : children) {
+                    if (f.isFile() && isMediaFile(f.getName())
+                            && !f.getName().contains(".trashed.")) {
+                        hasAnyMedia = true;
+                        break;
+                    }
+                    if (f.isDirectory()) {
+                        File[] sub = f.listFiles();
+                        if (sub == null) continue;
+                        for (File s : sub) {
+                            if (s.isFile() && isMediaFile(s.getName())
+                                    && !s.getName().contains(".trashed.")) {
+                                hasAnyMedia = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (hasAnyMedia) break;
+                }
+                if (!hasAnyMedia) it.remove();
+            }
+
+            // ── 6. Sort: WhatsApp first, then alpha ──
             List<String> paths = new ArrayList<>(albums.keySet());
             Collections.sort(paths, (a, b) -> {
+                boolean aWa = a.startsWith("whatsapp://");
+                boolean bWa = b.startsWith("whatsapp://");
+                if (aWa != bWa) return aWa ? -1 : 1;
                 String da = albums.get(a);
                 String db = albums.get(b);
                 if (da == null) da = "";
@@ -2799,6 +3193,7 @@ public class GalleryActivity extends AppCompatActivity {
 
             Map<String, Integer> nameCounts = new HashMap<>();
             for (String p : paths) {
+                if (p.startsWith("whatsapp://")) continue;
                 String d = albums.get(p);
                 if (d == null) d = "";
                 nameCounts.put(d, nameCounts.getOrDefault(d, 0) + 1);
@@ -2806,6 +3201,11 @@ public class GalleryActivity extends AppCompatActivity {
 
             Map<String, String> finalDisplayNames = new HashMap<>();
             for (String p : paths) {
+                if (p.startsWith("whatsapp://")) {
+                    String base = albums.get(p);
+                    finalDisplayNames.put(p, base != null ? base : "WhatsApp");
+                    continue;
+                }
                 String d = albums.get(p);
                 if (d == null) d = "";
                 if (nameCounts.get(d) > 1) {
@@ -2826,6 +3226,8 @@ public class GalleryActivity extends AppCompatActivity {
                 albumList.addAll(finalPaths);
                 albumDisplayNames.putAll(finalNames);
                 albumsCacheValid = true;
+
+                if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
                 showAlbumGrid();
             });
         });
@@ -2842,9 +3244,29 @@ public class GalleryActivity extends AppCompatActivity {
         catch (Exception e) { return; }
         if (files == null) return;
 
+        String dirPath = directory.getAbsolutePath();
+        if (dirPath.contains("/com.whatsapp/")) return;
+
         boolean hasMedia = false;
         for (File f : files) {
-            if (f.isFile() && isMediaFile(f.getName())) { hasMedia = true; break; }
+            if (f.isFile() && isMediaFile(f.getName())
+                    && !f.getName().contains(".trashed.")) {
+                hasMedia = true;
+                break;
+            }
+            if (f.isDirectory()) {
+                File[] sub = f.listFiles();
+                if (sub != null) {
+                    for (File s : sub) {
+                        if (s.isFile() && isMediaFile(s.getName())
+                                && !s.getName().contains(".trashed.")) {
+                            hasMedia = true;
+                            break;
+                        }
+                    }
+                }
+                if (hasMedia) break;
+            }
         }
 
         if (hasMedia) {
@@ -2882,6 +3304,7 @@ public class GalleryActivity extends AppCompatActivity {
     private void showAlbumGrid() {
         if (albumList.isEmpty()) {
             Toast.makeText(this, "No albums found", Toast.LENGTH_SHORT).show();
+            if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
             return;
         }
 
@@ -2892,29 +3315,61 @@ public class GalleryActivity extends AppCompatActivity {
             displayList.add(d);
         }
 
-        albumAdapter = new AlbumAdapter(this, displayList, albumPathList(), displayName -> {
-            String chosenPath = null;
-            for (String p : albumList) {
-                String d = albumDisplayNames.get(p);
-                if (d == null) d = new File(p).getName();
-                if (d.equals(displayName)) { chosenPath = p; break; }
-            }
-            if (chosenPath == null) return;
+        // Build the adapter (was missing — this is why the grid stayed blank)
+        albumAdapter = new AlbumAdapter(
+                this,
+                displayList,
+                albumPathList(),
+                displayName -> {
+                    // Resolve displayName → canonical path
+                    String chosenPath = null;
+                    for (String p : albumList) {
+                        String d = albumDisplayNames.get(p);
+                        if (d == null) d = new File(p).getName();
+                        if (d.equals(displayName)) { chosenPath = p; break; }
+                    }
+                    if (chosenPath == null) return;
 
-            currentAlbum = chosenPath;
-            String shown = albumDisplayNames.get(chosenPath);
-            if (shown == null) shown = new File(chosenPath).getName();
-            titleView.setText(shown);
-            applyFilter();
-            albumRecycler.setVisibility(View.GONE);
-            recyclerView.setVisibility(View.VISIBLE);
-            showAlbums = false;
-            updateBarsVisibility();
-            updateTopNavBar();
-        });
+                    if (chosenPath.startsWith("whatsapp://")) {
+                        currentAlbum = null;
+                        whatsappOnly = true;
+                        whatsappPath = chosenPath;
+                        showAlbums = false;
+
+                        titleView.setText(albumDisplayNames.get(chosenPath) != null
+                                ? albumDisplayNames.get(chosenPath) : "WhatsApp");
+
+                        albumRecycler.setVisibility(View.GONE);
+                        recyclerView.setVisibility(View.VISIBLE);
+
+                        showWhatsAppOnly(chosenPath);
+                        updateBarsVisibility();
+                        updateTopNavBar();
+                        return;
+                    }
+
+                    whatsappOnly = false;
+                    whatsappPath = null;
+                    currentAlbum = chosenPath;
+                    showAlbums = false;
+
+                    String shown = albumDisplayNames.get(chosenPath);
+                    if (shown == null) shown = new File(chosenPath).getName();
+                    titleView.setText(shown);
+
+                    albumRecycler.setVisibility(View.GONE);
+                    recyclerView.setVisibility(View.VISIBLE);
+
+                    applyFilter();
+                    updateBarsVisibility();
+                    updateTopNavBar();
+                });
+
         albumRecycler.setLayoutManager(new GridLayoutManager(this, 2));
         albumRecycler.setAdapter(albumAdapter);
         albumRecycler.setVisibility(View.VISIBLE);
+        recyclerView.setVisibility(View.GONE);
+        if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
         titleView.setText("Albums");
     }
 
@@ -2942,12 +3397,6 @@ public class GalleryActivity extends AppCompatActivity {
         catch (Exception e) { return path; }
     }
 
-    /**
-     * Bulk toggle favorites for all selected items.
-     * - Un-favorited items in the selection get added to favorites.
-     * - Already favorited items in the selection get removed from favorites.
-     * - Instantly refreshes the adapter and re-applies filters.
-     */
     private void addSelectedToFavorites() {
         if (selectedItems.isEmpty()) return;
 
@@ -2963,7 +3412,6 @@ public class GalleryActivity extends AppCompatActivity {
                 anyChanged = true;
             }
 
-            // Update in-memory MediaItem objects
             for (MediaItem item : mediaItems) {
                 if (item.path.equals(path)) {
                     item.isFavorite = favs.contains(path);
@@ -2975,7 +3423,6 @@ public class GalleryActivity extends AppCompatActivity {
         if (anyChanged) {
             saveFavoritePaths(favs);
 
-            // ★ Immediately notify adapter and re-apply filter/ui updates
             if (adapter != null) {
                 adapter.notifyDataSetChanged();
             }
@@ -2991,6 +3438,18 @@ public class GalleryActivity extends AppCompatActivity {
     public void onBackPressed() {
         if (fullscreenOverlay != null && fullscreenOverlay.getVisibility() == View.VISIBLE) {
             closeFullscreenViewer(); return;
+        }
+        if (whatsappOnly) {
+            whatsappOnly = false;
+            whatsappPath = null;
+            showAlbums = true;
+            loadAlbums();
+            albumRecycler.setVisibility(View.VISIBLE);
+            recyclerView.setVisibility(View.GONE);
+            titleView.setText("Albums");
+            updateTopNavBar();
+            updateBarsVisibility();
+            return;
         }
         if (currentAlbum != null || showAlbums) { navigateBackFromAlbum(); return; }
         if (selectionMode) { clearSelection(); return; }
