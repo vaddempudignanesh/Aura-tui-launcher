@@ -351,17 +351,32 @@ public enum Ui implements XMLPrefsSave {
     system_wallpaper {
         @Override
         public String defaultValue() {
-            return "true";
+            // ★ New default: system wallpaper ON, 75% dim
+            return "75% dimming";
         }
 
         @Override
         public String type() {
-            return XMLPrefsSave.BOOLEAN;
+            // TEXT so we can accept "true"/"false"/"NN% dimming"
+            return XMLPrefsSave.TEXT;
         }
 
         @Override
         public String info() {
-            return "If true, your system wallpaper will be used as background";
+            return "true = wallpaper on, false = solid bg, or NN% dimming (e.g. 75% dimming)";
+        }
+
+        @Override
+        public String[] suggestionValues() {
+            return new String[] {
+                    "true",
+                    "false",
+                    "100% dimming",
+                    "75% dimming",
+                    "50% dimming",
+                    "25% dimming",
+                    "0% dimming"
+            };
         }
     },
     fullscreen {

@@ -791,7 +791,71 @@ public class SuggestionsManager {
             case CommandAbstraction.THEME_PRESET:
                 suggestThemePresets(suggestions, afterLastSpace, beforeLastSpace);
                 break;
+
+            case CommandAbstraction.PLAIN_TEXT:
+                suggestPlainTextFromConfigEntry(suggestions, beforeLastSpace, afterLastSpace);
+                break;
         }
+    }
+    /**
+     * When the arg type is PLAIN_TEXT, we can't know what to suggest on
+     * our own — but if this PLAIN_TEXT follows a CONFIG_ENTRY, the pref
+     * may declare a set of suggestion values via
+     * XMLPrefsSave.suggestionValues(). Look up the previous word, resolve
+     * it to a pref, and offer its values.
+     */
+    private void suggestPlainTextFromConfigEntry(List<Suggestion> suggestions,
+                                                 String beforeLastSpace,
+                                                 String afterLastSpace) {
+        // The user has typed: "<cmd> <param> <prefName> <partial>"
+        // beforeLastSpace = "<cmd> <param> <prefName>"  (or "" if nothing before)
+        if (beforeLastSpace == null || beforeLastSpace.trim().isEmpty()) {
+            return;
+        }
+
+        // Split off the last token of beforeLastSpace — that's the pref label.
+        String trimmed = beforeLastSpace.trim();
+        int lastSpace = trimmed.lastIndexOf(Tuils.SPACE);
+        String prefLabel = (lastSpace == -1)
+                ? trimmed
+                : trimmed.substring(lastSpace + 1);
+
+        XMLPrefsSave save = getPrefByLabel(prefLabel);
+        if (save == null) return;
+
+        String[] values = save.suggestionValues();
+        if (values == null || values.length == 0) return;
+
+        final String partial = afterLastSpace == null ? Tuils.EMPTYSTRING : afterLastSpace;
+
+        for (String v : values) {
+            if (partial.length() == 0
+                    || v.toLowerCase().startsWith(partial.toLowerCase())) {
+                // TYPE_PERMANENT so that clicking inserts the value as-is and
+                // doesn't append a trailing space that would confuse the parser.
+                suggestions.add(new Suggestion(beforeLastSpace, v, false, Suggestion.TYPE_PERMANENT));
+            }
+        }
+    }
+
+    /** Resolve a config-entry label to its XMLPrefsSave object. */
+    private XMLPrefsSave getPrefByLabel(String label) {
+        if (label == null || label.isEmpty()) return null;
+        if (xmlPrefsEntrys == null) {
+            // Same lazy init used by suggestConfigEntry()
+            xmlPrefsEntrys = new ArrayList<>();
+            for (XMLPrefsManager.XMLPrefsRoot element : XMLPrefsManager.XMLPrefsRoot.values()) {
+                xmlPrefsEntrys.addAll(element.enums);
+            }
+            Collections.addAll(xmlPrefsEntrys, Apps.values());
+            Collections.addAll(xmlPrefsEntrys, Notifications.values());
+            Collections.addAll(xmlPrefsEntrys, Rss.values());
+            Collections.addAll(xmlPrefsEntrys, Reply.values());
+        }
+        for (XMLPrefsSave s : xmlPrefsEntrys) {
+            if (s.label().equalsIgnoreCase(label)) return s;
+        }
+        return null;
     }
 
     private void suggestThemePresets(List<Suggestion> suggestions, String afterLastSpace, String beforeLastSpace) {

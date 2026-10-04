@@ -46,7 +46,7 @@ public enum Theme implements XMLPrefsSave {
     device_color {
         @Override
         public String defaultValue() {
-            return "#ffff9800";
+            return "#ffff0000";
         }
 
         @Override

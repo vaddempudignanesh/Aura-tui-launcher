@@ -618,12 +618,41 @@ public class UIManager implements OnTouchListener {
 
         imm = (InputMethodManager) mContext.getSystemService(Context.INPUT_METHOD_SERVICE);
 
-        if (!XMLPrefsManager.getBoolean(Ui.system_wallpaper) || !canApplyTheme) {
+        String wpPref = XMLPrefsManager.get(Ui.system_wallpaper);
+        boolean useSystemWP = false;
+        int dimPercent = 0;
+
+        if (wpPref != null) {
+            String v = wpPref.trim().toLowerCase(java.util.Locale.US);
+            if (v.equals("true")) {
+                useSystemWP = true;
+                dimPercent = 0;
+            } else if (v.equals("false")) {
+                useSystemWP = false;
+            } else {
+                // Number or "NN% dimming"
+                int pct = v.indexOf('%');
+                if (pct >= 0) v = v.substring(0, pct).trim();
+                try {
+                    int n = Integer.parseInt(v);
+                    useSystemWP = true;
+                    dimPercent = Math.max(0, Math.min(100, n));
+                } catch (NumberFormatException e) {
+                    useSystemWP = false;
+                }
+            }
+        }
+
+        if (!useSystemWP || !canApplyTheme) {
             rootView.setBackgroundColor(XMLPrefsManager.getColor(Theme.bg_color));
         } else {
             rootView.setBackgroundColor(Color.TRANSPARENT);
+            if (dimPercent > 0) {
+                int alpha = Math.round(dimPercent * 255f / 100f);
+                rootView.setBackground(new android.graphics.drawable.ColorDrawable(
+                        Color.argb(alpha, 0, 0, 0)));
+            }
         }
-
         if (XMLPrefsManager.getBoolean(Behavior.auto_scroll)) {
             rootView.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
                 int heightDiff = rootView.getRootView().getHeight() - rootView.getHeight();

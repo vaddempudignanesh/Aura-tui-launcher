@@ -15,4 +15,8 @@ public interface XMLPrefsSave extends StringableObject {
     XMLPrefsElement parent();
     String label();
     String[] invalidValues();
+
+    default String[] suggestionValues() {
+        return null;
+    }
 }

@@ -256,6 +256,21 @@ public class LauncherActivity extends AppCompatActivity implements Reloadable {
         Thread.currentThread().setUncaughtExceptionHandler(new CustomExceptionHandler());
 
         XMLPrefsManager.loadCommons(this);
+
+        try {
+            String cur = XMLPrefsManager.get(Theme.output_color);
+            if ("#ffffffff".equalsIgnoreCase(cur)) {
+                XMLPrefsManager.XMLPrefsRoot.THEME.write(Theme.output_color, "#ffff0000");
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            String cur = XMLPrefsManager.get(Ui.system_wallpaper);
+            if ("true".equalsIgnoreCase(cur)) {
+                XMLPrefsManager.XMLPrefsRoot.UI.write(Ui.system_wallpaper, "75% dimming");
+            }
+        } catch (Exception ignored) {}
+
         new RegexManager(LauncherActivity.this);
         new TimeManager(this);
 
@@ -313,8 +328,12 @@ public class LauncherActivity extends AppCompatActivity implements Reloadable {
             requestWindowFeature(Window.FEATURE_NO_TITLE);
             getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
         }
-
-        boolean useSystemWP = XMLPrefsManager.getBoolean(Ui.system_wallpaper);
+        String wpPref = XMLPrefsManager.get(Ui.system_wallpaper);
+        boolean useSystemWP = false;
+        if (wpPref != null) {
+            String v = wpPref.trim().toLowerCase(java.util.Locale.US);
+            useSystemWP = v.equals("true") || Character.isDigit(v.charAt(0));
+        }
         if (useSystemWP) {
             setTheme(R.style.Custom_SystemWP);
         } else {
