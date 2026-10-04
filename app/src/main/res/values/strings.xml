@@ -466,4 +466,7 @@
 
     <!-- Generic fallback (content:// + share) -->
     <string name="gallery_view_media">Media Viewer</string>
+
+    <string name="music_player_label">Music Player</string>
+    <string name="music_play_audio">Music Player</string>
 </resources>

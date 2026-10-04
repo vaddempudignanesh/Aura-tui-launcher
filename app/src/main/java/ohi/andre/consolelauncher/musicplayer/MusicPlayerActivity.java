@@ -69,6 +69,11 @@ public class MusicPlayerActivity extends AppCompatActivity {
     private static final int DIM      = 0xFF00AA00;
     private static final int NOW_PLAY = 0xFFFFFF00;
 
+    private String pendingIncomingPath = null;
+
+
+    private boolean launchedForIncomingFile = false;
+
     public static final String ACTION_CTRL         = "ohi.andre.consolelauncher.MUSIC_CTRL";
     public static final String EXTRA_CMD           = "cmd";
     public static final String CMD_PLAY            = "play";
@@ -217,13 +222,18 @@ public class MusicPlayerActivity extends AppCompatActivity {
         buildUi();
         loadPlaylist();
         LocalBroadcastManager.getInstance(this)
-                .registerReceiver(ctrlReceiver,
-                        new IntentFilter(ACTION_CTRL));
+                .registerReceiver(ctrlReceiver, new IntentFilter(ACTION_CTRL));
+
         alive = true;
         everOpened = true;
+
         boolean startHidden = getIntent() != null
                 && getIntent().getBooleanExtra("start_hidden", false);
         if (startHidden) pendingStartLast = true;
+
+        // ★ ADD: check for external intent FIRST
+        handleIncomingIntent(getIntent());
+
         if (hasAudioPermission()) loadTracks();
         else requestAudioPermission();
     }
@@ -242,10 +252,8 @@ public class MusicPlayerActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        if (searchOpen) {
-            closeSearch();
-            return;
-        }
+        if (searchOpen) { closeSearch(); return; }
+
         switch (viewState) {
             case VIEW_PICKER:
                 pickBuffer.clear();
@@ -259,6 +267,10 @@ public class MusicPlayerActivity extends AppCompatActivity {
                 updateToolbar();
                 return;
             default:
+                if (launchedForIncomingFile) {
+                    finish();
+                    return;
+                }
                 super.onBackPressed();
         }
     }
@@ -694,6 +706,7 @@ public class MusicPlayerActivity extends AppCompatActivity {
                     if (idx >= 0) playTrack(idx);
                     else if (!visibleTracks.isEmpty()) playTrack(0);
                 }
+                maybeAutoPlayIncoming();
             });
         });
     }
@@ -1189,9 +1202,143 @@ public class MusicPlayerActivity extends AppCompatActivity {
         }
     }
 
-    // ============================================================
-    // Helpers
-    // ============================================================
+    /** File path passed in via ACTION_VIEW / ACTION_SEND, to auto-play after load. */
+
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIncomingIntent(intent);
+    }
+
+    private void handleIncomingIntent(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        if (!Intent.ACTION_VIEW.equals(action)
+                && !Intent.ACTION_SEND.equals(action)
+                && !Intent.ACTION_EDIT.equals(action)) {
+            return;
+        }
+
+        Uri data = intent.getData();
+        if (data == null && Intent.ACTION_SEND.equals(action)) {
+            data = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        }
+        if (data == null) return;
+
+        String path = resolveIncomingPath(data);
+        if (path == null) {
+            Toast.makeText(this, "Cannot open this audio file",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        launchedForIncomingFile = true;
+        pendingIncomingPath = path;
+        maybeAutoPlayIncoming();
+    }
+
+    /** file:// → direct path. content:// → _data column, else copy to cache. */
+    private String resolveIncomingPath(Uri uri) {
+        if (uri == null) return null;
+        String scheme = uri.getScheme();
+
+        if ("file".equalsIgnoreCase(scheme)) return uri.getPath();
+
+        if ("content".equalsIgnoreCase(scheme)) {
+            // 1) MediaStore _data
+            Cursor c = null;
+            try {
+                c = getContentResolver().query(uri,
+                        new String[]{MediaStore.MediaColumns.DATA},
+                        null, null, null);
+                if (c != null && c.moveToFirst()) {
+                    int idx = c.getColumnIndex(MediaStore.MediaColumns.DATA);
+                    if (idx >= 0) {
+                        String p = c.getString(idx);
+                        if (p != null && new File(p).exists()) return p;
+                    }
+                }
+            } catch (Exception ignored) {
+            } finally { if (c != null) c.close(); }
+
+            // 2) Copy stream into our cache so MediaPlayer has a real file
+            try {
+                String name = null;
+                Cursor c2 = null;
+                try {
+                    c2 = getContentResolver().query(uri,
+                            new String[]{MediaStore.MediaColumns.DISPLAY_NAME},
+                            null, null, null);
+                    if (c2 != null && c2.moveToFirst()) {
+                        int idx = c2.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME);
+                        if (idx >= 0) name = c2.getString(idx);
+                    }
+                } finally { if (c2 != null) c2.close(); }
+
+                if (name == null) name = "incoming_" + System.currentTimeMillis() + ".mp3";
+
+                File cacheDir = new File(getCacheDir(), "incoming_audio");
+                if (!cacheDir.exists()) cacheDir.mkdirs();
+                File out = new File(cacheDir, name);
+
+                try (java.io.InputStream in = getContentResolver().openInputStream(uri);
+                     java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
+                    if (in == null) return null;
+                    byte[] buf = new byte[64 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) > 0) fos.write(buf, 0, n);
+                }
+                return out.getAbsolutePath();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** Called after tracks load. If a pending path exists, insert it into the
+     *  visible list and start playback immediately. */
+    private void maybeAutoPlayIncoming() {
+        if (pendingIncomingPath == null) return;
+        if (visibleTracks == null) return;
+        // If tracks haven't loaded yet, loadTracks()'s post-handler will call us.
+        if (allTracks.isEmpty()) return;
+
+        String target = pendingIncomingPath;
+        pendingIncomingPath = null;
+
+        // If it's already in the library, play that entry.
+        for (int i = 0; i < visibleTracks.size(); i++) {
+            Track t = visibleTracks.get(i);
+            if (t.path != null && t.path.equals(target)) {
+                playTrack(i);
+                return;
+            }
+        }
+
+        // Otherwise synthesize a Track and play it directly.
+        File f = new File(target);
+        if (!f.exists()) return;
+
+        Track t = new Track();
+        t.id = -1;                          // not from MediaStore
+        t.title = f.getName();
+        t.artist = "";
+        t.path = f.getAbsolutePath();
+        t.size = f.length();
+        t.dateModified = f.lastModified() / 1000;
+        t.dateAdded = t.dateModified;
+        t.durationMs = 0;                   // will be filled by player
+        t.contentUri = Uri.fromFile(f);     // MediaPlayer accepts this directly
+
+        // Prepend so the incoming file is the first row
+        visibleTracks.add(0, t);
+        allTracks.add(0, t);
+        adapter.notifyDataSetChanged();
+        playTrack(0);
+    }
 
     private AlertDialog.Builder blackDialog() {
         return new AlertDialog.Builder(new ContextThemeWrapper(this, R.style.BlackDialog));

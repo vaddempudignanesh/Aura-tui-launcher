@@ -215,12 +215,58 @@
 
         <activity
             android:name=".musicplayer.MusicPlayerActivity"
-            android:exported="false"
+            android:exported="true"
+            android:label="@string/music_player_label"
             android:theme="@style/MusicTheme"
-            android:taskAffinity="ohi.andre.consolelauncher.music"
-            android:documentLaunchMode="intoExisting"
             android:launchMode="standard"
-            android:configChanges="orientation|screenSize|keyboardHidden" />
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+
+            <!-- ── Audio by mime type ── -->
+            <intent-filter android:priority="100" android:label="@string/music_play_audio">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+
+            <!-- ── Audio by file extension ── -->
+            <intent-filter android:priority="100" android:label="@string/music_play_audio">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.mp3"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.m4a"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.aac"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.ogg"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.oga"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.opus" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.wav"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.flac" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.amr"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.mid"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.midi" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.wma"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.mp2"  />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.mka"  />
+            </intent-filter>
+
+            <!-- ── content:// from other apps (WhatsApp, Gmail, Downloads) ── -->
+            <intent-filter android:priority="100" android:label="@string/music_play_audio">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+
+            <!-- ── Optional: share target ── -->
+            <intent-filter android:priority="100" android:label="@string/music_play_audio">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+        </activity>
 
 
         <activity

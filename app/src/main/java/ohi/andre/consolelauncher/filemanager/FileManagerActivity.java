@@ -358,13 +358,7 @@ public class FileManagerActivity extends AppCompatActivity {
         for (ResolveInfo ri : all) {
             String pkg = ri.activityInfo.packageName;
             String cls = ri.activityInfo.name;
-
-            // Exclude only THIS activity. Everything else in the package —
-            // notably GalleryActivity, PdfViewerActivity, TuixtActivity —
-            // is a valid target.
-            if (selfPkg.equals(pkg) && selfCls.equals(cls)) {
-                continue;
-            }
+            if (selfPkg.equals(pkg) && selfCls.equals(cls)) continue;
             filtered.add(ri);
         }
         return filtered;
@@ -1652,12 +1646,19 @@ public class FileManagerActivity extends AppCompatActivity {
         }
 
 // ── Videos / audio: prefer an external handler ──
-        if (mimeType.startsWith("video/") || mimeType.startsWith("audio/")) {
+        if (mimeType.startsWith("video/")) {
             if (anyExternalAppCanHandle(file, mimeType)) {
                 tryOpenWithDefaultApp(file, mimeType);
             } else {
-                // Nothing can play it → show a friendly dialog
-                showNoMediaPlayerDialog(file, mimeType);
+                showNoMediaPlayerDialog(file, "video/*");
+            }
+            return;
+        }
+        if (mimeType.startsWith("audio/")) {
+            if (anyExternalAppCanHandle(file, mimeType)) {
+                tryOpenWithDefaultApp(file, mimeType);
+            } else {
+                showNoMediaPlayerDialog(file, "audio/*");
             }
             return;
         }
