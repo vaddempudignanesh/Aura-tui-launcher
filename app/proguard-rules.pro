@@ -25,3 +25,36 @@
 -dontwarn org.slf4j.**
 
 -dontwarn org.jdom2.**
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Remove ALL android.util.Log calls from the release build.
+#
+#  `assumenosideeffects` tells R8 that these methods have no side
+#  effects, so the entire call — including its argument expressions
+#  (string concatenation, String.format, StringBuilder, etc.) — is
+#  eliminated from the bytecode.
+#
+#  Do NOT apply this to the debug build, or you lose all logs while
+#  developing. (See gradle snippet below.)
+# ═══════════════════════════════════════════════════════════════
+-assumenosideeffects class android.util.Log {
+    public static *** v(...);
+    public static *** d(...);
+    public static *** i(...);
+    public static *** w(...);
+    public static *** e(...);
+    public static *** wtf(...);
+    public static *** println(...);
+    public static *** isLoggable(...);
+    public static *** getStackTraceString(...);
+}
+
+# Same treatment for the System.out / System.err paths some
+# libraries use to print logs. Not strictly required, but tidy.
+-assumenosideeffects class java.io.PrintStream {
+    public void println(...);
+    public void print(...);
+    public void printf(...);
+    public void format(...);
+}

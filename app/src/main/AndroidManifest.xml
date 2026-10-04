@@ -219,6 +219,8 @@
             android:label="@string/music_player_label"
             android:theme="@style/MusicTheme"
             android:launchMode="standard"
+            android:taskAffinity="ohi.andre.consolelauncher.music"
+            android:documentLaunchMode="intoExisting"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
 
@@ -432,6 +434,8 @@
             android:theme="@style/Theme.Transparent"
             android:exported="true"
             android:launchMode="standard"
+            android:taskAffinity="ohi.andre.consolelauncher.browser"
+            android:documentLaunchMode="intoExisting"
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation"
             android:windowSoftInputMode="adjustResize">
 

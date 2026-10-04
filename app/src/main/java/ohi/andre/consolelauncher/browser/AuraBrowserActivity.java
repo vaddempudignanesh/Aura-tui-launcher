@@ -2488,8 +2488,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             @Override
             public boolean onConsoleMessage(android.webkit.ConsoleMessage cm) {
-                Log.d("AURA-DARK-JS", cm.messageLevel() + " " + cm.message()
-                        + " @" + cm.lineNumber() + " src=" + cm.sourceId());
                 return true;
             }
         });
