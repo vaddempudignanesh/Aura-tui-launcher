@@ -469,4 +469,6 @@
 
     <string name="music_player_label">Music Player</string>
     <string name="music_play_audio">Music Player</string>
+
+    <string name="search_hint">Search or type URL</string>
 </resources>

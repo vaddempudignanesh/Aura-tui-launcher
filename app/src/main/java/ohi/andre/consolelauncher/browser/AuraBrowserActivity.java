@@ -122,6 +122,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private ValueCallback<Uri[]> filePathCallback;
     private Uri cameraOutputUri;
     private File cameraOutputFile;
+    private static final String PREF_ASKED_DEFAULT_BROWSER =
+            "aura_asked_default_browser_v1";
+
+    private static final int REQ_DEFAULT_BROWSER = 4200;
     // ═══════════════════════════════════════════════════════════════════
     // DarkReader — injected via addDocumentStartJavaScript so it runs
     // BEFORE any page script, in every frame, on every page.
@@ -435,7 +439,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         Intent intent = getIntent();
         boolean startIncognito = intent != null && intent.getBooleanExtra(EXTRA_INCOGNITO, false);
-        String startUrl = intent != null ? intent.getStringExtra(EXTRA_URL) : null;
+        String startUrl = resolveUrlFromIntent(intent);
 
 // ★ Two entry modes:
 //   A) Caller passed an explicit URL/incognito → single fresh tab, ignore history.
@@ -462,9 +466,50 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 if (idx != currentTabIndex) switchToTab(idx);
             }
         }
+        // After the initial tab is set up:
+        new Handler(Looper.getMainLooper()).postDelayed(
+                this::maybeRequestDefaultBrowserRole, 800);
     }
 
 
+    private void requestDefaultBrowserNow() {
+        // Always request — user explicitly asked.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                android.app.role.RoleManager rm =
+                        (android.app.role.RoleManager)
+                                getSystemService(Context.ROLE_SERVICE);
+                if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_BROWSER)) {
+                    Intent i = rm.createRequestRoleIntent(
+                            android.app.role.RoleManager.ROLE_BROWSER);
+                    startActivityForResult(i, REQ_DEFAULT_BROWSER);
+                    return;
+                }
+            } catch (Exception ignored) {}
+        }
+        try {
+            startActivity(new Intent(
+                    android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS));
+        } catch (Exception e) {
+            Toast.makeText(this, "Open Settings → Apps → Default apps",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+
+        String url = resolveUrlFromIntent(intent);
+        if (url == null) return;
+
+        boolean incognito = intent.getBooleanExtra(EXTRA_INCOGNITO, false);
+
+        // If the browser is already open, open the new URL as a NEW TAB
+        // instead of reloading the current one — that matches every real
+        // browser's behaviour and keeps the user's existing tabs intact.
+        newTab(url, incognito);
+    }
 
     private android.widget.PopupWindow urlBarPopup = null;
 
@@ -550,6 +595,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             if (hasSelection) addPopupItem(row, "Copy", 0xFFFFFFFF, 2, false);
             addPopupItem(row, "Paste", hasClip ? 0xFFFFFFFF : 0xFF666666, 3, false);
             if (hasText) addPopupItem(row, "Select all", 0xFF33FF33, 4, true);
+            addPopupItem(row, "Set as default", 0xFF66BBFF, 5, true);
 
             android.widget.PopupWindow popup = new android.widget.PopupWindow(
                     row,
@@ -619,6 +665,39 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         } catch (Exception ignored) {}
         urlBarPopup = null;
+    }
+
+    private void maybeRequestDefaultBrowserRole() {
+        android.content.SharedPreferences p =
+                getSharedPreferences(PREFS_BROWSER, MODE_PRIVATE);
+        if (p.getBoolean(PREF_ASKED_DEFAULT_BROWSER, false)) return;
+        p.edit().putBoolean(PREF_ASKED_DEFAULT_BROWSER, true).apply();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                android.app.role.RoleManager rm =
+                        (android.app.role.RoleManager)
+                                getSystemService(Context.ROLE_SERVICE);
+                if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_BROWSER)) {
+                    if (!rm.isRoleHeld(android.app.role.RoleManager.ROLE_BROWSER)) {
+                        Intent roleIntent = rm.createRequestRoleIntent(
+                                android.app.role.RoleManager.ROLE_BROWSER);
+                        startActivityForResult(roleIntent, REQ_DEFAULT_BROWSER);
+                        return;
+                    }
+                }
+            } catch (Throwable t) {
+                Log.w("AuraBrowser", "RoleManager request failed", t);
+            }
+        }
+
+        // Fallback (older Android, or RoleManager unavailable): open the
+        // "Default apps" settings screen so the user can pick manually.
+        try {
+            Intent settings = new Intent(
+                    android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS);
+            startActivity(settings);
+        } catch (Exception ignored) {}
     }
 
     private void showUrlBarTextMenu() {
@@ -701,12 +780,73 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     etUrl.selectAll();
                     break;
                 }
+
+                case 5: {   // "Make default browser"
+                    requestDefaultBrowserNow();
+                    break;
+                }
             }
         } catch (Exception e) {
             Log.w("AuraBrowser", "URL bar action failed", e);
         }
     }
 
+    /**
+     * Resolves the URL that this activity was launched to display.
+     * Handles:
+     *   • EXTRA_URL (explicit — from our own launcher commands)
+     *   • ACTION_VIEW with getData() (any external app: WhatsApp, Gmail, ...)
+     *   • ACTION_WEB_SEARCH with SearchManager.QUERY (global search / "google X")
+     *   • ACTION_SEND with a text/plain body that contains a URL
+     */
+    private String resolveUrlFromIntent(Intent intent) {
+        if (intent == null) return null;
+
+        // 1. Explicit extra (highest priority — our own callers)
+        String extra = intent.getStringExtra(EXTRA_URL);
+        if (extra != null && !extra.trim().isEmpty()) return extra.trim();
+
+        String action = intent.getAction();
+        if (action == null) return null;
+
+        // 2. Standard external app launch: whatsapp://... -> ACTION_VIEW
+        if (Intent.ACTION_VIEW.equals(action)) {
+            Uri data = intent.getData();
+            if (data != null) {
+                String s = data.toString();
+                if (s != null && !s.trim().isEmpty()) return s;
+            }
+        }
+
+        // 3. Global search / "search the web for X"
+        if (Intent.ACTION_WEB_SEARCH.equals(action)
+                || "com.google.android.gms.actions.SEARCH_ACTION".equals(action)
+                || Intent.ACTION_SEARCH.equals(action)) {
+            String q = intent.getStringExtra(android.app.SearchManager.QUERY);
+            if (q == null) q = intent.getStringExtra("query");
+            if (q == null) q = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (q != null && !q.trim().isEmpty()) {
+                return "https://www.google.com/search?q="
+                        + Uri.encode(q.trim());
+            }
+        }
+
+        // 4. Share sheet: "Share link to browser"
+        if (Intent.ACTION_SEND.equals(action)) {
+            String shared = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (shared != null) {
+                // Extract the first http(s):// URL from the shared text.
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("https?://\\S+")
+                        .matcher(shared);
+                if (m.find()) return m.group();
+                // No URL found → search the whole text.
+                return "https://www.google.com/search?q=" + Uri.encode(shared);
+            }
+        }
+
+        return null;
+    }
 
     private void persistTabs() {
         try {
@@ -1281,10 +1421,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 if (downloadPanelDialog != null && downloadPanelDialog.isShowing()) {
                     return;
                 }
-                // Small delay so the service has a moment to register the
-                // task before we render the panel.
-                new Handler(Looper.getMainLooper()).postDelayed(
-                        this::showDownloadPanel, 250);
+
             });
 
         } catch (Exception e) {

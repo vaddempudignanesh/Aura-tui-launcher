@@ -429,12 +429,65 @@
             android:label="@string/browser_label"
             android:theme="@style/Theme.Transparent"
             android:exported="true"
-            android:taskAffinity="ohi.andre.consolelauncher.browser"
-            android:documentLaunchMode="intoExisting"
             android:launchMode="standard"
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation"
-            android:windowSoftInputMode="adjustResize" />
+            android:windowSoftInputMode="adjustResize">
 
+            <!-- ── THE canonical "I am a web browser" filter ── -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+            </intent-filter>
+
+            <!-- ── Plain web search: "what is the meaning of life" → browser ── -->
+            <intent-filter>
+                <action android:name="android.intent.action.WEB_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="" />
+            </intent-filter>
+
+            <!-- ── Global search / device search hooks ── -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.searchable"
+                android:resource="@xml/searchable" />
+
+            <!-- ── about:blank used by some apps when starting a browser ── -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="about" />
+            </intent-filter>
+
+            <!-- ── file:// pages from local files ── -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" />
+                <data android:mimeType="text/html" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="application/xhtml+xml" />
+            </intent-filter>
+
+            <!-- ── content:// html pages (e.g. Gmail's "view in browser") ── -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:mimeType="text/html" />
+                <data android:mimeType="application/xhtml+xml" />
+            </intent-filter>
+        </activity>
         <activity
             android:name=".filemanager.FileManagerActivity"
             android:exported="true"
