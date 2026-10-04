@@ -298,6 +298,39 @@ public class CustomVideoView extends SurfaceView implements SurfaceHolder.Callba
         try { return mediaPlayer.isPlaying(); } catch (Exception ignored) { return false; }
     }
 
+    /** True once MediaPlayer.onPrepared has completed and no error has occurred. */
+    public boolean isPrepared() { return prepared; }
+
+    public int getSafeDuration() {
+        if (mediaPlayer == null || !prepared) return -1;
+        try {
+            int d = mediaPlayer.getDuration();
+            return d > 0 ? d : -1;
+        } catch (Exception ignored) {
+            return -1;
+        }
+    }
+
+    public int getSafePosition() {
+        if (mediaPlayer == null || !prepared) return -1;
+        try {
+            int p = mediaPlayer.getCurrentPosition();
+            return p >= 0 ? p : -1;
+        } catch (Exception ignored) {
+            return -1;
+        }
+    }
+
+    public boolean seekToSafe(int ms) {
+        if (mediaPlayer == null || !prepared) return false;
+        try {
+            mediaPlayer.seekTo(Math.max(0, ms));
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     public void setOnPreparedListener(MediaPlayer.OnPreparedListener l) {
         preparedListener = l;
         if (prepared && mediaPlayer != null && l != null) {
