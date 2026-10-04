@@ -285,6 +285,65 @@ public class FileManagerActivity extends AppCompatActivity {
         });
     }
 
+    /**
+     * Returns true if at least one OTHER app (including our own GalleryActivity)
+     * can handle ACTION_VIEW with the given file + mime.
+     *
+     * Excludes FileManagerActivity itself so we don't recurse.
+     */
+    private boolean anyExternalAppCanHandle(File file, String mimeType) {
+        if (file == null || !file.exists()) return false;
+
+        Uri uri;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                uri = FileProvider.getUriForFile(
+                        this, getPackageName() + ".fileprovider", file);
+            } catch (Exception e) {
+                return false;
+            }
+        } else {
+            uri = Uri.fromFile(file);
+        }
+
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(uri, mimeType);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        PackageManager pm = getPackageManager();
+
+        // Match default-only so we don't get "potential" handlers that
+        // never appear in the real chooser.
+        List<ResolveInfo> handlers =
+                pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
+
+        for (ResolveInfo ri : handlers) {
+            String pkg = ri.activityInfo.packageName;
+            String cls = ri.activityInfo.name;
+
+            // Skip FileManagerActivity itself — otherwise we'd call ourselves
+            // and loop forever.
+            if (getPackageName().equals(pkg)
+                    && cls.equals(getClass().getName())) {
+                continue;
+            }
+
+            // Skip anything under our package that isn't the gallery —
+            // we only want to hand off to GalleryActivity or an external app.
+            if (getPackageName().equals(pkg)) {
+                if (cls.equals("ohi.andre.consolelauncher.gallery.GalleryActivity")
+                        || cls.equals("ohi.andre.consolelauncher.gallery.GalleryOpenActivity")) {
+                    return true;
+                }
+                // other own-package handlers (e.g. PdfViewerActivity) — accept too
+                return true;
+            }
+
+            return true; // external app found
+        }
+        return false;
+    }
+
     private void clearThumbCache() {
         thumbCache.evictAll();
     }
@@ -293,12 +352,20 @@ public class FileManagerActivity extends AppCompatActivity {
         PackageManager pm = getPackageManager();
         List<ResolveInfo> all = pm.queryIntentActivities(intent, 0);
         List<ResolveInfo> filtered = new ArrayList<>();
-        String self = getPackageName();
+        String selfPkg = getPackageName();
+        String selfCls = getClass().getName();
+
         for (ResolveInfo ri : all) {
             String pkg = ri.activityInfo.packageName;
-            if (!self.equals(pkg)) {
-                filtered.add(ri);
+            String cls = ri.activityInfo.name;
+
+            // Exclude only THIS activity. Everything else in the package —
+            // notably GalleryActivity, PdfViewerActivity, TuixtActivity —
+            // is a valid target.
+            if (selfPkg.equals(pkg) && selfCls.equals(cls)) {
+                continue;
             }
+            filtered.add(ri);
         }
         return filtered;
     }
@@ -1573,15 +1640,46 @@ public class FileManagerActivity extends AppCompatActivity {
             openTextEditor(file);
             return;
         }
+        // ── Images: prefer an external handler (incl. GalleryActivity) ──
         if (mimeType.startsWith("image/")) {
-            openImagePreview(file);
+            if (anyExternalAppCanHandle(file, mimeType)) {
+                tryOpenWithDefaultApp(file, mimeType);
+            } else {
+                // Nothing on the device can view it → built-in preview
+                openImagePreview(file);
+            }
             return;
         }
+
+// ── Videos / audio: prefer an external handler ──
         if (mimeType.startsWith("video/") || mimeType.startsWith("audio/")) {
-            tryOpenWithDefaultApp(file, mimeType);
+            if (anyExternalAppCanHandle(file, mimeType)) {
+                tryOpenWithDefaultApp(file, mimeType);
+            } else {
+                // Nothing can play it → show a friendly dialog
+                showNoMediaPlayerDialog(file, mimeType);
+            }
             return;
         }
+
+// ── Everything else: unchanged ──
         tryOpenWithDefaultApp(file, mimeType);
+    }
+
+    private void showNoMediaPlayerDialog(File file, String mimeType) {
+        boolean isVideo = mimeType != null && mimeType.startsWith("video/");
+        String kind = isVideo ? "video" : "audio";
+
+        blackDialogBuilder()
+                .setTitle("No " + (isVideo ? "Video" : "Audio") + " Player Found")
+                .setMessage("No app is installed that can play this " + kind + ".\n\n"
+                        + "File: " + file.getName() + "\n"
+                        + "Size: " + FileManagerAdapter.formatSize(file.length()) + "\n\n"
+                        + "You can share it, look at its properties, or install a media player.")
+                .setPositiveButton("Share", (d, w) -> shareFile(file))
+                .setNeutralButton("Info", (d, w) -> showFileInfo(file))
+                .setNegativeButton("Close", null)
+                .show();
     }
 
     private File copyRootFileToCache(File rootFile) {
