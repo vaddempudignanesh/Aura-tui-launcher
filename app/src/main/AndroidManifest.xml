@@ -235,7 +235,88 @@
 
         <activity
             android:name=".gallery.GalleryActivity"
-            android:theme="@style/GalleryTheme" />
+            android:label="@string/gallery_app_label"
+            android:theme="@style/GalleryTheme"
+            android:exported="true"
+            android:launchMode="standard"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+
+            <!-- ── Images ── -->
+            <intent-filter android:priority="100" android:label="@string/gallery_pick_image">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+
+            <!-- ── Videos ── -->
+            <intent-filter android:priority="100" android:label="@string/gallery_play_video">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+
+            <!-- ── Image extensions (file scheme) ── -->
+            <intent-filter android:priority="100" android:label="@string/gallery_pick_image">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.jpg"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.jpeg" />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.png"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.gif"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.bmp"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.webp" />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.heic" />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.heif" />
+            </intent-filter>
+
+            <!-- ── Video extensions (file scheme) ── -->
+            <intent-filter android:priority="100" android:label="@string/gallery_play_video">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.mp4"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.mkv"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.webm" />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.avi"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.mov"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.3gp"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.m4v"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.flv"  />
+                <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.wmv"  />
+            </intent-filter>
+
+            <!-- ── content:// (WhatsApp, Gmail, downloads, etc.) ── -->
+            <intent-filter android:priority="100" android:label="@string/gallery_view_media">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter android:priority="100" android:label="@string/gallery_view_media">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+
+            <!-- ── Optional: share target ── -->
+            <intent-filter android:priority="100" android:label="@string/gallery_view_media">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter android:priority="100" android:label="@string/gallery_view_media">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity>
 
         <activity
             android:name=".gallery.ImageViewerActivity"

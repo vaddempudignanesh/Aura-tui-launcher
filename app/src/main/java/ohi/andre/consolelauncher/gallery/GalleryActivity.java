@@ -101,7 +101,14 @@ public class GalleryActivity extends AppCompatActivity {
     private boolean dragSelectDeselectMode = false;
     private String dragAnchorPath = null;
     private final Set<Integer> dragVisitedPositions = new HashSet<>();
+    /** True when this activity instance was launched to service an external
+     *  ACTION_VIEW / ACTION_SEND intent (i.e. from another app). */
+    private boolean launchedFromExternalIntent = false;
 
+    /** True once the user has dismissed the auto-opened fullscreen viewer for
+     *  an external intent. Back then finishes the activity and returns to the
+     *  calling app. */
+    private boolean externalIntentConsumed = false;
     private float dragLastY = -1f;
     private float dragLastX = -1f;
     private int fullscreenCurrentIndex = 0;
@@ -674,8 +681,151 @@ public class GalleryActivity extends AppCompatActivity {
         recyclerView.setVisibility(View.GONE);
 
         recyclerView.post(() -> checkAndRequestMediaPermissions());
+        handleViewIntent(getIntent());
     }
 
+
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleViewIntent(intent);
+    }
+
+    /**
+     * Handles ACTION_VIEW / ACTION_SEND intents that target this activity
+     * (i.e. the user picked "Image Viewer" / "Video Player" from the
+     * Android "Open with" chooser).
+     */
+    private void handleViewIntent(Intent intent) {
+        if (intent == null) return;
+
+        String action = intent.getAction();
+        if (!Intent.ACTION_VIEW.equals(action) && !Intent.ACTION_SEND.equals(action)) {
+            return;
+        }
+
+        Uri data = intent.getData();
+        if (data == null && Intent.ACTION_SEND.equals(action)) {
+            data = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        }
+        if (data == null) return;
+
+        final String path = resolveMediaPath(data);
+        if (path == null) {
+            Toast.makeText(this, "Cannot open this file", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        launchedFromExternalIntent = true;   // ← mark it
+        pendingInitialPath = path;
+        tryOpenPendingInitialPath();
+    }
+
+    private String pendingInitialPath;
+
+    private String resolveMediaPath(Uri uri) {
+        if (uri == null) return null;
+        String scheme = uri.getScheme();
+
+        // file:// → just use the path
+        if ("file".equalsIgnoreCase(scheme)) {
+            return uri.getPath();
+        }
+
+        // content:// → try _data column first, then copy to cache if needed
+        if ("content".equalsIgnoreCase(scheme)) {
+            // 1. Try MediaStore _data
+            Cursor c = null;
+            try {
+                c = getContentResolver().query(uri,
+                        new String[]{MediaStore.MediaColumns.DATA},
+                        null, null, null);
+                if (c != null && c.moveToFirst()) {
+                    int idx = c.getColumnIndex(MediaStore.MediaColumns.DATA);
+                    if (idx >= 0) {
+                        String p = c.getString(idx);
+                        if (p != null && new File(p).exists()) return p;
+                    }
+                }
+            } catch (Exception ignored) {
+            } finally { if (c != null) c.close(); }
+
+            // 2. Fallback: copy the stream to our cache so we have a real file
+            try {
+                String name = queryDisplayName(uri);
+                if (name == null) name = "incoming_" + System.currentTimeMillis();
+                File cacheDir = new File(getCacheDir(), "incoming");
+                if (!cacheDir.exists()) cacheDir.mkdirs();
+                File out = new File(cacheDir, name);
+                try (java.io.InputStream in = getContentResolver().openInputStream(uri);
+                     java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
+                    if (in == null) return null;
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) > 0) fos.write(buf, 0, n);
+                }
+                return out.getAbsolutePath();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private String queryDisplayName(Uri uri) {
+        Cursor c = null;
+        try {
+            c = getContentResolver().query(uri,
+                    new String[]{MediaStore.MediaColumns.DISPLAY_NAME},
+                    null, null, null);
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME);
+                if (idx >= 0) return c.getString(idx);
+            }
+        } catch (Exception ignored) {
+        } finally { if (c != null) c.close(); }
+        return null;
+    }
+
+    /**
+     * Opens the file passed via intent once media has been loaded.
+     * Called from loadMediaInternal()'s onMain callback.
+     */
+    private void tryOpenPendingInitialPath() {
+        if (pendingInitialPath == null) return;
+        if (mediaItems.isEmpty()) return;      // still loading
+
+        String path = pendingInitialPath;
+        pendingInitialPath = null;
+
+        // Make sure the incoming file shows up in displayedItems
+        boolean present = false;
+        for (MediaItem m : mediaItems) {
+            if (m.path.equals(path)) { present = true; break; }
+        }
+        if (!present) {
+            // Inject it so the fullscreen pager has something to show
+            File f = new File(path);
+            if (!f.exists()) return;
+            MediaItem mi = new MediaItem(
+                    path, f.getName(),
+                    isVideoPath(path) ? MediaItem.TYPE_VIDEO : MediaItem.TYPE_IMAGE,
+                    f.lastModified() / 1000L, false,
+                    f.getParent() != null ? f.getParent() : "");
+            mediaItems.add(0, mi);
+        }
+
+        // Reset to "All" so the item is visible in the strip
+        currentFilter = FilterMode.ALL;
+        currentAlbum = null;
+        showAlbums = false;
+        whatsappOnly = false;
+        applyFilter();
+
+        recyclerView.post(() -> openFullscreenViewer(path));
+    }
     private boolean userIsSwiping = false;
 
     private void showMediaHud(boolean isVolume, int percent) {
@@ -1832,6 +1982,7 @@ public class GalleryActivity extends AppCompatActivity {
                     setupRecyclerView();
                 }
                 showEmptyState();
+                tryOpenPendingInitialPath();
             });
         });
     }
@@ -3638,9 +3789,26 @@ public class GalleryActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        // 1. If the fullscreen viewer is showing, close it first.
         if (fullscreenOverlay != null && fullscreenOverlay.getVisibility() == View.VISIBLE) {
-            closeFullscreenViewer(); return;
+            closeFullscreenViewer();
+
+            // If we came here from another app, closing the viewer means
+            // we're done — finish so the caller app regains focus.
+            if (launchedFromExternalIntent) {
+                finish();
+            }
+            return;
         }
+
+        // 2. External-intent instance: user already backed out of the viewer.
+        //    Any further Back should just leave the activity.
+        if (launchedFromExternalIntent) {
+            finish();
+            return;
+        }
+
+        // 3. Normal in-app navigation (existing behaviour).
         if (whatsappOnly) {
             whatsappOnly = false;
             whatsappPath = null;
@@ -3655,9 +3823,11 @@ public class GalleryActivity extends AppCompatActivity {
         }
         if (currentAlbum != null || showAlbums) { navigateBackFromAlbum(); return; }
         if (selectionMode) { clearSelection(); return; }
+
         super.onBackPressed();
         finish();
     }
+
 
     @Override
     protected void onDestroy() {
