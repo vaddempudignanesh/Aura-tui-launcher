@@ -64,16 +64,16 @@ bbman -remove
 
 ```bash
 # View real-time logs (filtered for T-UI)
-adb logcat | grep ohi.andre
+adb logcat | grep gnaneshsh
 
 # Uninstall the launcher via ADB
-adb uninstall ohi.andre.consolelauncher
+adb uninstall gnaneshsh.syntaxcli
 
 # Push a file to the launcher's internal storage
-adb push local_file.txt /data/user/0/ohi.andre.consolelauncher/files/
+adb push local_file.txt /data/user/0/gnaneshsh.syntaxcli/files/
 ```
 
 ---
 
 ## 🛡 Security Note
-All binaries are verified using hardcoded SHA-256 hashes found in `app/src/main/java/ohi/andre/consolelauncher/tuils/BusyBoxInstaller.java`. All network transport is forced over HTTPS.
+All binaries are verified using hardcoded SHA-256 hashes found in `app/src/main/java/vaddempudi/andre/consolelauncher/tuils/BusyBoxInstaller.java`. All network transport is forced over HTTPS.

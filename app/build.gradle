@@ -1,7 +1,7 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace "ohi.andre.consolelauncher"
+    namespace "vaddempudi.gnanesh.syntaxcli"
     compileSdk 34
 
     packaging {
@@ -25,7 +25,7 @@ android {
     }
 
     defaultConfig {
-        applicationId "ohi.andre.consolelauncher"
+        applicationId "vaddempudi.gnanesh.syntaxcli"
         minSdk 32
         targetSdk 34
         versionCode 301

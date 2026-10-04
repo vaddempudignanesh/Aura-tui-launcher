@@ -1,0 +1,50 @@
+package vaddempudi.gnanesh.syntaxcli.commands.main.raw;
+
+import android.content.Intent;
+
+import vaddempudi.gnanesh.syntaxcli.musicplayer.MusicPlayerActivity;
+import vaddempudi.gnanesh.syntaxcli.R;
+import vaddempudi.gnanesh.syntaxcli.commands.CommandAbstraction;
+import vaddempudi.gnanesh.syntaxcli.commands.ExecutePack;
+import vaddempudi.gnanesh.syntaxcli.commands.main.MainPack;
+
+public class music implements CommandAbstraction {
+
+    @Override
+    public String exec(ExecutePack pack) {
+        MainPack main = (MainPack) pack;
+        try {
+            Intent i = new Intent(main.context, MusicPlayerActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            main.context.startActivity(i);
+            return null;
+        } catch (Exception e) {
+            return "Cannot open music player: " + e.getMessage();
+        }
+    }
+
+    @Override
+    public int[] argType() {
+        return new int[0];
+    }
+
+    @Override
+    public int priority() {
+        return 3;
+    }
+
+    @Override
+    public int helpRes() {
+        return R.string.help_mplayer;
+    }
+
+    @Override
+    public String onArgNotFound(ExecutePack pack, int index) {
+        return null;
+    }
+
+    @Override
+    public String onNotArgEnough(ExecutePack pack, int nArgs) {
+        return null;
+    }
+}
