@@ -1266,6 +1266,14 @@ public class AuraBrowserActivity extends AppCompatActivity {
             Log.w("AURA-DARK", "DOCUMENT_START_SCRIPT unsupported; dark mode may be partial");
         }
 
+        // ★ Blob download bridge — must be added BEFORE the page loads so
+//   window.__AuraBlobBridge exists by the time the page builds a blob URL.
+        try {
+            wv.addJavascriptInterface(new AuraBlobBridge(this), "__AuraBlobBridge");
+        } catch (Throwable t) {
+            Log.e("AuraBlobBridge", "Bridge install failed", t);
+        }
+
         configureWebViewFor(wv, incognito);
 
         String startUrl = (url == null || url.trim().isEmpty()) ? DEFAULT_HOME : url;
@@ -1399,6 +1407,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     private void startNativeDownload(String url, String userAgent,
                                      String contentDisposition, String mimeType) {
+
+        // ★ Blob URL — handled entirely inside the WebView.
+        if (url != null && url.startsWith("blob:")) {
+            startBlobDownload(url, contentDisposition, mimeType);
+            return;
+        }
         try {
             Intent svc = new Intent(this, AuraDownloadService.class);
             svc.putExtra(AuraDownloadService.EXTRA_DOWNLOAD_URL, url);
@@ -1429,6 +1443,93 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
     }
 
+    private void startBlobDownload(String blobUrl, String contentDisposition,
+                                   String mimeType) {
+        Tab t = currentTab();
+        if (t == null) return;
+        WebView wv = t.webView;
+
+        String suggestedName = null;
+        if (contentDisposition != null) {
+            int idx = contentDisposition.toLowerCase(Locale.US).indexOf("filename=");
+            if (idx >= 0) {
+                suggestedName = contentDisposition.substring(idx + 9).trim();
+                if (suggestedName.startsWith("\"") && suggestedName.endsWith("\"")
+                        && suggestedName.length() > 1) {
+                    suggestedName = suggestedName.substring(1, suggestedName.length() - 1);
+                }
+            }
+        }
+        if (suggestedName == null || suggestedName.isEmpty()) {
+            suggestedName = "blob_" + System.currentTimeMillis();
+            if (mimeType != null) {
+                String ext = android.webkit.MimeTypeMap.getSingleton()
+                        .getExtensionFromMimeType(mimeType);
+                if (ext != null) suggestedName += "." + ext;
+            }
+        }
+        // Sanitize
+        suggestedName = suggestedName.replaceAll("[\\\\/:*?\"<>|]", "_");
+
+        final String fileName = suggestedName;
+        final String gid = AuraBlobBridge.newGid();
+
+        // ★ Do the fetch in JS, push chunks through the bridge.
+        //   No HttpURLConnection, no 404, no "unknown protocol".
+        String js =
+                "(function(){" +
+                        "var gid=" + jsStringLiteral(gid) + ";" +
+                        "var name=" + jsStringLiteral(fileName) + ";" +
+                        "var url=" + jsStringLiteral(blobUrl) + ";" +
+                        "var B=window.__AuraBlobBridge;" +
+                        "if(!B){try{console.error('AuraBlobBridge missing');}catch(e){}return;}" +
+                        "fetch(url).then(function(r){" +
+                        "if(!r.ok)throw new Error('HTTP '+r.status);" +
+                        "var total=parseInt(r.headers.get('Content-Length')||'0',10);" +
+                        "if(!total||total<=0)total=0;" +
+                        "B.start(gid,name,total);" +
+                        "var reader=r.body.getReader();" +
+                        "var buf=[];" +
+                        "var bufLen=0;" +
+                        "function flush(){" +
+                        "if(bufLen===0)return;" +
+                        "var tmp=new Uint8Array(bufLen);" +
+                        "var off=0;" +
+                        "for(var i=0;i<buf.length;i++){tmp.set(buf[i],off);off+=buf[i].length;}" +
+                        "buf=[];bufLen=0;" +
+                        "var bin='';" +
+                        "for(var j=0;j<tmp.length;j++)bin+=String.fromCharCode(tmp[j]);" +
+                        "B.chunk(gid,btoa(bin));" +
+                        "}" +
+                        "function pump(){" +
+                        "return reader.read().then(function(res){" +
+                        "if(res.done){" +
+                        "flush();" +
+                        "B.finish(gid);" +
+                        "return;" +
+                        "}" +
+                        "buf.push(res.value);" +
+                        "bufLen+=res.value.length;" +
+                        "if(bufLen>=256*1024)flush();" +
+                        "return pump();" +
+                        "});" +
+                        "}" +
+                        "return pump();" +
+                        "}).catch(function(e){" +
+                        "try{console.error('blob fetch failed: '+e);}catch(_){}" +
+                        "B.error(gid,String(e&&e.message?e.message:e));" +
+                        "});" +
+                        "})();";
+
+        wv.evaluateJavascript(js, null);
+
+        // Auto-open the panel — same as the normal download path.
+        runOnUiThread(() -> {
+            if (downloadPanelDialog != null && downloadPanelDialog.isShowing()) return;
+            new Handler(Looper.getMainLooper()).postDelayed(
+                    this::showDownloadPanel, 250);
+        });
+    }
 
     private static boolean isSameRegistrableDomain(String a, String b) {
         if (a == null || b == null) return false;

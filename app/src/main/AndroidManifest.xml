@@ -285,6 +285,8 @@
             android:theme="@style/GalleryTheme"
             android:exported="true"
             android:launchMode="standard"
+            android:taskAffinity="ohi.andre.consolelauncher.gallery"
+            android:documentLaunchMode="intoExisting"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
 
