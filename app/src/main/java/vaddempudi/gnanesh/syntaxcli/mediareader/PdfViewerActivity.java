@@ -3,7 +3,6 @@ package vaddempudi.gnanesh.syntaxcli.mediareader;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Color;
-import android.graphics.Matrix;
 import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
 import android.os.Bundle;
@@ -15,6 +14,7 @@ import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -108,7 +108,9 @@ public class PdfViewerActivity extends AppCompatActivity {
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.parseColor("#121212")); // Dark background for contrast
+        root.setBackgroundColor(Color.parseColor("#121212"));
+
+        ZoomableFrameLayout zoomContainer = new ZoomableFrameLayout(this);
 
         recyclerPages = new RecyclerView(this);
         recyclerPages.setLayoutManager(new LinearLayoutManager(this));
@@ -117,7 +119,11 @@ public class PdfViewerActivity extends AppCompatActivity {
         recyclerPages.setHasFixedSize(true);
         adapter = new PdfPageAdapter();
         recyclerPages.setAdapter(adapter);
-        root.addView(recyclerPages, new LinearLayout.LayoutParams(
+
+        zoomContainer.addView(recyclerPages, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        root.addView(zoomContainer, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         progressBar = new ProgressBar(this);
@@ -263,25 +269,23 @@ public class PdfViewerActivity extends AppCompatActivity {
         public PageViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
             Context context = parent.getContext();
 
-            // Outer wrapper with top/bottom margins to create space & border separation between pages
             LinearLayout wrapper = new LinearLayout(context);
             wrapper.setOrientation(LinearLayout.VERTICAL);
-            wrapper.setBackgroundColor(Color.parseColor("#2C2C2C")); // Border/margin gap color
+            wrapper.setBackgroundColor(Color.parseColor("#2C2C2C"));
 
             LinearLayout.LayoutParams wrapperParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
             );
-            int marginPx = (int) (12 * context.getResources().getDisplayMetrics().density); // ~12dp spacing
+            int marginPx = (int) (12 * context.getResources().getDisplayMetrics().density);
             wrapperParams.setMargins(0, marginPx, 0, marginPx);
             wrapper.setLayoutParams(wrapperParams);
 
-            // Calculate dynamic height based on screen width and PDF aspect ratio (1754/1240)
             int screenWidth = context.getResources().getDisplayMetrics().widthPixels;
             int calculatedHeight = (int) (screenWidth * ((float) PAGE_HEIGHT_PX / PAGE_WIDTH_PX));
 
-            ZoomableImageView iv = new ZoomableImageView(context);
-            iv.setScaleType(ImageView.ScaleType.MATRIX);
+            ImageView iv = new ImageView(context);
+            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
             iv.setBackgroundColor(Color.WHITE);
 
             wrapper.addView(iv, new LinearLayout.LayoutParams(
@@ -293,10 +297,8 @@ public class PdfViewerActivity extends AppCompatActivity {
         @Override
         public void onBindViewHolder(@NonNull PageViewHolder holder, int position) {
             Bitmap cached = bitmapCache.get(position);
-            holder.imageView.resetZoom();
             if (cached != null && !cached.isRecycled()) {
                 holder.imageView.setImageBitmap(cached);
-                holder.imageView.setupMatrix();
             } else {
                 holder.imageView.setImageDrawable(null);
                 renderPageIfNeeded(position);
@@ -309,8 +311,8 @@ public class PdfViewerActivity extends AppCompatActivity {
         }
 
         class PageViewHolder extends RecyclerView.ViewHolder {
-            final ZoomableImageView imageView;
-            PageViewHolder(@NonNull View itemView, ZoomableImageView imageView) {
+            final ImageView imageView;
+            PageViewHolder(@NonNull View itemView, ImageView imageView) {
                 super(itemView);
                 this.imageView = imageView;
             }
@@ -318,58 +320,63 @@ public class PdfViewerActivity extends AppCompatActivity {
     }
 
     /**
-     * Custom ImageView supporting pinch-to-zoom and pan gestures per page.
+     * Zoom container.
+     *  - transform applied at DRAW time only (Matrix + dispatchDraw)
+     *  - no setScaleX/Y or setTranslationX/Y — those force re-layout
+     *  - hardware layer set once, never toggled
      */
-    private static class ZoomableImageView extends androidx.appcompat.widget.AppCompatImageView {
-        private final Matrix matrix = new Matrix();
-        private float scale = 1f;
-        private static final float MIN_SCALE = 1f;
-        private static final float MAX_SCALE = 5f;
+    private static class ZoomableFrameLayout extends FrameLayout {
+        private static final float MAX_SCALE = 5.0f;
+
+        private float scale = 1.0f;
+        private float translationX = 0f;
+        private float translationY = 0f;
+
+        // Reused every frame — zero allocations.
+        private final android.graphics.Matrix drawMatrix = new android.graphics.Matrix();
+
+        private float lastTouchX, lastTouchY;
+        private boolean isPanning = false;
+        private boolean intercepting = false;
 
         private final ScaleGestureDetector scaleDetector;
-        private float lastX, lastY;
-        private boolean isDragging = false;
 
-        public ZoomableImageView(Context context) {
+        public ZoomableFrameLayout(@NonNull Context context) {
             super(context);
+            setClipChildren(false);
+            setClipToPadding(false);
+            setWillNotDraw(false);
+            setLayerType(View.LAYER_TYPE_HARDWARE, null);
             scaleDetector = new ScaleGestureDetector(context, new ScaleListener());
         }
 
-        public void resetZoom() {
-            scale = 1f;
-            matrix.reset();
-            setImageMatrix(matrix);
-        }
-
-        public void setupMatrix() {
-            if (getDrawable() == null) return;
-            // Fit center initialization inside matrix
-            float dWidth = getDrawable().getIntrinsicWidth();
-            float dHeight = getDrawable().getIntrinsicHeight();
-            float vWidth = getWidth();
-            float vHeight = getHeight();
-
-            if (vWidth <= 0 || vHeight <= 0) return;
-
-            float scaleX = vWidth / dWidth;
-            float scaleY = vHeight / dHeight;
-            float initialScale = Math.min(scaleX, scaleY);
-
-            matrix.reset();
-            matrix.setScale(initialScale, initialScale);
-
-            // Center the bitmap
-            float redundantX = (vWidth - (dWidth * initialScale)) / 2f;
-            float redundantY = (vHeight - (dHeight * initialScale)) / 2f;
-            matrix.postTranslate(redundantX, redundantY);
-
-            setImageMatrix(matrix);
-        }
-
         @Override
-        protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
-            super.onLayout(changed, left, top, right, bottom);
-            setupMatrix();
+        public boolean onInterceptTouchEvent(MotionEvent ev) {
+            scaleDetector.onTouchEvent(ev);
+
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    intercepting = false;
+                    lastTouchX = ev.getX();
+                    lastTouchY = ev.getY();
+                    return false;
+
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    intercepting = true;
+                    isPanning = false;
+                    if (getParent() != null) {
+                        getParent().requestDisallowInterceptTouchEvent(true);
+                    }
+                    return true;
+
+                case MotionEvent.ACTION_MOVE:
+                    if (scale > 1.01f && ev.getPointerCount() == 1) {
+                        intercepting = true;
+                        return true;
+                    }
+                    return intercepting;
+            }
+            return intercepting;
         }
 
         @Override
@@ -378,51 +385,109 @@ public class PdfViewerActivity extends AppCompatActivity {
 
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    lastX = event.getX();
-                    lastY = event.getY();
-                    isDragging = true;
-                    getParent().requestDisallowInterceptTouchEvent(scale > 1f);
-                    break;
+                    lastTouchX = event.getX();
+                    lastTouchY = event.getY();
+                    isPanning = scale > 1.01f;
+                    return true;
+
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    isPanning = false;
+                    return true;
 
                 case MotionEvent.ACTION_MOVE:
-                    if (isDragging && scale > 1f) {
-                        float dx = event.getX() - lastX;
-                        float dy = event.getY() - lastY;
-                        matrix.postTranslate(dx, dy);
-                        setImageMatrix(matrix);
-                        lastX = event.getX();
-                        lastY = event.getY();
+                    if (isPanning
+                            && !scaleDetector.isInProgress()
+                            && scale > 1.01f
+                            && event.getPointerCount() == 1) {
+                        float dx = event.getX() - lastTouchX;
+                        float dy = event.getY() - lastTouchY;
+                        translationX += dx;
+                        translationY += dy;
+                        updateMatrix();
+                        invalidate();     // draw only, no layout
+                        lastTouchX = event.getX();
+                        lastTouchY = event.getY();
                     }
-                    break;
+                    return true;
+
+                case MotionEvent.ACTION_POINTER_UP: {
+                    int idx = event.getActionIndex();
+                    int remaining = (idx == 0) ? 1 : 0;
+                    if (remaining < event.getPointerCount()) {
+                        lastTouchX = event.getX(remaining);
+                        lastTouchY = event.getY(remaining);
+                        isPanning = scale > 1.01f;
+                    }
+                    return true;
+                }
 
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    isDragging = false;
-                    getParent().requestDisallowInterceptTouchEvent(false);
-                    break;
+                    isPanning = false;
+                    intercepting = false;
+                    if (getParent() != null) {
+                        getParent().requestDisallowInterceptTouchEvent(false);
+                    }
+                    return true;
             }
             return true;
         }
 
+        private void updateMatrix() {
+            drawMatrix.reset();
+            drawMatrix.postScale(scale, scale);
+            drawMatrix.postTranslate(translationX, translationY);
+        }
+
+        @Override
+        protected void dispatchDraw(android.graphics.Canvas canvas) {
+            if (scale == 1f && translationX == 0f && translationY == 0f) {
+                super.dispatchDraw(canvas);
+                return;
+            }
+            int save = canvas.save();
+            canvas.concat(drawMatrix);
+            super.dispatchDraw(canvas);
+            canvas.restoreToCount(save);
+        }
+
         private class ScaleListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
             @Override
-            public boolean onScale(@NonNull ScaleGestureDetector detector) {
-                float scaleFactor = detector.getScaleFactor();
-                float prevScale = scale;
-                scale *= scaleFactor;
+            public boolean onScaleBegin(@NonNull ScaleGestureDetector detector) {
+                isPanning = false;
+                return true;
+            }
 
-                if (scale < MIN_SCALE) {
-                    scale = MIN_SCALE;
-                    scaleFactor = scale / prevScale;
-                } else if (scale > MAX_SCALE) {
-                    scale = MAX_SCALE;
-                    scaleFactor = scale / prevScale;
+            @Override
+            public boolean onScale(@NonNull ScaleGestureDetector detector) {
+                float prevScale = scale;
+                float newScale = prevScale * detector.getScaleFactor();
+                newScale = Math.max(1.0f, Math.min(newScale, MAX_SCALE));
+
+                if (newScale == prevScale) return false;
+
+                float focalX = detector.getFocusX();
+                float focalY = detector.getFocusY();
+
+                translationX = focalX - (focalX - translationX) * (newScale / prevScale);
+                translationY = focalY - (focalY - translationY) * (newScale / prevScale);
+
+                scale = newScale;
+
+                if (scale <= 1.0f) {
+                    scale = 1.0f;
+                    translationX = 0f;
+                    translationY = 0f;
                 }
 
-                matrix.postScale(scaleFactor, scaleFactor, detector.getFocusX(), detector.getFocusY());
-                setImageMatrix(matrix);
-                getParent().requestDisallowInterceptTouchEvent(true);
+                updateMatrix();
+                invalidate();     // draw only — no measure, no layout
                 return true;
+            }
+
+            @Override
+            public void onScaleEnd(@NonNull ScaleGestureDetector detector) {
+                isPanning = scale > 1.01f;
             }
         }
     }

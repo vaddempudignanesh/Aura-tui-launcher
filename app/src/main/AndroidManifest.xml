@@ -60,7 +60,6 @@
     <uses-feature android:name="android.hardware.location.network" android:required="false" />
     <uses-feature android:name="android.hardware.audio.output" android:required="false" />
 
-
     <permission
         android:name="vaddempudi.gnanesh.syntaxcli.permission.RECEIVE_CMD"
         android:protectionLevel="signature" />
@@ -73,8 +72,6 @@
         android:usesCleartextTraffic="false"
         android:requestLegacyExternalStorage="true"
         android:extractNativeLibs="true">
-
-
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -173,13 +170,17 @@
             <meta-data
                 android:name="androidx.core.app.PARENT_ACTIVITY"
                 android:value=".LauncherActivity" />
-            <intent-filter>
+
+            <!-- Text content: label distinguishes from FileManager's text handler -->
+            <intent-filter android:label="SyntaxCLI — Text Editor">
                 <action android:name="android.intent.action.VIEW" />
                 <action android:name="android.intent.action.EDIT" />
                 <data android:mimeType="text/*" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-            <intent-filter>
+
+            <!-- Source/config files by extension -->
+            <intent-filter android:label="SyntaxCLI — Text Editor">
                 <action android:name="android.intent.action.VIEW" />
                 <action android:name="android.intent.action.EDIT" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -224,8 +225,6 @@
             android:launchMode="standard"
             android:windowSoftInputMode="adjustResize"/>
 
-
-
         <activity
             android:name=".musicplayer.MusicPlayerActivity"
             android:exported="true"
@@ -237,16 +236,16 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
 
-            <!-- ── Audio by mime type ── -->
-            <intent-filter android:priority="100" android:label="@string/music_play_audio">
+            <!-- Audio by mime type -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Music Player">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:mimeType="audio/*" />
             </intent-filter>
 
-            <!-- ── Audio by file extension ── -->
-            <intent-filter android:priority="100" android:label="@string/music_play_audio">
+            <!-- Audio by file extension -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Music Player">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
@@ -266,8 +265,8 @@
                 <data android:scheme="file" android:host="*" android:pathPattern=".*\\.mka"  />
             </intent-filter>
 
-            <!-- ── content:// from other apps (WhatsApp, Gmail, Downloads) ── -->
-            <intent-filter android:priority="100" android:label="@string/music_play_audio">
+            <!-- content:// audio from other apps -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Music Player">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
@@ -275,14 +274,13 @@
                 <data android:mimeType="audio/*" />
             </intent-filter>
 
-            <!-- ── Optional: share target ── -->
-            <intent-filter android:priority="100" android:label="@string/music_play_audio">
+            <!-- Share target -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Music Player">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="audio/*" />
             </intent-filter>
         </activity>
-
 
         <activity
             android:name=".alarm.TimerRingActivity"
@@ -305,24 +303,24 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
 
-            <!-- ── Images ── -->
-            <intent-filter android:priority="100" android:label="@string/gallery_pick_image">
+            <!-- Images -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Gallery (images)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:mimeType="image/*" />
             </intent-filter>
 
-            <!-- ── Videos ── -->
-            <intent-filter android:priority="100" android:label="@string/gallery_play_video">
+            <!-- Videos -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Gallery (videos)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:mimeType="video/*" />
             </intent-filter>
 
-            <!-- ── Image extensions (file scheme) ── -->
-            <intent-filter android:priority="100" android:label="@string/gallery_pick_image">
+            <!-- Image extensions -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Gallery (images)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
@@ -336,8 +334,8 @@
                 <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.heif" />
             </intent-filter>
 
-            <!-- ── Video extensions (file scheme) ── -->
-            <intent-filter android:priority="100" android:label="@string/gallery_play_video">
+            <!-- Video extensions -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Gallery (videos)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
@@ -352,15 +350,17 @@
                 <data android:scheme="file"   android:host="*" android:pathPattern=".*\\.wmv"  />
             </intent-filter>
 
-            <!-- ── content:// (WhatsApp, Gmail, downloads, etc.) ── -->
-            <intent-filter android:priority="100" android:label="@string/gallery_view_media">
+            <!-- content:// images -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Gallery (images)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
                 <data android:mimeType="image/*" />
             </intent-filter>
-            <intent-filter android:priority="100" android:label="@string/gallery_view_media">
+
+            <!-- content:// videos -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Gallery (videos)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
@@ -368,13 +368,13 @@
                 <data android:mimeType="video/*" />
             </intent-filter>
 
-            <!-- ── Optional: share target ── -->
-            <intent-filter android:priority="100" android:label="@string/gallery_view_media">
+            <!-- Share targets -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Gallery (images)">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
             </intent-filter>
-            <intent-filter android:priority="100" android:label="@string/gallery_view_media">
+            <intent-filter android:priority="100" android:label="SyntaxCLI — Gallery (videos)">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="video/*" />
@@ -386,7 +386,6 @@
             android:theme="@style/Theme.Transparent"
             android:exported="false"
             android:screenOrientation="portrait"/>
-
 
         <!-- ============ ALARM ============ -->
         <activity
@@ -431,9 +430,9 @@
             </intent-filter>
         </receiver>
 
-
         <activity
             android:name=".mediareader.PdfViewerActivity"
+            android:label="SyntaxCLI — PDF Viewer"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar"
             android:taskAffinity="ohi.andre.consolelauncher.pdf"
@@ -452,8 +451,7 @@
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation"
             android:windowSoftInputMode="adjustResize">
 
-            <!-- ── THE canonical "I am a web browser" filter ── -->
-            <intent-filter>
+            <intent-filter android:label="SyntaxCLI — Browser">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
@@ -461,16 +459,14 @@
                 <data android:scheme="https" />
             </intent-filter>
 
-            <!-- ── Plain web search: "what is the meaning of life" → browser ── -->
-            <intent-filter>
+            <intent-filter android:label="SyntaxCLI — Web Search">
                 <action android:name="android.intent.action.WEB_SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="" />
             </intent-filter>
 
-            <!-- ── Global search / device search hooks ── -->
-            <intent-filter>
+            <intent-filter android:label="SyntaxCLI — Web Search">
                 <action android:name="android.intent.action.SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
@@ -478,16 +474,14 @@
                 android:name="android.app.searchable"
                 android:resource="@xml/searchable" />
 
-            <!-- ── about:blank used by some apps when starting a browser ── -->
-            <intent-filter>
+            <intent-filter android:label="SyntaxCLI — Browser">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="about" />
             </intent-filter>
 
-            <!-- ── file:// pages from local files ── -->
-            <intent-filter>
+            <intent-filter android:label="SyntaxCLI — Browser (local HTML)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
@@ -497,8 +491,7 @@
                 <data android:mimeType="application/xhtml+xml" />
             </intent-filter>
 
-            <!-- ── content:// html pages (e.g. Gmail's "view in browser") ── -->
-            <intent-filter>
+            <intent-filter android:label="SyntaxCLI — Browser (content HTML)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
@@ -507,6 +500,7 @@
                 <data android:mimeType="application/xhtml+xml" />
             </intent-filter>
         </activity>
+
         <activity
             android:name=".filemanager.FileManagerActivity"
             android:exported="true"
@@ -520,7 +514,7 @@
             android:hardwareAccelerated="true">
 
             <!-- Text files -->
-            <intent-filter android:priority="100">
+            <intent-filter android:priority="100" android:label="SyntaxCLI — File Manager (text)">
                 <action android:name="android.intent.action.VIEW" />
                 <action android:name="android.intent.action.EDIT" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -528,14 +522,14 @@
             </intent-filter>
 
             <!-- PDF -->
-            <intent-filter android:priority="100">
+            <intent-filter android:priority="100" android:label="SyntaxCLI — File Manager (PDF)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/pdf" />
             </intent-filter>
 
             <!-- Office docs -->
-            <intent-filter android:priority="100">
+            <intent-filter android:priority="100" android:label="SyntaxCLI — File Manager (Office)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/msword" />
@@ -548,7 +542,7 @@
             </intent-filter>
 
             <!-- File extensions -->
-            <intent-filter android:priority="100">
+            <intent-filter android:priority="100" android:label="SyntaxCLI — File Manager (by extension)">
                 <action android:name="android.intent.action.VIEW" />
                 <action android:name="android.intent.action.EDIT" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -586,22 +580,21 @@
                 <data android:scheme="file" android:host="*" android:pathPattern=".*\\.pptx" />
             </intent-filter>
 
-            <!-- Content URIs from WhatsApp/Gmail — NO BROWSABLE! -->
-            <intent-filter android:priority="100">
+            <!-- Content URIs -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — File Manager (content)">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="content" />
                 <data android:mimeType="*/*" />
             </intent-filter>
 
-            <!-- Share target -->
-            <intent-filter android:priority="100">
+            <!-- Share targets -->
+            <intent-filter android:priority="100" android:label="SyntaxCLI — File Manager (share)">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
             </intent-filter>
-
-            <intent-filter android:priority="100">
+            <intent-filter android:priority="100" android:label="SyntaxCLI — File Manager (share)">
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
@@ -636,12 +629,10 @@
 
     <!-- ============ PACKAGE VISIBILITY (Android 11+) ============ -->
     <queries>
-        <!-- For opening PDFs -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="application/pdf" />
         </intent>
-        <!-- For opening Office docs -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="application/msword" />
@@ -650,12 +641,10 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
         </intent>
-        <!-- For APK install -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="application/vnd.android.package-archive" />
         </intent>
-        <!-- For sharing -->
         <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="*/*" />
