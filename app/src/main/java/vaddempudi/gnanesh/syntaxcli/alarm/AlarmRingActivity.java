@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.view.WindowManager;
@@ -24,27 +25,48 @@ public class AlarmRingActivity extends Activity {
     private MediaPlayer player;
     private Vibrator vibrator;
     private long alarmId = -1;
+    private PowerManager.WakeLock screenWakelock;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // ─── Show over the lock screen, wake the display ───
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
             setTurnScreenOn(true);
+        }
+        // These flags apply on every API level and cover the O_MR1 gap.
+        getWindow().addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                        | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                        | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                        | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
-            if (km != null) km.requestDismissKeyguard(this, null);
-        } else {
-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-                    | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            if (km != null) {
+                try { km.requestDismissKeyguard(this, null); } catch (Exception ignored) { }
+            }
         }
 
         setContentView(R.layout.activity_alarm_ring);
 
+        // ─── Acquire a screen wakelock so the ring keeps the display on ───
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (pm != null) {
+            screenWakelock = pm.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                            | PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                    "syntaxcli:alarm_screen");
+            screenWakelock.setReferenceCounted(false);
+            screenWakelock.acquire(5 * 60 * 1000L); // 5 min max
+        }
+
         alarmId = getIntent().getLongExtra(AlarmReceiver.EXTRA_ID, -1);
         AlarmReceiver.cancelAlarmNotification(this);
+
         TextView time = findViewById(R.id.ring_time);
         TextView label = findViewById(R.id.ring_label);
         Button stop = findViewById(R.id.ring_stop);
@@ -114,6 +136,7 @@ public class AlarmRingActivity extends Activity {
 
     private void stopRinging() {
         handler.removeCallbacksAndMessages(null);
+
         try {
             if (player != null) {
                 if (player.isPlaying()) player.stop();
@@ -127,11 +150,18 @@ public class AlarmRingActivity extends Activity {
         } catch (Exception ignored) { }
         vibrator = null;
 
+        // Release the screen wakelock.
+        if (screenWakelock != null && screenWakelock.isHeld()) {
+            try { screenWakelock.release(); } catch (Exception ignored) { }
+        }
+        screenWakelock = null;
+
         // Remove the "Alarm / Tap to stop" notification.
         AlarmReceiver.cancelAlarmNotification(this);
 
         if (!AlarmStore.hasActive(this)) AlarmService.stop(this);
     }
+
     @Override
     public void onBackPressed() {
         // do not allow back to dismiss while ringing

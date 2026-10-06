@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.os.PowerManager;
 
 import androidx.core.app.NotificationCompat;
 
@@ -22,7 +23,7 @@ public class AlarmReceiver extends BroadcastReceiver {
     public static final String ACTION_FIRE = "vaddempudi.gnanesh.syntaxcli.alarm.FIRE";
     public static final String EXTRA_ID = "alarm_id";
 
-    private static final String CH_RING = "ohi_alarm_ring";
+    private static final String CH_RING = "ohi_alarm_ring_v2";
     private static final int RING_NOTIF_ID = 9922;
 
     @Override
@@ -31,6 +32,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         String action = intent.getAction();
         if (action == null) return;
 
+        // ─── Boot / package-replaced: re-arm everything ───
         if (Intent.ACTION_BOOT_COMPLETED.equals(action)
                 || Intent.ACTION_LOCKED_BOOT_COMPLETED.equals(action)
                 || "android.intent.action.QUICKBOOT_POWERON".equals(action)
@@ -42,9 +44,23 @@ public class AlarmReceiver extends BroadcastReceiver {
             return;
         }
 
+        // ─── Alarm fired ───
         if (ACTION_FIRE.equals(action)) {
             long id = intent.getLongExtra(EXTRA_ID, -1);
 
+            // 1. Hold a brief FULL_WAKE_LOCK so the CPU + screen wake up
+            //    and stay awake long enough for AlarmRingActivity to start.
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                PowerManager.WakeLock wl = pm.newWakeLock(
+                        PowerManager.FULL_WAKE_LOCK
+                                | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                                | PowerManager.ON_AFTER_RELEASE,
+                        "syntaxcli:alarm_ring");
+                wl.acquire(15_000L); // auto-releases after 15 s
+            }
+
+            // 2. Start the ringing activity immediately.
             Intent ring = new Intent(context, AlarmRingActivity.class);
             ring.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                     | Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -52,8 +68,10 @@ public class AlarmReceiver extends BroadcastReceiver {
             ring.putExtra(EXTRA_ID, id);
             try { context.startActivity(ring); } catch (Exception ignored) { }
 
+            // 3. Post the full-screen notification as a fallback.
             postAlarmNotification(context, id);
 
+            // 4. Reschedule repeating alarms, disable one-shot alarms.
             List<AlarmModel> list = AlarmStore.load(context);
             for (AlarmModel m : list) {
                 if (m.id != id) continue;
@@ -66,6 +84,7 @@ public class AlarmReceiver extends BroadcastReceiver {
                 break;
             }
 
+            // 5. Sync the foreground service.
             if (AlarmStore.hasActive(context)) AlarmService.start(context);
             else AlarmService.stop(context);
         }
@@ -85,6 +104,8 @@ public class AlarmReceiver extends BroadcastReceiver {
                 ch.enableVibration(false);
                 ch.setSound(null, null);
                 ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+                ch.setBypassDnd(true);
+                ch.setShowBadge(false);
                 nm.createNotificationChannel(ch);
             }
         }
@@ -101,20 +122,24 @@ public class AlarmReceiver extends BroadcastReceiver {
         PendingIntent fullScreen = PendingIntent.getActivity(
                 c, (int) (id & 0x7fffffff), ring, piFlags);
 
-        // Silent — the ringtone plays from AlarmRingActivity only.
+        // High-priority notification, PUBLIC visibility, full-screen intent.
+        // No .setSilent(true) — that disables the full-screen intent on
+        // Android 10+. No .setOngoing(true) either, so it can be swiped
+        // away after the ring activity is dismissed.
         NotificationCompat.Builder b = new NotificationCompat.Builder(c, CH_RING)
                 .setSmallIcon(R.drawable.ic_alarm)
                 .setContentTitle("Alarm")
                 .setContentText("Tap to stop")
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setAutoCancel(true)
-                .setOngoing(true)
-                .setSilent(true)
                 .setContentIntent(fullScreen)
                 .setFullScreenIntent(fullScreen, true);
 
-        try { nm.notify(RING_NOTIF_ID, b.build()); } catch (SecurityException ignored) { }
+        try {
+            nm.notify(RING_NOTIF_ID, b.build());
+        } catch (SecurityException ignored) { }
     }
 
     public static void cancelAlarmNotification(Context c) {
@@ -169,7 +194,8 @@ public class AlarmReceiver extends BroadcastReceiver {
         i.setAction(ACTION_FIRE);
         i.putExtra(EXTRA_ID, m.id);
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+            flags |= PendingIntent.FLAG_IMMUTABLE;
         return PendingIntent.getBroadcast(c, (int) (m.id & 0x7fffffff), i, flags);
     }
 
