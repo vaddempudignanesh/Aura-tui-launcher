@@ -1,4 +1,3 @@
-
 package vaddempudi.gnanesh.syntaxcli.gallery;
 
 import android.os.Handler;
@@ -7,6 +6,7 @@ import android.view.View;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.util.ArrayList;
@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
+
 import vaddempudi.gnanesh.syntaxcli.R;
 
 final class AlbumsController {
@@ -24,34 +25,29 @@ final class AlbumsController {
         void onAlbumClosed();
     }
 
-    // Generation counter — invalidates stale async results.
     private final AtomicLong generation = new AtomicLong(0);
-
     private final AlbumLoader loader;
     private final AlbumAdapter albumAdapter;
-    private final GalleryAdapter mediaAdapter;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
-
     private final Host host;
 
-    // Views
     private final RecyclerView albumRecycler;
     private final RecyclerView mediaRecycler;
     private final ProgressBar spinner;
     private final TextView title;
     private final View empty;
 
-    // State
     private boolean showingAlbums = false;
     private AlbumRecord openAlbum = null;
 
-    AlbumsController(Host host, AlbumLoader loader,
-                     AlbumAdapter albumAdapter, GalleryAdapter mediaAdapter) {
+    // The currently-installed album adapter. Swapped on every album open.
+    private AlbumMediaAdapter currentAlbumAdapter = null;
+
+    AlbumsController(Host host, AlbumLoader loader, AlbumAdapter albumAdapter) {
         this.host = host;
         this.loader = loader;
         this.albumAdapter = albumAdapter;
-        this.mediaAdapter = mediaAdapter;
 
         this.albumRecycler = (RecyclerView) host.findView(R.id.albumRecycler);
         this.mediaRecycler = (RecyclerView) host.findView(R.id.galleryRecycler);
@@ -61,8 +57,7 @@ final class AlbumsController {
 
         if (albumRecycler != null) {
             albumRecycler.setLayoutManager(
-                    new androidx.recyclerview.widget.GridLayoutManager(
-                            albumRecycler.getContext(), 2));
+                    new GridLayoutManager(albumRecycler.getContext(), 2));
             albumRecycler.setAdapter(albumAdapter);
             albumRecycler.setItemViewCacheSize(12);
         }
@@ -72,7 +67,7 @@ final class AlbumsController {
     AlbumRecord getOpenAlbum() { return openAlbum; }
     boolean isAlbumOpen() { return openAlbum != null; }
 
-    // ── Public entry points ────────────────────────────────────────
+    // ── Show album grid ───────────────────────────────────────────
 
     void showAlbums() {
         if (showingAlbums && openAlbum == null) return;
@@ -80,8 +75,14 @@ final class AlbumsController {
         showingAlbums = true;
         openAlbum = null;
 
+        // Detach any album-media adapter synchronously so no stale VH survives.
+        if (mediaRecycler != null) {
+            mediaRecycler.setAdapter(null);
+            mediaRecycler.setVisibility(View.GONE);
+        }
+        currentAlbumAdapter = null;
+
         if (title != null) title.setText("Albums");
-        if (mediaRecycler != null) mediaRecycler.setVisibility(View.GONE);
         if (albumRecycler != null) albumRecycler.setVisibility(View.GONE);
         if (empty != null) empty.setVisibility(View.GONE);
         if (spinner != null) spinner.setVisibility(View.VISIBLE);
@@ -100,27 +101,44 @@ final class AlbumsController {
                 }
                 if (empty != null) {
                     empty.setVisibility(albums.isEmpty() ? View.VISIBLE : View.GONE);
-                    TextView emptyText = (TextView) host.findView(R.id.emptyStateText);
-                    if (emptyText != null) emptyText.setText("No albums");
+                    TextView et = (TextView) host.findView(R.id.emptyStateText);
+                    if (et != null) et.setText("No albums");
                 }
             });
         });
     }
 
+    // ── Open a single album ───────────────────────────────────────
+
     void openAlbum(AlbumRecord album) {
-        if (album == null) return;
+        if (album == null || mediaRecycler == null) return;
 
         openAlbum = album;
         showingAlbums = false;
 
         if (title != null) title.setText(album.displayName);
         if (albumRecycler != null) albumRecycler.setVisibility(View.GONE);
-        if (mediaRecycler != null) mediaRecycler.setVisibility(View.GONE);
         if (empty != null) empty.setVisibility(View.GONE);
         if (spinner != null) spinner.setVisibility(View.VISIBLE);
 
-        // Blank the media list immediately so nothing stale can render.
-        mediaAdapter.submitList(new ArrayList<>());
+        // ── THE FIX ───────────────────────────────────────────────
+        // Install a *fresh* adapter instance. setAdapter() synchronously
+        // detaches every ViewHolder bound to the previously open album,
+        // so the old album's thumbnails cannot leak into this one.
+        final AlbumMediaAdapter freshAdapter = new AlbumMediaAdapter(
+                mediaRecycler.getContext(),
+                new AlbumMediaAdapter.Listener() {
+                    @Override public void onImageClick(String path) {
+                        // The activity will wire this up via the Host if needed.
+                    }
+                    @Override public void onVideoClick(String path) {
+                        // The activity will wire this up via the Host if needed.
+                    }
+                });
+        currentAlbumAdapter = freshAdapter;
+        mediaRecycler.setVisibility(View.GONE);
+        mediaRecycler.setAdapter(freshAdapter);
+        // ──────────────────────────────────────────────────────────
 
         final long gen = generation.incrementAndGet();
         io.execute(() -> {
@@ -128,18 +146,19 @@ final class AlbumsController {
             main.post(() -> {
                 if (gen != generation.get()) return;
                 if (openAlbum == null || !openAlbum.path.equals(album.path)) return;
-
-                mediaAdapter.submitList(items);
-                if (spinner != null) spinner.setVisibility(View.GONE);
+                if (currentAlbumAdapter != freshAdapter) return;
 
                 boolean hasItems = items != null && !items.isEmpty();
+                freshAdapter.setItems(hasItems ? items : new ArrayList<GalleryMediaItem>());
+
+                if (spinner != null) spinner.setVisibility(View.GONE);
                 if (mediaRecycler != null) {
                     mediaRecycler.setVisibility(hasItems ? View.VISIBLE : View.GONE);
                 }
                 if (empty != null) {
                     empty.setVisibility(hasItems ? View.GONE : View.VISIBLE);
-                    TextView emptyText = (TextView) host.findView(R.id.emptyStateText);
-                    if (emptyText != null) emptyText.setText("No media found");
+                    TextView et = (TextView) host.findView(R.id.emptyStateText);
+                    if (et != null) et.setText("No media found");
                 }
 
                 host.onAlbumOpened(album);
@@ -147,16 +166,11 @@ final class AlbumsController {
         });
     }
 
-    /** Returns true if we handled the back press. */
+    // ── Back navigation ───────────────────────────────────────────
+
     boolean onBack() {
-        if (openAlbum != null) {
-            closeAlbum();
-            return true;
-        }
-        if (showingAlbums) {
-            closeAlbumList();
-            return true;
-        }
+        if (openAlbum != null) { closeAlbum(); return true; }
+        if (showingAlbums) { closeAlbumList(); return true; }
         return false;
     }
 
@@ -164,16 +178,36 @@ final class AlbumsController {
         openAlbum = null;
         generation.incrementAndGet();
 
-        mediaAdapter.submitList(new ArrayList<>());
+        if (mediaRecycler != null) {
+            mediaRecycler.setAdapter(null);
+            mediaRecycler.setVisibility(View.GONE);
+        }
+        currentAlbumAdapter = null;
         host.onAlbumClosed();
-
-        // Then immediately show the album list again.
         showAlbums();
+    }
+
+    void leaveAlbums() {
+        showingAlbums = false;
+        openAlbum = null;
+        generation.incrementAndGet();
+
+        if (albumRecycler != null) albumRecycler.setVisibility(View.GONE);
+        if (mediaRecycler != null) {
+            mediaRecycler.setAdapter(null);
+            mediaRecycler.setVisibility(View.GONE);
+        }
+        currentAlbumAdapter = null;
     }
 
     private void closeAlbumList() {
         showingAlbums = false;
         generation.incrementAndGet();
         if (albumRecycler != null) albumRecycler.setVisibility(View.GONE);
+        if (mediaRecycler != null) {
+            mediaRecycler.setAdapter(null);
+            mediaRecycler.setVisibility(View.GONE);
+        }
+        currentAlbumAdapter = null;
     }
 }

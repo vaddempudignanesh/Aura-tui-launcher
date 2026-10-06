@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// File: AlbumAdapter.java  (rewritten)
+// File: AlbumAdapter.java
 // ═══════════════════════════════════════════════════════════════
 package vaddempudi.gnanesh.syntaxcli.gallery;
 
@@ -49,12 +49,12 @@ public class AlbumAdapter extends RecyclerView.Adapter<AlbumAdapter.VH> {
 
     private static final DiffUtil.ItemCallback<AlbumRecord> DIFF =
             new DiffUtil.ItemCallback<AlbumRecord>() {
-                @Override
-                public boolean areItemsTheSame(@NonNull AlbumRecord a, @NonNull AlbumRecord b) {
+                @Override public boolean areItemsTheSame(@NonNull AlbumRecord a,
+                                                         @NonNull AlbumRecord b) {
                     return a.stableKey().equals(b.stableKey());
                 }
-                @Override
-                public boolean areContentsTheSame(@NonNull AlbumRecord a, @NonNull AlbumRecord b) {
+                @Override public boolean areContentsTheSame(@NonNull AlbumRecord a,
+                                                            @NonNull AlbumRecord b) {
                     return a.count == b.count
                             && safeEq(a.displayName, b.displayName)
                             && safeEq(a.coverPath, b.coverPath);
@@ -76,13 +76,11 @@ public class AlbumAdapter extends RecyclerView.Adapter<AlbumAdapter.VH> {
                 : Collections.unmodifiableList(new ArrayList<>(albums)));
     }
 
-    @Override
-    public int getItemCount() {
+    @Override public int getItemCount() {
         return differ.getCurrentList().size();
     }
 
-    @NonNull
-    @Override
+    @NonNull @Override
     public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         View v = LayoutInflater.from(context).inflate(R.layout.item_album, parent, false);
         return new VH(v);
@@ -112,9 +110,7 @@ public class AlbumAdapter extends RecyclerView.Adapter<AlbumAdapter.VH> {
                     COVERS.put(albumPath, bmp);
                     main.post(() -> {
                         Object tag = h.cover.getTag();
-                        if (albumPath.equals(tag)) {
-                            h.cover.setImageBitmap(bmp);
-                        }
+                        if (albumPath.equals(tag)) h.cover.setImageBitmap(bmp);
                     });
                 }
             });

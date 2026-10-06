@@ -34,7 +34,7 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
 
     private static final Object PAYLOAD_SELECTION = new Object();
     private static final Object PAYLOAD_FAVORITE = new Object();
-
+    private volatile boolean forcedEmpty = false;
     public interface OnItemClickListener {
         void onImageClick(String path);
         void onVideoClick(String path);
@@ -108,7 +108,17 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         List<GalleryMediaItem> immutable = items == null
                 ? Collections.emptyList()
                 : Collections.unmodifiableList(new ArrayList<>(items));
-        differ.submitList(immutable);
+
+        forcedEmpty = false;
+
+        differ.submitList(immutable, () -> {
+            // Force the RecyclerView to re-bind in the submitted order.
+            // AsyncListDiffer only emits payloads for items whose
+            // areContentsTheSame() returns false, so a pure reorder of
+            // identical items produces no notifications and the visible
+            // rows keep their old positions.
+            notifyDataSetChanged();
+        });
     }
 
     public void setSelectedItems(List<String> selected) {
@@ -122,21 +132,6 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         }
     }
 
-    public List<GalleryMediaItem> getItems() {
-        return differ.getCurrentList();
-    }
-
-    @Override
-    public long getItemId(int position) {
-        GalleryMediaItem item = differ.getCurrentList().get(position);
-        return item.id ^ (((long) item.type) << 61);
-    }
-
-    @Override
-    public int getItemCount() {
-        return differ.getCurrentList().size();
-    }
-
     @NonNull
     @Override
     public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
@@ -145,9 +140,38 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         return new ViewHolder(v);
     }
 
+
+    public void clearNow() {
+        forcedEmpty = true;
+        notifyDataSetChanged();
+    }
+
+    public void publishImmediately(List<GalleryMediaItem> items) {
+        forcedEmpty = false;
+        List<GalleryMediaItem> immutable = items == null
+                ? Collections.emptyList()
+                : Collections.unmodifiableList(new ArrayList<>(items));
+        differ.submitList(immutable);
+        notifyDataSetChanged();
+    }
+
+    @Override
+    public int getItemCount() {
+        if (forcedEmpty) return 0;
+        return differ.getCurrentList().size();
+    }
+
+    @Override
+    public long getItemId(int position) {
+        if (forcedEmpty) return RecyclerView.NO_ID;
+        GalleryMediaItem item = differ.getCurrentList().get(position);
+        return item.id ^ (((long) item.type) << 61);
+    }
+
     @Override
     public void onBindViewHolder(@NonNull ViewHolder holder, int position,
                                  @NonNull List<Object> payloads) {
+        if (forcedEmpty) return;
         if (payloads != null && !payloads.isEmpty()) {
             GalleryMediaItem item = differ.getCurrentList().get(position);
             for (Object p : payloads) {
@@ -161,9 +185,16 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
 
     @Override
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
+        if (forcedEmpty) return;
         GalleryMediaItem item = differ.getCurrentList().get(position);
         holder.bind(item);
     }
+
+    public List<GalleryMediaItem> getItems() {
+        if (forcedEmpty) return Collections.emptyList();
+        return differ.getCurrentList();
+    }
+
 
     private void updateSelection(ViewHolder holder, GalleryMediaItem item) {
         boolean selectionMode = listener.isSelectionMode();

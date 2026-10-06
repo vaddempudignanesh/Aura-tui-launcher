@@ -71,12 +71,16 @@ public class GalleryActivity extends AppCompatActivity {
     private static final int AUTO_SCROLL_EDGE_DP = 80;
     private static final long AUTO_SCROLL_TICK_MS = 8L;
     private static final int GRID_COLUMNS = 3;
+    private volatile boolean repositoryAtEnd = false;
     private static final int OVERLAY_CONTROLS_TIMEOUT = 3000;
     private static final int SKIP_FORWARD_MS = 10000;
     private static final int SKIP_BACKWARD_MS = 10000;
     private static final float LONG_PRESS_SPEED = 2.0f;
     private boolean mediaEverLoaded = false;
     private boolean transientLoading = false;
+    private FilterMode lastRenderedFilter = null;
+    private int lastRenderedCount = -1;
+    private AlbumsController albumsController;
     private enum FilterMode { ALL, IMAGES, VIDEOS, FAVORITES, BIN }
 
     private SharedPreferences prefs;
@@ -119,7 +123,6 @@ public class GalleryActivity extends AppCompatActivity {
     private LinearLayout videoCenterControls, videoBottomControls;
     private RelativeLayout videoPlayerContainer;
     private VideoView videoView;
-    private AlbumsController albumsController;
 
     private final LinkedHashMap<String, GalleryMediaItem> trashedByPath = new LinkedHashMap<>();
     private final LinkedHashMap<String, String> albumDisplayNames = new LinkedHashMap<>();
@@ -128,6 +131,11 @@ public class GalleryActivity extends AppCompatActivity {
     private String currentAlbum = null;
     private boolean showAlbums = false;
     private boolean whatsappOnly = false;
+    private android.widget.FrameLayout fastScrollTrack;
+    private android.widget.FrameLayout fastScrollThumb;
+    private boolean fastScrollDragging = false;
+
+
     private String whatsappPath = null;
     private boolean trashedIndexDirty = true;
     private boolean albumsCacheValid = false;
@@ -209,6 +217,7 @@ public class GalleryActivity extends AppCompatActivity {
 
         configureWindow();
         bindViews();
+        installFastScrollBar();
         buildAdapter();
         setupAlbums();
         wireToolbarButtons();
@@ -335,22 +344,7 @@ public class GalleryActivity extends AppCompatActivity {
         recyclerView.setItemAnimator(new androidx.recyclerview.widget.DefaultItemAnimator());
         setupDragToSelect();
 
-        recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
-            @Override public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
-                GridLayoutManager lm = (GridLayoutManager) rv.getLayoutManager();
-                if (lm == null || repository == null) return;
-                int last = lm.findLastVisibleItemPosition();
-                int total = screenAdapter.getItemCount();
-                if (total > 0
-                        && last >= total - 12
-                        && currentFilter == FilterMode.ALL
-                        && currentAlbum == null
-                        && !whatsappOnly
-                        && !showAlbums) {
-                    repository.loadNextPage();
-                }
-            }
-        });
+
 
         if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
         recyclerView.setVisibility(View.VISIBLE);
@@ -376,9 +370,8 @@ public class GalleryActivity extends AppCompatActivity {
                         updateBarsVisibility();
                     }
                 },
-                loader, albumAdapter, screenAdapter);
+                loader, albumAdapter);
     }
-
 
     private boolean isInAlbum(GalleryMediaItem it, String albumPath) {
         if (it == null || it.path == null || albumPath == null) return false;
@@ -394,6 +387,11 @@ public class GalleryActivity extends AppCompatActivity {
         }
         return false;
     }
+    private boolean repositoryIsFullyLoaded() {
+
+        return repositoryAtEnd;
+    }
+
 
 
     private final GalleryRepository.Listener repositoryListener =
@@ -452,13 +450,8 @@ public class GalleryActivity extends AppCompatActivity {
                             && (albumsController.isShowingAlbums() || albumsController.isAlbumOpen())) {
                         return;
                     }
-
-
                     if (currentAlbum != null) return;
 
-                    // If we're waiting for a specific album and the incoming snapshot
-                    // doesn't yet contain it, ignore the snapshot entirely — don't
-                    // clear cachedMedia, don't touch the adapter. Keeps the spinner up.
                     if (pendingAlbumLoad != null) {
                         boolean albumItemsPresent = false;
                         for (GalleryMediaItem it : items) {
@@ -479,20 +472,18 @@ public class GalleryActivity extends AppCompatActivity {
                     }
 
                     mediaEverLoaded = true;
-
+                    repositoryAtEnd = endReached;
                     cachedMedia.clear();
+                    Set<String> favs = loadFavoritePaths();
                     for (GalleryMediaItem it : items) {
                         boolean trashed = it.path != null && it.path.contains(".trashed.");
-                        if (it.isTrashed != trashed) {
-                            GalleryMediaItem copy = new GalleryMediaItem(
-                                    it.id, it.path, it.displayName, it.albumPath,
-                                    it.dateModifiedSeconds, it.type);
-                            copy.isFavorite = it.isFavorite;
-                            copy.isTrashed = trashed;
-                            cachedMedia.add(copy);
-                        } else {
-                            cachedMedia.add(it);
-                        }
+                        GalleryMediaItem copy = new GalleryMediaItem(
+                                it.id, it.path, it.displayName, it.albumPath,
+                                it.dateModifiedSeconds, it.type);
+                        copy.isTrashed = trashed;
+                        copy.isFavorite = it.isFavorite
+                                || (it.path != null && favs.contains(it.path));
+                        cachedMedia.add(copy);
                     }
 
                     if (currentFilter == FilterMode.BIN) {
@@ -519,10 +510,11 @@ public class GalleryActivity extends AppCompatActivity {
                 }
             };
 
-
     private void exitBin() {
-
         if (currentFilter != FilterMode.BIN) return;
+
+        albumsController.leaveAlbums();
+
         pendingAlbumLoad = null;
         currentFilter = FilterMode.ALL;
         currentAlbum = null;
@@ -533,12 +525,18 @@ public class GalleryActivity extends AppCompatActivity {
         albumRecycler.setVisibility(View.GONE);
         recyclerView.setVisibility(View.VISIBLE);
         if (sortOptions != null) sortOptions.setVisibility(View.GONE);
+
+        recyclerView.setLayoutManager(new GridLayoutManager(this, GRID_COLUMNS));
+        recyclerView.setAdapter(screenAdapter);
+        setupDragToSelect();
+
         clearSelection();
 
         transientLoading = true;
         refreshCurrentList();
         if (repository != null) {
             repository.refreshFirstPage();
+            repositoryAtEnd = false;
         }
         updateBarsVisibility();
         updateTopNavBar();
@@ -561,6 +559,8 @@ public class GalleryActivity extends AppCompatActivity {
         if (btnHome == null || btnAlbums == null || btnSort == null) return;
 
         btnHome.setOnClickListener(v -> {
+            albumsController.leaveAlbums();
+
             pendingAlbumLoad = null;
             currentFilter = FilterMode.ALL;
             currentAlbum = null;
@@ -572,6 +572,10 @@ public class GalleryActivity extends AppCompatActivity {
             recyclerView.setVisibility(View.VISIBLE);
             if (sortOptions != null) sortOptions.setVisibility(View.GONE);
 
+            recyclerView.setLayoutManager(new GridLayoutManager(this, GRID_COLUMNS));
+            recyclerView.setAdapter(screenAdapter);
+            setupDragToSelect();
+
             clearSelection();
             transientLoading = true;
             refreshCurrentList();
@@ -582,6 +586,7 @@ public class GalleryActivity extends AppCompatActivity {
 
             if (repository != null) {
                 repository.refreshFirstPage();
+                repositoryAtEnd = false;
             }
 
             updateBarsVisibility();
@@ -590,7 +595,6 @@ public class GalleryActivity extends AppCompatActivity {
 
         btnAlbums.setOnClickListener(v -> {
             if (albumsController.isShowingAlbums() || albumsController.isAlbumOpen()) {
-                // Close whatever album UI is open.
                 albumsController.onBack();
             } else {
                 albumsController.showAlbums();
@@ -601,6 +605,7 @@ public class GalleryActivity extends AppCompatActivity {
 
         btnSort.setOnClickListener(v -> {
             if (sortOptions == null) return;
+            refreshBinMenuVisibility();
             sortOptions.setVisibility(sortOptions.getVisibility() == View.VISIBLE
                     ? View.GONE : View.VISIBLE);
         });
@@ -616,8 +621,19 @@ public class GalleryActivity extends AppCompatActivity {
         if (sortVideos != null) sortVideos.setOnClickListener(v -> applyQuickFilter(FilterMode.VIDEOS, "Videos"));
         if (sortFavorites != null) sortFavorites.setOnClickListener(v -> applyQuickFilter(FilterMode.FAVORITES, "Favorites"));
         if (sortBin != null) sortBin.setOnClickListener(v -> applyQuickFilter(FilterMode.BIN, "Bin"));
+
+        refreshBinMenuVisibility();
+    }
+
+    private void refreshBinMenuVisibility() {
+        TextView sortBin = findViewById(R.id.sortBin);
+        if (sortBin == null) return;
+        boolean hasBin = !loadBinPaths().isEmpty();
+        sortBin.setVisibility(hasBin ? View.VISIBLE : View.GONE);
     }
     private void applyQuickFilter(FilterMode mode, String title) {
+        albumsController.leaveAlbums();
+
         pendingAlbumLoad = null;
         currentFilter = mode;
         currentAlbum = null;
@@ -628,8 +644,10 @@ public class GalleryActivity extends AppCompatActivity {
         if (titleView != null) titleView.setText(title);
         if (sortOptions != null) sortOptions.setVisibility(View.GONE);
 
-        // If repository hasn't produced any items yet, force a full reload
-        // so the user sees a spinner instead of "no media".
+        recyclerView.setLayoutManager(new GridLayoutManager(this, GRID_COLUMNS));
+        recyclerView.setAdapter(screenAdapter);
+        setupDragToSelect();
+
         if (cachedMedia.isEmpty() && mode != FilterMode.BIN) {
             if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
             recyclerView.setVisibility(View.GONE);
@@ -637,6 +655,7 @@ public class GalleryActivity extends AppCompatActivity {
             if (ev != null) ev.setVisibility(View.GONE);
             if (repository != null) {
                 repository.refreshFirstPage();
+                repositoryAtEnd = false;
             }
             updateBarsVisibility();
             updateTopNavBar();
@@ -669,6 +688,130 @@ public class GalleryActivity extends AppCompatActivity {
         if (btnFavoriteSelected != null) btnFavoriteSelected.setOnClickListener(v -> addSelectedToFavorites());
     }
 
+
+    private void installFastScrollBar() {
+        android.view.ViewGroup content =
+                (android.view.ViewGroup) findViewById(android.R.id.content);
+        if (content == null) return;
+
+        int barWidthPx = Math.round(6 * getResources().getDisplayMetrics().density);
+        int marginPx = Math.round(6 * getResources().getDisplayMetrics().density);
+
+        // Track — a thin transparent column, only used to receive touches.
+        fastScrollTrack = new android.widget.FrameLayout(this);
+        android.widget.FrameLayout.LayoutParams tlp =
+                new android.widget.FrameLayout.LayoutParams(
+                        barWidthPx * 4,
+                        android.widget.FrameLayout.LayoutParams.MATCH_PARENT);
+        tlp.gravity = android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL;
+        tlp.setMargins(0, marginPx * 4, 0, marginPx * 4);
+        fastScrollTrack.setLayoutParams(tlp);
+        fastScrollTrack.setVisibility(View.GONE);
+        content.addView(fastScrollTrack);
+        fastScrollTrack.post(this::updateFastScrollBar);
+        // Thumb — the visible pill.
+        fastScrollThumb = new android.widget.FrameLayout(this);
+        android.graphics.drawable.GradientDrawable pill =
+                new android.graphics.drawable.GradientDrawable();
+        pill.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        pill.setColor(0xFF9E9E9E);
+        pill.setCornerRadius(24f);
+        fastScrollThumb.setBackground(pill);
+        fastScrollThumb.setAlpha(0.55f);
+        android.widget.FrameLayout.LayoutParams hlp =
+                new android.widget.FrameLayout.LayoutParams(
+                        barWidthPx,
+                        Math.round(48 * getResources().getDisplayMetrics().density));
+        hlp.gravity = android.view.Gravity.END | android.view.Gravity.TOP;
+        fastScrollThumb.setLayoutParams(hlp);
+        fastScrollTrack.addView(fastScrollThumb);
+
+        fastScrollTrack.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                case android.view.MotionEvent.ACTION_MOVE: {
+                    fastScrollDragging = true;
+                    scrollFromBar(event.getY());
+                    return true;
+                }
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL: {
+                    fastScrollDragging = false;
+                    return true;
+                }
+            }
+            return false;
+        });
+
+        recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
+                if (!fastScrollDragging) updateFastScrollBar();
+            }
+            @Override public void onScrollStateChanged(@NonNull RecyclerView rv, int newState) {
+                updateFastScrollBar();
+            }
+        });
+    }
+
+    private void scrollFromBar(float yInTrack) {
+        if (fastScrollTrack == null) return;
+        int trackH = fastScrollTrack.getHeight();
+        if (trackH <= 0) return;
+
+        float frac = yInTrack / (float) trackH;
+        if (frac < 0f) frac = 0f;
+        if (frac > 1f) frac = 1f;
+
+        int total = screenAdapter.getItemCount();
+        if (total <= 0) return;
+
+        int target = (int) (frac * (total - 1));
+        recyclerView.scrollToPosition(target);
+        updateFastScrollBar();
+    }
+
+    private void updateFastScrollBar() {
+        if (fastScrollTrack == null || fastScrollThumb == null) return;
+
+        int total = screenAdapter.getItemCount();
+
+        boolean galleryVisible = total > 0
+                && currentFilter != FilterMode.BIN
+                && currentAlbum == null
+                && !whatsappOnly
+                && !showAlbums
+                && (albumsController == null
+                || (!albumsController.isShowingAlbums()
+                && !albumsController.isAlbumOpen()));
+
+        if (!galleryVisible) {
+            fastScrollTrack.setVisibility(View.GONE);
+            return;
+        }
+
+        fastScrollTrack.setVisibility(View.VISIBLE);
+
+        GridLayoutManager lm = (GridLayoutManager) recyclerView.getLayoutManager();
+        if (lm == null) return;
+
+        int first = lm.findFirstVisibleItemPosition();
+        if (first == RecyclerView.NO_POSITION) first = 0;
+
+        float frac = total <= 1 ? 0f : (first / (float) (total - 1));
+        if (frac < 0f) frac = 0f;
+        if (frac > 1f) frac = 1f;
+
+        int trackH = fastScrollTrack.getHeight();
+        if (trackH <= 0) return;
+
+        int thumbH = fastScrollThumb.getHeight();
+        if (thumbH <= 0) thumbH = Math.round(48 * getResources().getDisplayMetrics().density);
+
+        if (thumbH > trackH) thumbH = trackH;
+        int thumbTop = Math.round(frac * (trackH - thumbH));
+
+        fastScrollThumb.setTranslationY(thumbTop);
+    }
 
 
     private void checkAndRequestMediaPermissions() {
@@ -758,9 +901,11 @@ public class GalleryActivity extends AppCompatActivity {
             out.add(item);
         }
         Collections.sort(out, (a, b) -> {
-            int c = Long.compare(b.dateModifiedSeconds, a.dateModifiedSeconds);
+            int c = Long.compare(b.lastModifiedMillis, a.lastModifiedMillis);
             if (c != 0) return c;
-            return Long.compare(b.id, a.id);
+            String pa = a.path == null ? "" : a.path;
+            String pb = b.path == null ? "" : b.path;
+            return pb.compareTo(pa);
         });
         return out;
     }
@@ -883,61 +1028,23 @@ public class GalleryActivity extends AppCompatActivity {
         recyclerView.post(() -> openFullscreenViewer(path));
     }
 
+
     private void refreshCurrentList() {
         if (!isActivityAlive()) return;
         if (albumsController != null
                 && (albumsController.isShowingAlbums() || albumsController.isAlbumOpen())) {
             return;
         }
-        /*
-         * Physical album:
-         *
-         * Album media is kept separately from cachedMedia.
-         * Never rebuild an album from the global gallery cache.
-         */
+
         if (currentAlbum != null) {
-
-            // Still loading this album.
             if (pendingAlbumLoad != null) {
-                if (loadingSpinner != null) {
-                    loadingSpinner.setVisibility(View.VISIBLE);
-                }
-
+                if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
                 View ev = findViewById(R.id.emptyStateContainer);
-                if (ev != null) {
-                    ev.setVisibility(View.GONE);
-                }
-
+                if (ev != null) ev.setVisibility(View.GONE);
                 return;
             }
-
-            List<GalleryMediaItem> albumSnapshot =
-                    new ArrayList<>(albumMedia);
-
+            List<GalleryMediaItem> albumSnapshot = new ArrayList<>(albumMedia);
             screenAdapter.submitList(albumSnapshot);
-
-            if (loadingSpinner != null) {
-                loadingSpinner.setVisibility(View.GONE);
-            }
-
-            recyclerView.setVisibility(View.VISIBLE);
-
-            updateSelectionUI();
-            showEmptyState();
-            updateTopNavBar();
-
-            return;
-        }
-
-
-        if (currentFilter == FilterMode.BIN) {
-            // Build from the persisted registry — instant, no scan.
-            List<GalleryMediaItem> snapshot = buildBinListFromRegistry();
-            trashedByPath.clear();
-            for (GalleryMediaItem it : snapshot) trashedByPath.put(it.path, it);
-            trashedIndexDirty = false;
-
-            screenAdapter.submitList(new ArrayList<>(snapshot));
             if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
             recyclerView.setVisibility(View.VISIBLE);
             updateSelectionUI();
@@ -946,16 +1053,32 @@ public class GalleryActivity extends AppCompatActivity {
             return;
         }
 
-        final String targetCanon = currentAlbum == null
-                ? null : getCachedCanonical(currentAlbum);
+        if (currentFilter == FilterMode.BIN) {
+            List<GalleryMediaItem> snapshot = buildBinListFromRegistry();
+            trashedByPath.clear();
+            for (GalleryMediaItem it : snapshot) trashedByPath.put(it.path, it);
+            trashedIndexDirty = false;
+            screenAdapter.submitList(new ArrayList<>(snapshot));
+            if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
+            recyclerView.setVisibility(View.VISIBLE);
+            updateSelectionUI();
+            showEmptyState();
+            updateTopNavBar();
+            return;
+        }
+        Collections.sort(cachedMedia, (a, b) -> {
+            int c = Long.compare(b.lastModifiedMillis, a.lastModifiedMillis);
+            if (c != 0) return c;
+            String pa = a.path == null ? "" : a.path;
+            String pb = b.path == null ? "" : b.path;
+            return pb.compareTo(pa);
+        });
         final List<GalleryMediaItem> filtered = new ArrayList<>();
-
         Set<String> favs = null;
         if (currentFilter == FilterMode.FAVORITES) favs = loadFavoritePaths();
 
         for (GalleryMediaItem item : cachedMedia) {
             if (item.path == null) continue;
-
             if (currentAlbum != null && !isInAlbum(item, currentAlbum)) continue;
 
             if (whatsappOnly) {
@@ -972,7 +1095,7 @@ public class GalleryActivity extends AppCompatActivity {
                 }
             }
 
-            boolean trashed = item.path != null && item.path.contains(".trashed.");
+            boolean trashed = item.path.contains(".trashed.");
             item.isTrashed = trashed;
 
             switch (currentFilter) {
@@ -986,20 +1109,15 @@ public class GalleryActivity extends AppCompatActivity {
             }
         }
 
-        Collections.sort(filtered, (a, b) -> {
-            int c = Long.compare(b.dateModifiedSeconds, a.dateModifiedSeconds);
-            if (c != 0) return c;
-            int t = Integer.compare(b.type, a.type);
-            if (t != 0) return t;
-            return Long.compare(b.id, a.id);
-        });
-
-        screenAdapter.submitList(new ArrayList<>(filtered));
+        // The list is already in LATEST_FIRST order because cachedMedia
+        // is sorted above, and we iterated it in order.
+        screenAdapter.submitList(filtered);
         if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
         recyclerView.setVisibility(View.VISIBLE);
         updateSelectionUI();
         showEmptyState();
         updateTopNavBar();
+        updateFastScrollBar();
     }
 
 
@@ -1029,9 +1147,6 @@ public class GalleryActivity extends AppCompatActivity {
 
         if (currentFilter == FilterMode.BIN) {
             title.setText("Bin");
-        } else if (whatsappOnly) {
-            String shown = whatsappPath != null ? albumDisplayNames.get(whatsappPath) : null;
-            title.setText(shown != null ? shown : "WhatsApp");
         } else if (albumsController != null && albumsController.isAlbumOpen()) {
             AlbumRecord open = albumsController.getOpenAlbum();
             title.setText(open != null ? open.displayName : "Album");
@@ -1063,6 +1178,8 @@ public class GalleryActivity extends AppCompatActivity {
             binBottomBar.setVisibility(View.GONE);
             if (selectionTopBar != null) selectionTopBar.setVisibility(View.GONE);
         }
+            refreshBinMenuVisibility();
+
     }
 
     private void showEmptyState() {
@@ -1096,6 +1213,8 @@ public class GalleryActivity extends AppCompatActivity {
             emptyView.setVisibility(View.GONE);
             recyclerView.setVisibility(View.VISIBLE);
         }
+        updateFastScrollBar();
+
     }
 
     private Set<String> loadFavoritePaths() {
@@ -1274,6 +1393,7 @@ public class GalleryActivity extends AppCompatActivity {
         if (selectionTopBar != null) selectionTopBar.setVisibility(View.GONE);
         if (screenAdapter != null) screenAdapter.setSelectedItems(selectedItems);
         resetDragState();
+        updateFastScrollBar();
     }
 
     private void startLongPressDrag(String path) {
@@ -2875,7 +2995,9 @@ public class GalleryActivity extends AppCompatActivity {
             pendingMediaRefresh = null;
         };
         mediaRefreshHandler.postDelayed(pendingMediaRefresh, delayMs);
-    }    @Override
+    }
+
+    @Override
     public void onBackPressed() {
         if (fullscreenOverlay != null && fullscreenOverlay.getVisibility() == View.VISIBLE) {
             closeFullscreenViewer();

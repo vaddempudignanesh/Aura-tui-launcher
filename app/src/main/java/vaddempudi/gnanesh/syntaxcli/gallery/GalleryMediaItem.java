@@ -25,6 +25,10 @@ public final class GalleryMediaItem {
     public boolean isFavorite;
     public boolean isTrashed;
 
+
+
+    public final long lastModifiedMillis;
+
     public GalleryMediaItem(long id,
                             String path,
                             String displayName,
@@ -37,6 +41,8 @@ public final class GalleryMediaItem {
         this.albumPath = albumPath == null ? "" : albumPath;
         this.dateModifiedSeconds = dateModifiedSeconds;
         this.type = type;
+        this.lastModifiedMillis =
+                (path == null || path.isEmpty()) ? 0L : new File(path).lastModified();
     }
 
     /** Compatibility accessors for legacy code. */

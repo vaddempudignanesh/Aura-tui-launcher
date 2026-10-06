@@ -2,8 +2,6 @@ package vaddempudi.gnanesh.syntaxcli.gallery;
 
 import android.content.ContentResolver;
 import android.database.Cursor;
-import android.database.MatrixCursor;
-import android.database.MergeCursor;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,9 +27,20 @@ public final class MediaStorePager {
     private final Executor executor;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
+    // Full sorted master list, cached after the first query.
+    private final Object lock = new Object();
+    private List<GalleryMediaItem> master = null;
+
     public MediaStorePager(ContentResolver resolver, Executor executor) {
         this.resolver = resolver;
         this.executor = executor;
+    }
+
+    /** Clears the cached master list. Next loadPage() will re-query. */
+    public void reset() {
+        synchronized (lock) {
+            master = null;
+        }
     }
 
     public void loadPage(final int offset,
@@ -39,27 +48,38 @@ public final class MediaStorePager {
                          final PageCallback callback) {
         executor.execute(() -> {
             try {
-                final List<GalleryMediaItem> merged = new ArrayList<>();
-                boolean imagesEnded = queryType(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        GalleryMediaItem.TYPE_IMAGE, merged);
-                boolean videosEnded = queryType(
-                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                        GalleryMediaItem.TYPE_VIDEO, merged);
+                List<GalleryMediaItem> full;
+                synchronized (lock) {
+                    if (master == null) {
+                        ArrayList<GalleryMediaItem> merged = new ArrayList<>();
+                        queryType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                                GalleryMediaItem.TYPE_IMAGE, merged);
+                        queryType(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                                GalleryMediaItem.TYPE_VIDEO, merged);
+                        Collections.sort(merged, (a, b) -> {
+                            int c = Long.compare(b.lastModifiedMillis, a.lastModifiedMillis);
+                            if (c != 0) return c;
+                            String pa = a.path == null ? "" : a.path;
+                            String pb = b.path == null ? "" : b.path;
+                            return pb.compareTo(pa);
+                        });
+                        master = merged;
+                    }
+                    full = master;
+                }
 
-                Collections.sort(merged, (a, b) -> {
-                    int c = Long.compare(b.dateModifiedSeconds, a.dateModifiedSeconds);
-                    if (c != 0) return c;
-                    int t = Integer.compare(b.type, a.type);
-                    if (t != 0) return t;
-                    return Long.compare(b.id, a.id);
-                });
+                final int total = full.size();
+                int from = Math.min(offset, total);
+                int to = Math.min(offset + pageSize, total);
 
-                int from = Math.min(offset, merged.size());
-                int to = Math.min(offset + pageSize, merged.size());
-                final List<GalleryMediaItem> page =
-                        Collections.unmodifiableList(new ArrayList<>(merged.subList(from, to)));
-                final boolean end = (to >= merged.size()) && imagesEnded && videosEnded;
+                final List<GalleryMediaItem> page;
+                if (from >= to) {
+                    page = Collections.emptyList();
+                } else {
+                    page = Collections.unmodifiableList(
+                            new ArrayList<>(full.subList(from, to)));
+                }
+                final boolean end = (to >= total);
 
                 mainHandler.post(() -> callback.onPage(page, end));
             } catch (Throwable t) {
@@ -68,7 +88,7 @@ public final class MediaStorePager {
         });
     }
 
-    private boolean queryType(Uri uri, int type, List<GalleryMediaItem> out) {
+    private void queryType(Uri uri, int type, List<GalleryMediaItem> out) {
         String[] projection = new String[]{
                 MediaStore.MediaColumns._ID,
                 MediaStore.MediaColumns.DATA,
@@ -81,7 +101,7 @@ public final class MediaStorePager {
         Cursor cursor = null;
         try {
             cursor = resolver.query(uri, projection, null, null, sort);
-            if (cursor == null) return true;
+            if (cursor == null) return;
 
             int idCol = cursor.getColumnIndex(MediaStore.MediaColumns._ID);
             int dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
@@ -101,7 +121,7 @@ public final class MediaStorePager {
                 String parent = file.getParent();
                 if (parent != null) {
                     try { parent = new File(parent).getCanonicalPath(); }
-                    catch (Exception ignored) { /* keep as-is */ }
+                    catch (Exception ignored) { }
                 }
 
                 out.add(new GalleryMediaItem(
@@ -109,9 +129,7 @@ public final class MediaStorePager {
                         parent == null ? "" : parent,
                         modified, type));
             }
-            return true;
-        } catch (Exception e) {
-            return true;
+        } catch (Exception ignored) {
         } finally {
             if (cursor != null) cursor.close();
         }

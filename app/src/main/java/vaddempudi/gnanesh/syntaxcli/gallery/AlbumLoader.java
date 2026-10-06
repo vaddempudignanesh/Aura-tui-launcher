@@ -1,7 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
 // File: AlbumLoader.java
-// Single source of truth for album data. No caching layers,
-// no SQLite, no global mutable state. Every query is fresh.
 // ═══════════════════════════════════════════════════════════════
 package vaddempudi.gnanesh.syntaxcli.gallery;
 
@@ -25,16 +23,17 @@ public final class AlbumLoader {
 
     private final ContentResolver resolver;
 
+
     public AlbumLoader(Context context) {
         this.resolver = context.getApplicationContext().getContentResolver();
     }
 
-    // ── Build the album list ───────────────────────────────────────
+    // ── Album list ────────────────────────────────────────────────
 
     public List<AlbumRecord> loadAlbums() {
-        Map<String, int[]> counts = new HashMap<>();      // path -> [count]
-        Map<String, String> names = new HashMap<>();      // path -> display
-        Map<String, String> covers = new HashMap<>();     // path -> cover
+        Map<String, int[]> counts = new HashMap<>();
+        Map<String, String> names = new HashMap<>();
+        Map<String, String> covers = new HashMap<>();
 
         queryAlbums(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, counts, names, covers);
         queryAlbums(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, counts, names, covers);
@@ -46,17 +45,14 @@ public final class AlbumLoader {
             if (count <= 0) continue;
 
             String display = names.get(albumPath);
-            if (TextUtils.isEmpty(display)) {
-                display = new File(albumPath).getName();
-            }
+            if (TextUtils.isEmpty(display)) display = new File(albumPath).getName();
             out.add(new AlbumRecord(albumPath, display, count, covers.get(albumPath)));
         }
 
         out.addAll(buildWhatsAppAlbums());
 
         Collections.sort(out, new Comparator<AlbumRecord>() {
-            @Override
-            public int compare(AlbumRecord a, AlbumRecord b) {
+            @Override public int compare(AlbumRecord a, AlbumRecord b) {
                 boolean aw = a.isWhatsApp();
                 boolean bw = b.isWhatsApp();
                 if (aw != bw) return aw ? -1 : 1;
@@ -94,7 +90,6 @@ public final class AlbumLoader {
                 if (parent == null) continue;
 
                 String albumPath = parent.getAbsolutePath();
-
                 int[] cnt = counts.get(albumPath);
                 if (cnt == null) {
                     cnt = new int[]{0};
@@ -171,14 +166,12 @@ public final class AlbumLoader {
         return out;
     }
 
-    // ── Load one album's contents ──────────────────────────────────
+    // ── Album contents ────────────────────────────────────────────
 
     public List<GalleryMediaItem> loadAlbumItems(AlbumRecord album) {
         if (album == null) return Collections.emptyList();
 
-        if (album.isWhatsApp()) {
-            return loadWhatsAppItems(album);
-        }
+        if (album.isWhatsApp()) return loadWhatsAppItems(album);
 
         final List<GalleryMediaItem> out = new ArrayList<>();
         final String albumDir = album.path;
@@ -215,9 +208,6 @@ public final class AlbumLoader {
             while (c.moveToNext()) {
                 String path = dataCol >= 0 ? c.getString(dataCol) : null;
                 if (TextUtils.isEmpty(path)) continue;
-
-                // Match by raw directory prefix. This is deterministic
-                // and never fails on symlinks or canonicalization.
                 if (!path.startsWith(prefix)) continue;
 
                 long id = idCol >= 0 ? c.getLong(idCol) : -1L;
@@ -243,7 +233,8 @@ public final class AlbumLoader {
 
         File dir;
         if ("whatsapp://all".equals(album.path)) {
-            dir = new File(root, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images");
+            dir = new File(root,
+                    "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images");
         } else {
             String accountId = album.path.substring("whatsapp://".length());
             dir = new File(root,
@@ -292,13 +283,12 @@ public final class AlbumLoader {
 
     private static final Comparator<GalleryMediaItem> LATEST_FIRST =
             new Comparator<GalleryMediaItem>() {
-                @Override
-                public int compare(GalleryMediaItem a, GalleryMediaItem b) {
-                    int c = Long.compare(b.dateModifiedSeconds, a.dateModifiedSeconds);
+                @Override public int compare(GalleryMediaItem a, GalleryMediaItem b) {
+                    int c = Long.compare(b.lastModifiedMillis, a.lastModifiedMillis);
                     if (c != 0) return c;
-                    int t = Integer.compare(b.type, a.type);
-                    if (t != 0) return t;
-                    return Long.compare(b.id, a.id);
+                    String pa = a.path == null ? "" : a.path;
+                    String pb = b.path == null ? "" : b.path;
+                    return pb.compareTo(pa);
                 }
             };
 }

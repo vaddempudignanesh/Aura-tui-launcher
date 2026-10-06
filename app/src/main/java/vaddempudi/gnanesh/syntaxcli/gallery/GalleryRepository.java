@@ -17,14 +17,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Coordinates:
- *   - reading the cached first page
- *   - streaming MediaStore pages
- *   - building the album index from MediaStore
- *   - the WhatsApp virtual albums
- *   - the Bin directory scan (opt-in)
- */
+
 public final class GalleryRepository {
 
     public interface Listener {
@@ -80,80 +73,7 @@ public final class GalleryRepository {
         });
     }
 
-    public void injectRestoredItem(GalleryMediaItem item) {
-        if (item == null || item.path == null) return;
-        synchronized (allItems) {
-            for (int i = 0; i < allItems.size(); i++) {
-                GalleryMediaItem it = allItems.get(i);
-                if (it.path != null && it.path.equals(item.path)) {
-                    allItems.set(i, item);
-                    publishMedia(mediaEnded);
-                    return;
-                }
-            }
-            allItems.add(0, item);
-            Collections.sort(allItems, LATEST_FIRST);
-        }
-        publishMedia(mediaEnded);
-    }
 
-    public void removeItemByPath(String path) {
-        if (path == null) return;
-        synchronized (allItems) {
-            for (int i = allItems.size() - 1; i >= 0; i--) {
-                GalleryMediaItem it = allItems.get(i);
-                if (it.path != null && it.path.equals(path)) {
-                    allItems.remove(i);
-                }
-            }
-        }
-        publishMedia(mediaEnded);
-    }
-
-    public void loadAlbumItems(String albumPath) {
-        if (albumPath == null) return;
-        ioPool.execute(() -> {
-            final List<GalleryMediaItem> result = new ArrayList<>();
-            String canonicalTarget;
-            try { canonicalTarget = new File(albumPath).getCanonicalPath(); }
-            catch (Exception e) { canonicalTarget = albumPath; }
-            android.database.Cursor c = null;
-            try {
-                c = appContext.getContentResolver().query(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        new String[]{
-                                MediaStore.MediaColumns._ID,
-                                MediaStore.MediaColumns.DATA,
-                                MediaStore.MediaColumns.DISPLAY_NAME,
-                                MediaStore.MediaColumns.DATE_MODIFIED
-                        }, null, null, null);
-                collectAlbumItems(c, GalleryMediaItem.TYPE_IMAGE,
-                        albumPath, canonicalTarget, result);
-            } catch (Exception ignored) {
-            } finally { if (c != null) c.close(); }
-            c = null;
-            try {
-                c = appContext.getContentResolver().query(
-                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                        new String[]{
-                                MediaStore.MediaColumns._ID,
-                                MediaStore.MediaColumns.DATA,
-                                MediaStore.MediaColumns.DISPLAY_NAME,
-                                MediaStore.MediaColumns.DATE_MODIFIED
-                        }, null, null, null);
-                collectAlbumItems(c, GalleryMediaItem.TYPE_VIDEO,
-                        albumPath, canonicalTarget, result);
-            } catch (Exception ignored) {
-            } finally { if (c != null) c.close(); }
-            Collections.sort(result, LATEST_FIRST);
-            final List<GalleryMediaItem> snapshot = new ArrayList<>(result);
-            mainHandler.post(() -> {
-                for (Listener l : listeners) {
-                    l.onAlbumItemsChanged(albumPath, snapshot);
-                }
-            });
-        });
-    }
 
     private void collectAlbumItems(android.database.Cursor cursor, int type,
                                    String albumPath, String canonicalTarget,
@@ -211,9 +131,7 @@ public final class GalleryRepository {
         nextOffset = 0;
         mediaEnded = false;
         mediaLoading.set(false);
-        // Do NOT clear allItems or publish here — the first page from
-        // loadNextPage() will replace allItems atomically. This prevents
-        // the UI from flashing "No media found" during a refresh.
+        pager.reset();
         loadNextPage();
     }
 
@@ -244,6 +162,10 @@ public final class GalleryRepository {
                         mediaEnded = end;
 
                         publishMedia(end);
+
+                        // Keep loading pages until we hit the end, so the UI
+                        // never has to drive pagination by scrolling.
+                        if (!end) loadNextPage();
                     }
 
                     @Override
@@ -478,11 +400,11 @@ public final class GalleryRepository {
 
     private static final java.util.Comparator<GalleryMediaItem> LATEST_FIRST =
             (a, b) -> {
-                int c = Long.compare(b.dateModifiedSeconds, a.dateModifiedSeconds);
+                int c = Long.compare(b.lastModifiedMillis, a.lastModifiedMillis);
                 if (c != 0) return c;
-                int t = Integer.compare(b.type, a.type);
-                if (t != 0) return t;
-                return Long.compare(b.id, a.id);
+                String pa = a.path == null ? "" : a.path;
+                String pb = b.path == null ? "" : b.path;
+                return pb.compareTo(pa);
             };
 
     public void shutdown() {

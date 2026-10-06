@@ -3,9 +3,6 @@
 // ═══════════════════════════════════════════════════════════════
 package vaddempudi.gnanesh.syntaxcli.gallery;
 
-import java.io.File;
-
-/** Immutable album record. */
 public final class AlbumRecord {
     public final String path;
     public final String displayName;
@@ -24,19 +21,17 @@ public final class AlbumRecord {
     }
 
     public String stableKey() {
-        return path;
+        return path == null ? "" : path;
     }
 
-    @Override
-    public boolean equals(Object o) {
+    @Override public boolean equals(Object o) {
         if (this == o) return true;
         if (!(o instanceof AlbumRecord)) return false;
         AlbumRecord other = (AlbumRecord) o;
-        return path != null && path.equals(other.path);
+        return stableKey().equals(other.stableKey());
     }
 
-    @Override
-    public int hashCode() {
-        return path == null ? 0 : path.hashCode();
+    @Override public int hashCode() {
+        return stableKey().hashCode();
     }
 }
