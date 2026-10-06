@@ -2,6 +2,7 @@ package vaddempudi.gnanesh.syntaxcli.gallery;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.LayoutInflater;
@@ -11,10 +12,18 @@ import android.view.animation.AnimationUtils;
 import android.widget.ImageView;
 import android.widget.RelativeLayout;
 
-import androidx.core.content.ContextCompat;
+import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.AsyncDifferConfig;
+import androidx.recyclerview.widget.AsyncListDiffer;
+import androidx.recyclerview.widget.DiffUtil;
+import androidx.recyclerview.widget.ListUpdateCallback;
 import androidx.recyclerview.widget.RecyclerView;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
@@ -23,159 +32,127 @@ import vaddempudi.gnanesh.syntaxcli.R;
 
 public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHolder> {
 
-    private Context context;
-    private List<GalleryActivity.MediaItem> mediaItems;
-    private List<String> selectedItems;
-    private OnItemClickListener listener;
-    private ExecutorService executor = Executors.newFixedThreadPool(4);
-    private Handler mainHandler = new Handler(Looper.getMainLooper());
-    private ThumbnailCache thumbnailCache;
-
-    // ★ Per-holder generation counter so stale async loads are dropped.
-    private final AtomicLong generation = new AtomicLong(0);
+    private static final Object PAYLOAD_SELECTION = new Object();
+    private static final Object PAYLOAD_FAVORITE = new Object();
 
     public interface OnItemClickListener {
         void onImageClick(String path);
         void onVideoClick(String path);
-        void onFavoriteToggle(GalleryActivity.MediaItem item);
-        void onDelete(GalleryActivity.MediaItem item);
+        void onFavoriteToggle(GalleryMediaItem item);
+        void onDelete(GalleryMediaItem item);
         void onItemClick(String path);
         void onItemLongPress(String path);
         boolean isSelectionMode();
-        void onRestore(GalleryActivity.MediaItem item);
+        void onRestore(GalleryMediaItem item);
     }
 
-    public GalleryAdapter(Context context, List<GalleryActivity.MediaItem> mediaItems,
-                          List<String> selectedItems, OnItemClickListener listener) {
+    private final Context context;
+    private final OnItemClickListener listener;
+    private final ThumbnailCache thumbnailCache;
+    private final ExecutorService executor = Executors.newFixedThreadPool(4);
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    private final AsyncListDiffer<GalleryMediaItem> differ;
+    private List<String> selectedItems = Collections.emptyList();
+
+    public GalleryAdapter(Context context, OnItemClickListener listener) {
         this.context = context;
-        this.mediaItems = mediaItems;
-        this.selectedItems = selectedItems;
         this.listener = listener;
         this.thumbnailCache = ThumbnailCache.getInstance(context);
         setHasStableIds(true);
+
+        this.differ = new AsyncListDiffer<>(this, DIFF);
     }
 
-    public void updateItems(List<GalleryActivity.MediaItem> newItems) {
-        List<GalleryActivity.MediaItem> copy = (newItems == null)
-                ? new java.util.ArrayList<>()
-                : new java.util.ArrayList<>(newItems);
-
-        List<GalleryActivity.MediaItem> oldItems = this.mediaItems;
-        if (oldItems == null) oldItems = new java.util.ArrayList<>();
-
-        int oldCount = oldItems.size();
-        int newCount = copy.size();
-
-        // ── Fast path: identical size + identical path order → nothing to do. ──
-        if (oldCount == newCount) {
-            boolean sameOrder = true;
-            for (int i = 0; i < oldCount; i++) {
-                if (!oldItems.get(i).path.equals(copy.get(i).path)) {
-                    sameOrder = false;
-                    break;
+    private static final DiffUtil.ItemCallback<GalleryMediaItem> DIFF =
+            new DiffUtil.ItemCallback<GalleryMediaItem>() {
+                @Override
+                public boolean areItemsTheSame(@NonNull GalleryMediaItem a,
+                                               @NonNull GalleryMediaItem b) {
+                    return a.stableKey().equals(b.stableKey());
                 }
-            }
-            if (sameOrder) {
-                // Just swap the list, no notification at all — zero flicker.
-                this.mediaItems = copy;
-                return;
-            }
 
-            // Same size but order differs → try a single move, otherwise full.
-            // Detect a single-item move (common when one item's timestamp
-            // changed and it jumped to a new position).
-            int movedFrom = -1, movedTo = -1;
-            for (int i = 0; i < oldCount; i++) {
-                if (!oldItems.get(i).path.equals(copy.get(i).path)) { movedFrom = i; break; }
-            }
-            if (movedFrom >= 0) {
-                // Find where the item went
-                String movedPath = oldItems.get(movedFrom).path;
-                for (int i = 0; i < newCount; i++) {
-                    if (copy.get(i).path.equals(movedPath)) { movedTo = i; break; }
+                @Override
+                public boolean areContentsTheSame(@NonNull GalleryMediaItem a,
+                                                  @NonNull GalleryMediaItem b) {
+                    return a.path.equals(b.path)
+                            && a.displayName.equals(b.displayName)
+                            && a.dateModifiedSeconds == b.dateModifiedSeconds
+                            && a.type == b.type
+                            && a.isFavorite == b.isFavorite
+                            && a.isTrashed == b.isTrashed;
                 }
-                if (movedTo >= 0) {
-                    this.mediaItems = copy;
-                    notifyItemMoved(movedFrom, movedTo);
-                    // Rebind the span between the two positions
-                    int lo = Math.min(movedFrom, movedTo);
-                    int hi = Math.max(movedFrom, movedTo);
-                    notifyItemRangeChanged(lo, hi - lo + 1);
-                    return;
+
+                @Override
+                public Object getChangePayload(@NonNull GalleryMediaItem oldItem,
+                                               @NonNull GalleryMediaItem newItem) {
+                    if (oldItem.isFavorite != newItem.isFavorite) {
+                        return PAYLOAD_FAVORITE;
+                    }
+                    return null;
                 }
-            }
+            };
 
-            // Fallback: same size, but complex reorder → full rebind
-            this.mediaItems = copy;
-            notifyItemRangeChanged(0, newCount);
-            return;
-        }
-
-        // ── Size changed. Try a path-keyed diff to emit precise inserts/removes. ──
-        java.util.Set<String> oldPaths = new java.util.HashSet<>();
-        for (GalleryActivity.MediaItem it : oldItems) oldPaths.add(it.path);
-
-        java.util.Set<String> newPaths = new java.util.HashSet<>();
-        for (GalleryActivity.MediaItem it : copy) newPaths.add(it.path);
-
-        // If exactly one item was added and none removed → notifyItemInserted
-        if (newCount == oldCount + 1) {
-            int insertAt = -1;
-            for (int i = 0; i < newCount; i++) {
-                if (!oldPaths.contains(copy.get(i).path)) { insertAt = i; break; }
-            }
-            if (insertAt >= 0) {
-                this.mediaItems = copy;
-                notifyItemInserted(insertAt);
+    public void notifyFavoriteChanged(String path) {
+        if (path == null) return;
+        List<GalleryMediaItem> current = differ.getCurrentList();
+        for (int i = 0; i < current.size(); i++) {
+            if (path.equals(current.get(i).path)) {
+                notifyItemChanged(i, PAYLOAD_FAVORITE);
                 return;
             }
         }
-
-        // If exactly one item was removed and none added → notifyItemRemoved
-        if (newCount == oldCount - 1) {
-            int removeAt = -1;
-            for (int i = 0; i < oldCount; i++) {
-                if (!newPaths.contains(oldItems.get(i).path)) { removeAt = i; break; }
-            }
-            if (removeAt >= 0) {
-                this.mediaItems = copy;
-                notifyItemRemoved(removeAt);
-                return;
-            }
-        }
-
-        // Fallback: multi-change → full dataset notify (single, no loops)
-        this.mediaItems = copy;
-        notifyDataSetChanged();
     }
-    public void updateSelectedItems(List<String> newSelectedItems) {
-        this.selectedItems = newSelectedItems;
-        for (int i = 0; i < mediaItems.size(); i++) {
-            GalleryActivity.MediaItem item = mediaItems.get(i);
-            boolean isSelected = newSelectedItems != null && newSelectedItems.contains(item.path);
-            notifyItemChanged(i, isSelected ? "selection-on" : "selection-off");
+
+    public void submitList(List<GalleryMediaItem> items) {
+        List<GalleryMediaItem> immutable = items == null
+                ? Collections.emptyList()
+                : Collections.unmodifiableList(new ArrayList<>(items));
+        differ.submitList(immutable);
+    }
+
+    public void setSelectedItems(List<String> selected) {
+        this.selectedItems = selected == null
+                ? Collections.emptyList()
+                : new ArrayList<>(selected);
+
+        List<GalleryMediaItem> current = differ.getCurrentList();
+        for (int i = 0; i < current.size(); i++) {
+            notifyItemChanged(i, PAYLOAD_SELECTION);
         }
+    }
+
+    public List<GalleryMediaItem> getItems() {
+        return differ.getCurrentList();
     }
 
     @Override
-    public ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
-        View view = LayoutInflater.from(context).inflate(R.layout.item_gallery, parent, false);
-        return new ViewHolder(view);
+    public long getItemId(int position) {
+        GalleryMediaItem item = differ.getCurrentList().get(position);
+        return item.id ^ (((long) item.type) << 61);
     }
 
     @Override
-    public void onBindViewHolder(ViewHolder holder, int position, java.util.List<Object> payloads) {
-        // ★ Payload updates: only touch the checkbox, never the thumbnail.
+    public int getItemCount() {
+        return differ.getCurrentList().size();
+    }
+
+    @NonNull
+    @Override
+    public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+        View v = LayoutInflater.from(context)
+                .inflate(R.layout.item_gallery, parent, false);
+        return new ViewHolder(v);
+    }
+
+    @Override
+    public void onBindViewHolder(@NonNull ViewHolder holder, int position,
+                                 @NonNull List<Object> payloads) {
         if (payloads != null && !payloads.isEmpty()) {
-            GalleryActivity.MediaItem item = mediaItems.get(position);
-            boolean isSelected = selectedItems != null && selectedItems.contains(item.path);
-            if (listener.isSelectionMode()) {
-                holder.checkIcon.setVisibility(View.VISIBLE);
-                holder.checkIcon.setImageResource(isSelected
-                        ? R.drawable.ic_checkbox_checked
-                        : R.drawable.ic_checkbox_empty);
-            } else {
-                holder.checkIcon.setVisibility(View.GONE);
+            GalleryMediaItem item = differ.getCurrentList().get(position);
+            for (Object p : payloads) {
+                if (p == PAYLOAD_SELECTION) updateSelection(holder, item);
+                else if (p == PAYLOAD_FAVORITE) updateFavorite(holder, item);
             }
             return;
         }
@@ -183,73 +160,100 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
     }
 
     @Override
-    public void onBindViewHolder(ViewHolder holder, int position) {
-        GalleryActivity.MediaItem item = mediaItems.get(position);
+    public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
+        GalleryMediaItem item = differ.getCurrentList().get(position);
+        holder.bind(item);
+    }
 
-        holder.videoIcon.setVisibility(View.GONE);
-        holder.checkIcon.setVisibility(View.GONE);
-        holder.videoOverlay.setVisibility(View.GONE);
+    private void updateSelection(ViewHolder holder, GalleryMediaItem item) {
+        boolean selectionMode = listener.isSelectionMode();
+        holder.checkIcon.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
+        if (selectionMode) {
+            boolean selected = selectedItems.contains(item.path);
+            holder.checkIcon.setImageResource(selected
+                    ? R.drawable.ic_checkbox_checked
+                    : R.drawable.ic_checkbox_empty);
+        }
+    }
 
+    private void updateFavorite(ViewHolder holder, GalleryMediaItem item) {
         if (item.isFavorite) {
-            holder.favIcon.setColorFilter(ContextCompat.getColor(context, android.R.color.holo_orange_dark));
+            holder.favIcon.setColorFilter(Color.parseColor("#FFD700"));
             holder.favIcon.setVisibility(View.VISIBLE);
         } else {
             holder.favIcon.clearColorFilter();
             holder.favIcon.setVisibility(View.INVISIBLE);
         }
+    }
 
-        if (item.isTrashed && item.type == GalleryActivity.MediaItem.TYPE_VIDEO) {
-            holder.videoOverlay.setVisibility(View.VISIBLE);
+    public class ViewHolder extends RecyclerView.ViewHolder {
+        final ImageView imageView;
+        final ImageView videoIcon;
+        final ImageView favIcon;
+        final ImageView checkIcon;
+        final RelativeLayout videoOverlay;
+
+        final AtomicLong bindGeneration = new AtomicLong(0);
+        String boundPath;
+
+        ViewHolder(View itemView) {
+            super(itemView);
+            imageView = itemView.findViewById(R.id.gallery_image);
+            videoIcon = itemView.findViewById(R.id.video_icon);
+            favIcon = itemView.findViewById(R.id.fav_icon);
+            checkIcon = itemView.findViewById(R.id.check_icon);
+            videoOverlay = itemView.findViewById(R.id.video_overlay);
         }
 
-        if (item.type == GalleryActivity.MediaItem.TYPE_VIDEO && !item.isTrashed) {
-            holder.videoIcon.setVisibility(View.VISIBLE);
-        }
+        void bind(GalleryMediaItem item) {
+            boundPath = item.path;
 
-        loadThumbnail(holder, item);
+            videoIcon.setVisibility(View.GONE);
+            checkIcon.setVisibility(View.GONE);
+            videoOverlay.setVisibility(View.GONE);
 
-        holder.itemView.setOnClickListener(v -> {
-            animateClickBounce(v);
-            if (item.isTrashed) {
+            updateFavorite(this, item);
+
+            if (item.isTrashed && item.type == GalleryMediaItem.TYPE_VIDEO) {
+                videoOverlay.setVisibility(View.VISIBLE);
+            }
+            if (item.type == GalleryMediaItem.TYPE_VIDEO && !item.isTrashed) {
+                videoIcon.setVisibility(View.VISIBLE);
+            }
+
+            loadThumbnail(this, item);
+
+            itemView.setOnClickListener(v -> {
+                animateClickBounce(v);
+                if (item.isTrashed) {
+                    if (listener.isSelectionMode()) listener.onItemClick(item.path);
+                    else listener.onRestore(item);
+                    return;
+                }
                 if (listener.isSelectionMode()) {
                     listener.onItemClick(item.path);
                 } else {
-                    listener.onRestore(item);
+                    if (item.type == GalleryMediaItem.TYPE_IMAGE) {
+                        listener.onImageClick(item.path);
+                    } else {
+                        listener.onVideoClick(item.path);
+                    }
                 }
-                return;
-            }
-            if (listener.isSelectionMode()) {
-                listener.onItemClick(item.path);
-            } else {
-                if (item.type == GalleryActivity.MediaItem.TYPE_IMAGE) {
-                    listener.onImageClick(item.path);
-                } else {
-                    listener.onVideoClick(item.path);
-                }
-            }
-        });
+            });
 
-        holder.itemView.setOnLongClickListener(v -> {
-            animateClickBounce(v);
-            listener.onItemLongPress(item.path);
-            return true;
-        });
+            itemView.setOnLongClickListener(v -> {
+                animateClickBounce(v);
+                listener.onItemLongPress(item.path);
+                return true;
+            });
 
-        if (listener.isSelectionMode()) {
-            holder.checkIcon.setVisibility(View.VISIBLE);
-            if (selectedItems != null && selectedItems.contains(item.path)) {
-                holder.checkIcon.setImageResource(R.drawable.ic_checkbox_checked);
-            } else {
-                holder.checkIcon.setImageResource(R.drawable.ic_checkbox_empty);
-            }
-        } else {
-            holder.checkIcon.setVisibility(View.GONE);
+            updateSelection(this, item);
+
+            favIcon.setOnClickListener(v -> {
+                animateClickBounce(v);
+                listener.onFavoriteToggle(item);
+            });
         }
-
-        holder.favIcon.setOnClickListener(v -> {
-            animateClickBounce(v);
-            listener.onFavoriteToggle(item);
-        });
     }
 
     private void animateClickBounce(View v) {
@@ -260,84 +264,39 @@ public class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.ViewHold
         } catch (Exception ignored) {}
     }
 
-    /**
-     * Loads the thumbnail for the given item.
-     *
-     * ★ FIX: Before kicking off the async load, the ImageView is cleared
-     * and tagged with the new path. When the async callback fires, it checks
-     * both the current tag AND a per-holder generation counter — if either
-     * has moved on, the bitmap is discarded instead of being shown under a
-     * different image (the "top image shows in bottom slot" flicker).
-     */
-    private void loadThumbnail(ViewHolder holder, GalleryActivity.MediaItem item) {
+    private void loadThumbnail(ViewHolder holder, GalleryMediaItem item) {
         final String path = item.path;
 
-        // ── 1. If the holder is already showing this path, do nothing. ──
         Object currentTag = holder.imageView.getTag();
         if (currentTag != null && currentTag.equals(path)
                 && holder.imageView.getDrawable() != null) {
             return;
         }
 
-        // ── 2. Otherwise: clear + tag so a stale bitmap can't leak through. ──
-        holder.imageView.setImageDrawable(null);   // ★ prevents flash of old image
+        holder.imageView.setImageDrawable(null);
         holder.imageView.setTag(path);
 
-        // ── 3. Bump the generation for this holder. ──
         final long myGen = holder.bindGeneration.incrementAndGet();
 
         executor.execute(() -> {
             Bitmap bitmap = thumbnailCache.getThumbnail(path, item.type);
-
             mainHandler.post(() -> {
-                // ★ Drop the result if the holder was rebound since we
-                //    started, OR if the tag was changed.
                 if (holder.bindGeneration.get() != myGen) return;
                 Object tag = holder.imageView.getTag();
                 if (tag == null || !tag.equals(path)) return;
-
                 if (bitmap != null) {
                     holder.imageView.setImageBitmap(bitmap);
                 } else {
-                    holder.imageView.setImageResource(android.R.drawable.ic_menu_gallery);
+                    holder.imageView.setImageResource(
+                            android.R.drawable.ic_menu_gallery);
                 }
             });
         });
     }
 
     @Override
-    public int getItemCount() {
-        return mediaItems != null ? mediaItems.size() : 0;
-    }
-
-    @Override
-    public long getItemId(int position) {
-        return mediaItems.get(position).path.hashCode();
-    }
-
-    @Override
-    public void onDetachedFromRecyclerView(RecyclerView recyclerView) {
+    public void onDetachedFromRecyclerView(@NonNull RecyclerView recyclerView) {
         super.onDetachedFromRecyclerView(recyclerView);
-        executor.shutdown();
-    }
-
-    public static class ViewHolder extends RecyclerView.ViewHolder {
-        ImageView imageView;
-        ImageView videoIcon;
-        ImageView favIcon;
-        ImageView checkIcon;
-        RelativeLayout videoOverlay;
-
-        // ★ Per-holder generation counter — bumped on every bind.
-        final AtomicLong bindGeneration = new AtomicLong(0);
-
-        public ViewHolder(View itemView) {
-            super(itemView);
-            imageView = itemView.findViewById(R.id.gallery_image);
-            videoIcon = itemView.findViewById(R.id.video_icon);
-            favIcon = itemView.findViewById(R.id.fav_icon);
-            checkIcon = itemView.findViewById(R.id.check_icon);
-            videoOverlay = itemView.findViewById(R.id.video_overlay);
-        }
+        // shared pool — do not shut down here
     }
 }

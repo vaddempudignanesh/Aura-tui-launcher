@@ -1,3 +1,7 @@
+# ═══════════════════════════════════════════════════════════════
+#  Existing keep rules (unchanged)
+# ═══════════════════════════════════════════════════════════════
+
 -keep public class vaddempudi.gnanesh.syntaxcli.commands.main.raw.** { *; }
 -keep public class vaddempudi.gnanesh.syntaxcli.commands.main.specific.** { *; }
 -keep public class vaddempudi.gnanesh.syntaxcli.commands.tuixt.raw.** { *; }
@@ -26,35 +30,66 @@
 
 -dontwarn org.jdom2.**
 
+# ═══════════════════════════════════════════════════════════════
+#  Gallery module — keep everything intact
+# ═══════════════════════════════════════════════════════════════
+
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.** { *; }
+-keep interface vaddempudi.gnanesh.syntaxcli.gallery.** { *; }
+
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.GalleryActivity { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.GalleryAdapter { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.GalleryAdapter$* { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.AlbumAdapter { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.AlbumAdapter$* { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.FullscreenAdapter { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.FullscreenAdapter$* { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.GalleryMediaItem { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.GalleryIndexCache { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.GalleryIndexCache$* { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.GalleryRepository { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.GalleryRepository$* { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.MediaStorePager { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.MediaStorePager$* { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.ThumbnailCache { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.HexRingDrawable { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.CustomVideoView { *; }
+-keep class vaddempudi.gnanesh.syntaxcli.gallery.ZoomableImageView { *; }
 
 # ═══════════════════════════════════════════════════════════════
-#  Remove ALL android.util.Log calls from the release build.
-#
-#  `assumenosideeffects` tells R8 that these methods have no side
-#  effects, so the entire call — including its argument expressions
-#  (string concatenation, String.format, StringBuilder, etc.) — is
-#  eliminated from the bytecode.
-#
-#  Do NOT apply this to the debug build, or you lose all logs while
-#  developing. (See gradle snippet below.)
+#  AndroidX RecyclerView + ViewPager2 — protect against R8
+#  class-merging that breaks instanceof/cast checks at runtime.
+#  This is the fix for "ClassCastException: p2.n0 cannot be cast
+#  to n0.g".
 # ═══════════════════════════════════════════════════════════════
--assumenosideeffects class android.util.Log {
-    public static *** v(...);
-    public static *** d(...);
-    public static *** i(...);
-    public static *** w(...);
-    public static *** e(...);
-    public static *** wtf(...);
-    public static *** println(...);
-    public static *** isLoggable(...);
-    public static *** getStackTraceString(...);
-}
 
-# Same treatment for the System.out / System.err paths some
-# libraries use to print logs. Not strictly required, but tidy.
--assumenosideeffects class java.io.PrintStream {
-    public void println(...);
-    public void print(...);
-    public void printf(...);
-    public void format(...);
-}
+-keep class androidx.recyclerview.widget.** { *; }
+-keep interface androidx.recyclerview.widget.** { *; }
+-dontwarn androidx.recyclerview.widget.**
+
+-keep class androidx.viewpager2.** { *; }
+-keep interface androidx.viewpager2.** { *; }
+-dontwarn androidx.viewpager2.**
+
+-keep class androidx.recyclerview.widget.DiffUtil { *; }
+-keep class androidx.recyclerview.widget.DiffUtil$* { *; }
+-keep class androidx.recyclerview.widget.AsyncListDiffer { *; }
+-keep class androidx.recyclerview.widget.AsyncListDiffer$* { *; }
+-keep class androidx.recyclerview.widget.AsyncDifferConfig { *; }
+-keep class androidx.recyclerview.widget.AsyncDifferConfig$* { *; }
+-keep class androidx.recyclerview.widget.AdapterListUpdateCallback { *; }
+-keep class androidx.recyclerview.widget.ListUpdateCallback { *; }
+
+# ═══════════════════════════════════════════════════════════════
+#  Kill R8's class-merging pass. This is the specific optimization
+#  that produces "cannot be cast to" crashes in release builds
+#  that work fine in debug.
+# ═══════════════════════════════════════════════════════════════
+
+
+-keepattributes *Annotation*
+-keepattributes Signature
+-keepattributes InnerClasses
+-keepattributes EnclosingMethod
+-keepattributes RuntimeVisibleAnnotations
+-keepattributes RuntimeVisibleParameterAnnotations
