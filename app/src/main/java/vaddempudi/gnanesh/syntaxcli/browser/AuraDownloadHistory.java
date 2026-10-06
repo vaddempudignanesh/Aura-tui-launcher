@@ -161,10 +161,15 @@ public class AuraDownloadHistory {
 
     public void remove(String gid) {
         dispatchControl("remove", gid);
-        tasks.remove(gid);
+        tasks.remove(gid);   // removed locally
         flush();
     }
 
+
+    public void removeLocal(String gid) {
+        tasks.remove(gid);
+        flush();
+    }
     private void dispatchControl(String action, String gid) {
         try {
             Intent i = new Intent(appCtx, AuraDownloadService.class);

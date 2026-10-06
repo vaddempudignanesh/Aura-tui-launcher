@@ -61,8 +61,6 @@ public class AuraDownloadService extends Service {
             }
             return START_STICKY;
         }
-
-
         String urlString = intent.getStringExtra(EXTRA_DOWNLOAD_URL);
         if (urlString == null) return START_STICKY;
 
@@ -147,24 +145,40 @@ public class AuraDownloadService extends Service {
         return fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  CONTROL
-    // ═══════════════════════════════════════════════════════════════
-
     private void handleControl(String action, String gid) {
         if (action == null || gid == null) return;
+
+        AuraDownloadHistory history = AuraDownloadHistory.get(this);
 
         switch (action) {
             case "pause": {
                 NativeEngine engine = ENGINES.get(gid);
-                if (engine != null) engine.pause();
-                // onPaused callback will fire and update notification
+                if (engine != null) {
+                    engine.pause();
+                } else {
+                    // Engine not in memory (process was killed). Mark paused
+                    // in history and update the notification so the UI reflects it.
+                    try {
+                        JSONObject o = history.get(gid);
+                        if (o != null) {
+                            o.put("status", "paused");
+                            o.put("downloadSpeed", "0");
+                            o.put("etaMs", 0);
+                            history.upsert(o);
+                            history.flush();
+                            String fileName = o.optString("name", "file");
+                            long downloaded = o.optLong("completedLength", 0);
+                            long elapsed = o.optLong("elapsedMs", 0);
+                            updateNotification(gid, "paused", downloaded, 0, fileName, elapsed, 0);
+                        }
+                    } catch (Exception ignored) {}
+                }
                 break;
             }
             case "resume": {
                 DownloadTaskInfo info = INFOS.get(gid);
                 if (info == null) {
-                    JSONObject o = AuraDownloadHistory.get(this).get(gid);
+                    JSONObject o = history.get(gid);
                     if (o != null) {
                         String savePath = o.optString("savePath", "");
                         if (!savePath.isEmpty()) {
@@ -175,6 +189,21 @@ public class AuraDownloadService extends Service {
                 }
                 if (info != null && !ENGINES.containsKey(gid)) {
                     startEngineFor(info);
+                } else if (info == null) {
+                    // State file gone — nothing to resume. Mark as error so
+                    // the user understands.
+                    try {
+                        JSONObject o = history.get(gid);
+                        if (o != null) {
+                            o.put("status", "error");
+                            o.put("errorMessage", "Cannot resume — state not found");
+                            history.upsert(o);
+                            history.flush();
+                            String fileName = o.optString("name", "file");
+                            updateNotification(gid, "error",
+                                    o.optLong("completedLength", 0), 0, fileName, 0, 0);
+                        }
+                    } catch (Exception ignored) {}
                 }
                 break;
             }
@@ -185,13 +214,27 @@ public class AuraDownloadService extends Service {
                 if (info != null) {
                     try { new File(info.savePath).delete(); } catch (Exception ignored) {}
                     try { new File(info.savePath + ".state").delete(); } catch (Exception ignored) {}
+                } else {
+                    // Engine wasn't in memory — still delete the file if we
+                    // know the path from history.
+                    JSONObject o = history.get(gid);
+                    if (o != null) {
+                        String savePath = o.optString("savePath", "");
+                        if (!savePath.isEmpty()) {
+                            try { new File(savePath).delete(); } catch (Exception ignored) {}
+                            try { new File(savePath + ".state").delete(); } catch (Exception ignored) {}
+                        }
+                    }
                 }
+                history.removeLocal(gid);
                 Integer notifId = NOTIF_IDS.remove(gid);
                 if (notifId != null) {
                     NotificationManager nm = getSystemService(NotificationManager.class);
                     if (nm != null) nm.cancel(notifId);
                 }
                 break;
+
+                
             }
         }
 
@@ -200,6 +243,8 @@ public class AuraDownloadService extends Service {
             stopSelf();
         }
     }
+
+    /** Remove a task from history WITHOUT dispatching a control intent. */
 
     // ═══════════════════════════════════════════════════════════════
     //  INITIALIZE
@@ -579,11 +624,8 @@ public class AuraDownloadService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
+
         PendingIntent pi;
-         flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            flags |= PendingIntent.FLAG_IMMUTABLE;
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             pi = PendingIntent.getForegroundService(
                     this, (cmd + gid).hashCode(), i, flags);
