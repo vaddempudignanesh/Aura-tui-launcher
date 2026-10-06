@@ -9,10 +9,15 @@ import android.view.inputmethod.InputConnection;
 public class BasicImeService extends InputMethodService {
 
     private BasicKeyboardView keyboardView;
+    private KeyBubbleOverlay bubbleOverlay;
 
     @Override
     public View onCreateInputView() {
         keyboardView = new BasicKeyboardView(this);
+
+        bubbleOverlay = new KeyBubbleOverlay(this);
+        keyboardView.setBubbleOverlay(bubbleOverlay);
+
         keyboardView.setListener(new BasicKeyboardView.Listener() {
             @Override
             public void onKey(int code, String text) {
@@ -32,6 +37,16 @@ public class BasicImeService extends InputMethodService {
     public void onFinishInputView(boolean finishingInput) {
         super.onFinishInputView(finishingInput);
         setPage(0);
+        if (bubbleOverlay != null) bubbleOverlay.hide();
+    }
+
+    @Override
+    public void onDestroy() {
+        if (bubbleOverlay != null) {
+            bubbleOverlay.hide();
+            bubbleOverlay = null;
+        }
+        super.onDestroy();
     }
 
     @Override

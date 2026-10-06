@@ -20,7 +20,7 @@ public class BasicKeyboardView extends View {
         void onKey(int code, String text);
     }
 
-    private static final int COLOR_BACKGROUND = 0xFF000000;
+    private static final int COLOR_BACKGROUND   = 0xFF000000;
     private static final int COLOR_KEY          = 0xFF000000;
     private static final int COLOR_KEY_PRESSED  = 0xFF1E4D1E;
     private static final int COLOR_TEXT         = 0xFF33FF33;
@@ -35,10 +35,14 @@ public class BasicKeyboardView extends View {
     private static final float TOP_PADDING_DP        = 8f;
     private static final float BOTTOM_PADDING_DP     = 8f;
 
-    private static final float ASDF_SIDE_PADDING_DP = 17f;
+    private static final float ASDF_SIDE_PADDING_DP  = 17f;
 
-    private static final long REPEAT_START_MS = 400L;
-    private static final long REPEAT_INTERVAL_MS = 60L;
+    private static final long REPEAT_START_MS        = 400L;
+    private static final long REPEAT_INTERVAL_MS     = 60L;
+
+    // --- bubble geometry (used by the overlay window) ---
+    static final float PREVIEW_SIZE_DP       = 62f;
+    static final float PREVIEW_GAP_DP        = 60f;
 
     private boolean shiftLocked = false;
 
@@ -52,9 +56,9 @@ public class BasicKeyboardView extends View {
     private boolean symbols2 = false;
     private boolean symbols3 = false;
 
-    private final Paint keyPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint keyPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint textPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF keyRect = new RectF();
 
     private final List<HitKey> hitKeys = new ArrayList<>();
@@ -63,6 +67,9 @@ public class BasicKeyboardView extends View {
     private final Handler repeatHandler = new Handler(Looper.getMainLooper());
     private HitKey repeatKey = null;
     private Runnable repeatRunnable;
+
+    // set by the IME service so we can drive the overlay bubble
+    private KeyBubbleOverlay bubbleOverlay;
 
     public BasicKeyboardView(Context context) {
         super(context);
@@ -95,15 +102,18 @@ public class BasicKeyboardView extends View {
         };
     }
 
+    public void setBubbleOverlay(KeyBubbleOverlay overlay) {
+        this.bubbleOverlay = overlay;
+    }
 
+    // ------------------------------------------------------------------
+    // State helpers
+    // ------------------------------------------------------------------
     public boolean isShiftLocked() { return shiftLocked; }
     public void setShiftLocked(boolean s) { shiftLocked = s; invalidate(); }
 
-
-
     private static final long SHIFT_DOUBLE_TAP_MS = 300L;
     private long lastShiftTapMs = 0L;
-
 
     public boolean registerShiftTap() {
         long now = System.currentTimeMillis();
@@ -112,33 +122,20 @@ public class BasicKeyboardView extends View {
         return second;
     }
 
-    public void clearManualShift() {
-        shifted = false;
-        invalidate();
-    }
+    public void clearManualShift() { shifted = false; invalidate(); }
+    public void clearShiftLock()   { shiftLocked = false; shifted = false; invalidate(); }
 
-    public void clearShiftLock() {
-        shiftLocked = false;
-        shifted = false;
-        invalidate();
-    }
+    public void setListener(Listener l) { this.listener = l; }
 
-
-    public void setListener(Listener l) {
-        this.listener = l;
-    }
-
-    public boolean isShifted() { return shifted; }
+    public boolean isShifted()  { return shifted; }
     public void setShifted(boolean s) { shifted = s; invalidate(); }
 
-    public boolean isSymbols() { return symbols; }
+    public boolean isSymbols()  { return symbols; }
     public boolean isSymbols2() { return symbols2; }
     public boolean isSymbols3() { return symbols3; }
 
     public void setPage(int page) {
-        symbols = false;
-        symbols2 = false;
-        symbols3 = false;
+        symbols = false; symbols2 = false; symbols3 = false;
         switch (page) {
             case 1: symbols = true; break;
             case 2: symbols2 = true; break;
@@ -147,6 +144,7 @@ public class BasicKeyboardView extends View {
         }
         shifted = false;
         shiftLocked = false;
+        if (bubbleOverlay != null) bubbleOverlay.hide();
         rebuildHitKeys();
         requestLayout();
         invalidate();
@@ -159,9 +157,7 @@ public class BasicKeyboardView extends View {
         return layout.letterRows;
     }
 
-    private int rowCount() {
-        return rows().size();
-    }
+    private int rowCount() { return rows().size(); }
 
     private int desiredHeightPx() {
         int rows = rowCount();
@@ -204,9 +200,7 @@ public class BasicKeyboardView extends View {
             BasicKey[] row = rows().get(r);
 
             float sideInset = 0f;
-            if (isAsdfRow(row)) {
-                sideInset = ASDF_SIDE_PADDING_DP * density;
-            }
+            if (isAsdfRow(row)) sideInset = ASDF_SIDE_PADDING_DP * density;
 
             float totalWeight = 0f;
             for (BasicKey k : row) totalWeight += k.weight;
@@ -247,11 +241,8 @@ public class BasicKeyboardView extends View {
         float radius = KEY_RADIUS_DP * density;
 
         for (HitKey hk : hitKeys) {
-            if (hk == pressed) {
-                keyPaint.setColor(COLOR_KEY_PRESSED);
-            } else {
-                keyPaint.setColor(COLOR_KEY);
-            }
+            if (hk == pressed) keyPaint.setColor(COLOR_KEY_PRESSED);
+            else               keyPaint.setColor(COLOR_KEY);
 
             keyRect.set(hk.rect);
             canvas.drawRoundRect(keyRect, radius, radius, keyPaint);
@@ -262,7 +253,8 @@ public class BasicKeyboardView extends View {
                 label = "\u21EA";
             } else {
                 label = hk.key.displayLabel(shifted || shiftLocked);
-            }            if (label == null) label = "";
+            }
+            if (label == null) label = "";
 
             boolean isSpecial = hk.key.code != BasicKey.CODE_NONE;
             textPaint.setTextSize((isSpecial ? SPECIAL_TEXT_SIZE_SP : TEXT_SIZE_SP) * scaledDensity);
@@ -282,10 +274,9 @@ public class BasicKeyboardView extends View {
                 HitKey hk = findKey(event.getX(), event.getY());
                 if (hk != null) {
                     pressed = hk;
+                    showBubbleFor(hk);
                     invalidate();
-                    if (hk.key.code == BasicKey.CODE_DELETE) {
-                        startRepeat(hk);
-                    }
+                    if (hk.key.code == BasicKey.CODE_DELETE) startRepeat(hk);
                 }
                 return true;
             }
@@ -294,11 +285,11 @@ public class BasicKeyboardView extends View {
                 HitKey hk = findKey(event.getX(), event.getY());
                 if (hk != pressed) {
                     pressed = hk;
+                    if (hk != null) showBubbleFor(hk);
+                    else if (bubbleOverlay != null) bubbleOverlay.hide();
                     invalidate();
                     stopRepeat();
-                    if (hk != null && hk.key.code == BasicKey.CODE_DELETE) {
-                        startRepeat(hk);
-                    }
+                    if (hk != null && hk.key.code == BasicKey.CODE_DELETE) startRepeat(hk);
                 }
                 return true;
             }
@@ -308,9 +299,8 @@ public class BasicKeyboardView extends View {
                 pressed = null;
                 invalidate();
                 stopRepeat();
-                if (hk != null && listener != null) {
-                    dispatch(hk.key);
-                }
+                if (bubbleOverlay != null) bubbleOverlay.hide();
+                if (hk != null && listener != null) dispatch(hk.key);
                 return true;
             }
 
@@ -318,10 +308,36 @@ public class BasicKeyboardView extends View {
                 pressed = null;
                 invalidate();
                 stopRepeat();
+                if (bubbleOverlay != null) bubbleOverlay.hide();
                 return true;
             }
         }
         return super.onTouchEvent(event);
+    }
+
+    private void showBubbleFor(HitKey hk) {
+        if (bubbleOverlay == null) return;
+        if (hk == null || hk.key.code != BasicKey.CODE_NONE) {
+            bubbleOverlay.hide();
+            return;
+        }
+        String label = hk.key.displayLabel(shifted || shiftLocked);
+        if (label == null || label.isEmpty()) {
+            bubbleOverlay.hide();
+            return;
+        }
+
+        // Convert key rect to screen coordinates
+        int[] loc = new int[2];
+        getLocationOnScreen(loc);
+
+        float keyCenterX = hk.rect.centerX();
+        float keyTopY    = hk.rect.top;
+
+        int screenX = (int) (loc[0] + keyCenterX);
+        int screenY = (int) (loc[1] + keyTopY);
+
+        bubbleOverlay.show(label, screenX, screenY);
     }
 
     private void startRepeat(HitKey hk) {
