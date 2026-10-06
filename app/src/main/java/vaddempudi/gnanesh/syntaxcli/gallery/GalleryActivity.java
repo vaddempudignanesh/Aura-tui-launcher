@@ -15,7 +15,6 @@ import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
@@ -59,7 +58,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import vaddempudi.gnanesh.syntaxcli.R;
 
@@ -84,7 +82,6 @@ public class GalleryActivity extends AppCompatActivity {
     private SharedPreferences prefs;
     private GalleryRepository repository;
     private GalleryAdapter screenAdapter;
-    private AlbumAdapter screenAlbumAdapter;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mediaRefreshHandler = new Handler(Looper.getMainLooper());
     private final Handler videoHandler = new Handler(Looper.getMainLooper());
@@ -122,7 +119,7 @@ public class GalleryActivity extends AppCompatActivity {
     private LinearLayout videoCenterControls, videoBottomControls;
     private RelativeLayout videoPlayerContainer;
     private VideoView videoView;
-
+    private AlbumsController albumsController;
 
     private final LinkedHashMap<String, GalleryMediaItem> trashedByPath = new LinkedHashMap<>();
     private final LinkedHashMap<String, String> albumDisplayNames = new LinkedHashMap<>();
@@ -213,10 +210,10 @@ public class GalleryActivity extends AppCompatActivity {
         configureWindow();
         bindViews();
         buildAdapter();
+        setupAlbums();
         wireToolbarButtons();
         wireSortMenu();
         wireSelectionBar();
-        wireAlbumRecycler();
         buildFullscreenAdapter();
         wireFullscreenControls();
         wireVolumeBrightness();
@@ -358,6 +355,30 @@ public class GalleryActivity extends AppCompatActivity {
         if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
         recyclerView.setVisibility(View.VISIBLE);
     }
+    private void setupAlbums() {
+        AlbumLoader loader = new AlbumLoader(this);
+
+        AlbumAdapter albumAdapter = new AlbumAdapter(this, album -> {
+            albumsController.openAlbum(album);
+            updateTopNavBar();
+            updateBarsVisibility();
+        });
+
+        albumsController = new AlbumsController(
+                new AlbumsController.Host() {
+                    @Override public View findView(int id) { return findViewById(id); }
+                    @Override public void onAlbumOpened(AlbumRecord album) {
+                        updateTopNavBar();
+                        updateBarsVisibility();
+                    }
+                    @Override public void onAlbumClosed() {
+                        updateTopNavBar();
+                        updateBarsVisibility();
+                    }
+                },
+                loader, albumAdapter, screenAdapter);
+    }
+
 
     private boolean isInAlbum(GalleryMediaItem it, String albumPath) {
         if (it == null || it.path == null || albumPath == null) return false;
@@ -385,19 +406,6 @@ public class GalleryActivity extends AppCompatActivity {
 
                     if (!isActivityAlive()) return;
 
-                    /*
-                     * CRITICAL:
-                     *
-                     * The result may belong to an older album request.
-                     *
-                     * Example:
-                     * A starts
-                     * B starts
-                     * A finishes after B
-                     *
-                     * Only accept the result if it still belongs to the
-                     * album currently being displayed.
-                     */
                     if (currentAlbum == null) return;
 
                     if (pendingAlbumLoad == null) return;
@@ -439,6 +447,13 @@ public class GalleryActivity extends AppCompatActivity {
                 @Override
                 public void onMediaChanged(List<GalleryMediaItem> items, boolean endReached) {
                     if (!isActivityAlive()) return;
+
+                    if (albumsController != null
+                            && (albumsController.isShowingAlbums() || albumsController.isAlbumOpen())) {
+                        return;
+                    }
+
+
                     if (currentAlbum != null) return;
 
                     // If we're waiting for a specific album and the incoming snapshot
@@ -489,23 +504,7 @@ public class GalleryActivity extends AppCompatActivity {
                     tryOpenPendingInitialPath();
                 }
 
-                @Override
-                public void onAlbumsChanged(List<GalleryIndexCache.AlbumRecord> albums) {
-                    if (!isActivityAlive()) return;
-                    if (screenAlbumAdapter != null) {
-                        screenAlbumAdapter.submitList(albums);
-                    }
-                    albumDisplayNames.clear();
-                    for (GalleryIndexCache.AlbumRecord a : albums) {
-                        albumDisplayNames.put(a.path, a.displayName);
-                    }
-                    albumsCacheValid = true;
-                    if (showAlbums) {
-                        if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
-                        albumRecycler.setVisibility(View.VISIBLE);
-                        recyclerView.setVisibility(View.GONE);
-                    }
-                }
+
 
                 @Override
                 public void onBinChanged(List<GalleryMediaItem> binItems) {
@@ -590,21 +589,14 @@ public class GalleryActivity extends AppCompatActivity {
         });
 
         btnAlbums.setOnClickListener(v -> {
-            if (showAlbums) {
-                showAlbums = false;
-                albumRecycler.setVisibility(View.GONE);
-                recyclerView.setVisibility(View.VISIBLE);
-                refreshCurrentList();
+            if (albumsController.isShowingAlbums() || albumsController.isAlbumOpen()) {
+                // Close whatever album UI is open.
+                albumsController.onBack();
             } else {
-                showAlbums = true;
-                if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
-                albumRecycler.setVisibility(View.GONE);
-                recyclerView.setVisibility(View.GONE);
-                loadAlbums();
-                if (sortOptions != null) sortOptions.setVisibility(View.GONE);
+                albumsController.showAlbums();
             }
-            updateBarsVisibility();
             updateTopNavBar();
+            updateBarsVisibility();
         });
 
         btnSort.setOnClickListener(v -> {
@@ -677,11 +669,7 @@ public class GalleryActivity extends AppCompatActivity {
         if (btnFavoriteSelected != null) btnFavoriteSelected.setOnClickListener(v -> addSelectedToFavorites());
     }
 
-    private void wireAlbumRecycler() {
-        albumRecycler.setLayoutManager(new GridLayoutManager(this, 2));
-        screenAlbumAdapter = new AlbumAdapter(this, album -> onAlbumSelected(album));
-        albumRecycler.setAdapter(screenAlbumAdapter);
-    }
+
 
     private void checkAndRequestMediaPermissions() {
         String[] toRequest;
@@ -897,7 +885,10 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void refreshCurrentList() {
         if (!isActivityAlive()) return;
-
+        if (albumsController != null
+                && (albumsController.isShowingAlbums() || albumsController.isAlbumOpen())) {
+            return;
+        }
         /*
          * Physical album:
          *
@@ -1011,140 +1002,18 @@ public class GalleryActivity extends AppCompatActivity {
         updateTopNavBar();
     }
 
-    private void loadAlbums() {
-        if (screenAlbumAdapter == null) {
-            screenAlbumAdapter = new AlbumAdapter(this, album -> onAlbumSelected(album));
-            albumRecycler.setAdapter(screenAlbumAdapter);
-        }
-        if (showAlbums && screenAlbumAdapter.getItemCount() > 0) {
-            albumRecycler.setVisibility(View.VISIBLE);
-            recyclerView.setVisibility(View.GONE);
-            if (loadingSpinner != null) loadingSpinner.setVisibility(View.GONE);
-            return;
-        }
-        if (loadingSpinner != null) loadingSpinner.setVisibility(View.VISIBLE);
-        albumRecycler.setVisibility(View.GONE);
-        repository.loadAlbums();
-    }
 
-    private void onAlbumSelected(GalleryIndexCache.AlbumRecord album) {
-        if (album == null) return;
 
-        albumDisplayNames.put(album.path, album.displayName);
-
-        // ─────────────────────────────────────────────
-        // WhatsApp virtual album
-        // ─────────────────────────────────────────────
-        if (album.path.startsWith("whatsapp://")) {
-
-            pendingAlbumLoad = null;
-
-            currentAlbum = null;
-
-            albumMedia.clear();
-
-            whatsappOnly = true;
-            whatsappPath = album.path;
-
-            showAlbums = false;
-
-            titleView.setText(album.displayName);
-
-            albumRecycler.setVisibility(View.GONE);
-            recyclerView.setVisibility(View.VISIBLE);
-
-            if (loadingSpinner != null) {
-                loadingSpinner.setVisibility(View.GONE);
-            }
-
-            refreshCurrentList();
-
-            updateBarsVisibility();
-            updateTopNavBar();
-
-            return;
-        }
-
-        // ─────────────────────────────────────────────
-        // Normal physical album
-        // ─────────────────────────────────────────────
-
-        whatsappOnly = false;
-        whatsappPath = null;
-
-        // Set the requested album FIRST.
-        currentAlbum = album.path;
-
-        // This is the identity of the request currently allowed
-        // to update the screen.
-        pendingAlbumLoad = album.path;
-
-        transientLoading = true;
-
-        showAlbums = false;
-
-        titleView.setText(album.displayName);
-
-        albumRecycler.setVisibility(View.GONE);
-        recyclerView.setVisibility(View.VISIBLE);
-
-        /*
-         * Clear ONLY the album display.
-         *
-         * Do not clear cachedMedia.
-         * cachedMedia is still needed for Gallery and WhatsApp.
-         */
-        albumMedia.clear();
-
-        // Prevent old album files from remaining visible.
-        screenAdapter.submitList(new ArrayList<>());
-
-        if (loadingSpinner != null) {
-            loadingSpinner.setVisibility(View.VISIBLE);
-        }
-
-        View ev = findViewById(R.id.emptyStateContainer);
-        if (ev != null) {
-            ev.setVisibility(View.GONE);
-        }
-
-        if (repository != null) {
-            repository.loadAlbumItems(album.path);
-        } else {
-            pendingAlbumLoad = null;
-            transientLoading = false;
-            refreshCurrentList();
-        }
-
-        updateBarsVisibility();
-        updateTopNavBar();
+    private void onAlbumSelected(AlbumRecord album) {
+        albumsController.openAlbum(album);
     }
 
     private void navigateBackFromAlbum() {
-        pendingAlbumLoad = null;
-        whatsappOnly = false;
-        whatsappPath = null;
-        if (currentAlbum != null) {
-            currentAlbum = null;
-            pendingAlbumLoad = null;
-            albumMedia.clear();
-
-            showAlbums = true;
-            recyclerView.setVisibility(View.GONE);
-
-            if (loadingSpinner != null) {
-                loadingSpinner.setVisibility(View.VISIBLE);
-            }
-
-            albumRecycler.setVisibility(View.GONE);
-
-            loadAlbums();
-
-            titleView.setText("Albums");
-
-            updateBarsVisibility();
-            updateTopNavBar();
+        if (!albumsController.onBack()) {
+            // Nothing to go back to.
         }
+        updateTopNavBar();
+        updateBarsVisibility();
     }
 
     private void updateTopNavBar() {
@@ -1152,22 +1021,28 @@ public class GalleryActivity extends AppCompatActivity {
         TextView title = findViewById(R.id.titleGallery);
         if (btnBack == null || title == null) return;
 
+        boolean albumsOpen = albumsController != null
+                && (albumsController.isShowingAlbums() || albumsController.isAlbumOpen());
         boolean showBack = currentFilter == FilterMode.BIN
-                || currentAlbum != null || showAlbums || whatsappOnly;
+                || albumsOpen || whatsappOnly;
         btnBack.setVisibility(showBack ? View.VISIBLE : View.GONE);
 
-        if (currentFilter == FilterMode.BIN) title.setText("Bin");
-        else if (whatsappOnly) {
+        if (currentFilter == FilterMode.BIN) {
+            title.setText("Bin");
+        } else if (whatsappOnly) {
             String shown = whatsappPath != null ? albumDisplayNames.get(whatsappPath) : null;
             title.setText(shown != null ? shown : "WhatsApp");
-        } else if (currentAlbum != null) {
-            String shown = albumDisplayNames.get(currentAlbum);
-            title.setText(shown != null ? shown : new File(currentAlbum).getName());
-        } else if (showAlbums) title.setText("Albums");
-        else title.setText("Gallery");
+        } else if (albumsController != null && albumsController.isAlbumOpen()) {
+            AlbumRecord open = albumsController.getOpenAlbum();
+            title.setText(open != null ? open.displayName : "Album");
+        } else if (albumsController != null && albumsController.isShowingAlbums()) {
+            title.setText("Albums");
+        } else {
+            title.setText("Gallery");
+        }
     }
 
-    private void updateBarsVisibility() {
+        private void updateBarsVisibility() {
         boolean isBin = currentFilter == FilterMode.BIN;
         boolean isSelection = selectionMode && !isBin;
 
@@ -3000,62 +2875,33 @@ public class GalleryActivity extends AppCompatActivity {
             pendingMediaRefresh = null;
         };
         mediaRefreshHandler.postDelayed(pendingMediaRefresh, delayMs);
-    }
-    @Override
+    }    @Override
     public void onBackPressed() {
-        // 1. Fullscreen viewer open → close it.
         if (fullscreenOverlay != null && fullscreenOverlay.getVisibility() == View.VISIBLE) {
             closeFullscreenViewer();
             return;
         }
-
-        // 2. Selection mode → exit selection.
         if (selectionMode) {
             clearSelection();
             return;
         }
-
-        // 3. Bin → go back to Home.
         if (currentFilter == FilterMode.BIN) {
             exitBin();
             return;
         }
-
-        // 4. WhatsApp virtual album → go back to Albums.
+        if (albumsController != null && albumsController.onBack()) {
+            updateTopNavBar();
+            updateBarsVisibility();
+            return;
+        }
         if (whatsappOnly) {
             whatsappOnly = false;
             whatsappPath = null;
-            showAlbums = true;
-            loadAlbums();
-            albumRecycler.setVisibility(View.VISIBLE);
-            recyclerView.setVisibility(View.GONE);
-            titleView.setText("Albums");
+            albumsController.showAlbums();
             updateTopNavBar();
             updateBarsVisibility();
             return;
         }
-
-        // 5. Inside a real album → go back to Albums list.
-        if (currentAlbum != null) {
-            navigateBackFromAlbum();
-            return;
-        }
-
-        // 6. Showing Albums list → go back to Home.
-        if (showAlbums) {
-            showAlbums = false;
-            currentFilter = FilterMode.ALL;
-            currentAlbum = null;
-            albumRecycler.setVisibility(View.GONE);
-            recyclerView.setVisibility(View.VISIBLE);
-            titleView.setText("Gallery");
-            refreshCurrentList();
-            updateBarsVisibility();
-            updateTopNavBar();
-            return;
-        }
-
-        // 7. Nothing else → only now allow the system to leave the app.
         super.onBackPressed();
     }
 

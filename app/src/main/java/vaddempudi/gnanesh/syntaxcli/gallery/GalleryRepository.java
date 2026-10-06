@@ -28,9 +28,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class GalleryRepository {
 
     public interface Listener {
+        void onAlbumItemsChanged(
+                String albumPath,
+                List<GalleryMediaItem> items);
+
         void onMediaChanged(List<GalleryMediaItem> items, boolean endReached);
-        void onAlbumItemsChanged(String albumPath, List<GalleryMediaItem> items);
-        void onAlbumsChanged(List<GalleryIndexCache.AlbumRecord> albums);
         void onBinChanged(List<GalleryMediaItem> binItems);
         void onError(Throwable error);
     }
@@ -283,41 +285,7 @@ public final class GalleryRepository {
 
     // ── Albums ─────────────────────────────────────────────────────
 
-    public void loadAlbums() {
-        ioPool.execute(() -> {
-            // 1. Publish cached albums immediately
-            List<GalleryIndexCache.AlbumRecord> cached = indexCache.readAlbums();
-            if (!cached.isEmpty()) {
-                mainHandler.post(() -> {
-                    for (Listener l : listeners) l.onAlbumsChanged(cached);
-                });
-            }
 
-            // 2. Rebuild from MediaStore
-            final List<GalleryIndexCache.AlbumRecord> fresh = buildAlbumIndex();
-
-            // 3. Merge WhatsApp virtuals
-            fresh.addAll(buildWhatsAppVirtualAlbums());
-
-            // 4. Sort: WhatsApp first, then alpha
-            Collections.sort(fresh, (a, b) -> {
-                boolean aWa = a.path.startsWith("whatsapp://");
-                boolean bWa = b.path.startsWith("whatsapp://");
-                if (aWa != bWa) return aWa ? -1 : 1;
-                String da = a.displayName == null ? "" : a.displayName;
-                String db = b.displayName == null ? "" : b.displayName;
-                return da.compareToIgnoreCase(db);
-            });
-
-            // 5. Persist
-            indexCache.replaceAlbums(fresh);
-
-            albumsLoadedOnce = true;
-            mainHandler.post(() -> {
-                for (Listener l : listeners) l.onAlbumsChanged(fresh);
-            });
-        });
-    }
 
     private List<GalleryIndexCache.AlbumRecord> buildAlbumIndex() {
         HashMap<String, int[]> counts = new HashMap<>();   // albumPath -> [count, coverType]
@@ -457,20 +425,7 @@ public final class GalleryRepository {
 
     // ── Bin ────────────────────────────────────────────────────────
 
-    public void loadBinAsync() {
-        if (!binLoading.compareAndSet(false, true)) return;
-        binPool.execute(() -> {
-            final List<GalleryMediaItem> bin = new ArrayList<>();
-            java.io.File root = android.os.Environment.getExternalStorageDirectory();
-            if (root != null) {
-                scanForTrashed(root, bin, 0, 8);
-            }
-            binLoading.set(false);
-            mainHandler.post(() -> {
-                for (Listener l : listeners) l.onBinChanged(bin);
-            });
-        });
-    }
+
 
     private void scanForTrashed(java.io.File dir, List<GalleryMediaItem> out,
                                 int depth, int maxDepth) {

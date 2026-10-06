@@ -1,13 +1,17 @@
+// ═══════════════════════════════════════════════════════════════
+// File: AlbumAdapter.java  (rewritten)
+// ═══════════════════════════════════════════════════════════════
 package vaddempudi.gnanesh.syntaxcli.gallery;
 
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.LruCache;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.AnimationUtils;
 import android.widget.ImageView;
 import android.widget.TextView;
 
@@ -24,59 +28,52 @@ import java.util.concurrent.Executors;
 
 import vaddempudi.gnanesh.syntaxcli.R;
 
-public class AlbumAdapter extends RecyclerView.Adapter<AlbumAdapter.ViewHolder> {
+public class AlbumAdapter extends RecyclerView.Adapter<AlbumAdapter.VH> {
 
-    public interface OnAlbumClickListener {
-        void onAlbumClick(GalleryIndexCache.AlbumRecord album);
+    public interface OnAlbumClick {
+        void onClick(AlbumRecord album);
     }
 
     private final Context context;
-    private final OnAlbumClickListener listener;
-    private final ExecutorService executor = Executors.newFixedThreadPool(3);
-    private final android.os.Handler mainHandler =
-            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final OnAlbumClick listener;
+    private final ExecutorService executor = Executors.newFixedThreadPool(2);
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final AsyncListDiffer<AlbumRecord> differ;
 
-    private final AsyncListDiffer<GalleryIndexCache.AlbumRecord> differ;
-
-    private static final LruCache<String, Bitmap> COVER_CACHE =
-            new LruCache<String, Bitmap>(64) {
+    private static final LruCache<String, Bitmap> COVERS =
+            new LruCache<String, Bitmap>(48) {
                 @Override protected int sizeOf(String key, Bitmap value) {
-                    return value == null ? 0 : value.getByteCount();
+                    return value == null ? 0 : value.getByteCount() / 1024;
                 }
             };
 
-    private static final DiffUtil.ItemCallback<GalleryIndexCache.AlbumRecord> DIFF =
-            new DiffUtil.ItemCallback<GalleryIndexCache.AlbumRecord>() {
+    private static final DiffUtil.ItemCallback<AlbumRecord> DIFF =
+            new DiffUtil.ItemCallback<AlbumRecord>() {
                 @Override
-                public boolean areItemsTheSame(@NonNull GalleryIndexCache.AlbumRecord a,
-                                               @NonNull GalleryIndexCache.AlbumRecord b) {
-                    return a.path.equals(b.path);
+                public boolean areItemsTheSame(@NonNull AlbumRecord a, @NonNull AlbumRecord b) {
+                    return a.stableKey().equals(b.stableKey());
                 }
-
                 @Override
-                public boolean areContentsTheSame(@NonNull GalleryIndexCache.AlbumRecord a,
-                                                  @NonNull GalleryIndexCache.AlbumRecord b) {
+                public boolean areContentsTheSame(@NonNull AlbumRecord a, @NonNull AlbumRecord b) {
                     return a.count == b.count
-                            && (a.displayName == null ? b.displayName == null
-                            : a.displayName.equals(b.displayName))
-                            && (a.coverPath == null ? b.coverPath == null
-                            : a.coverPath.equals(b.coverPath));
+                            && safeEq(a.displayName, b.displayName)
+                            && safeEq(a.coverPath, b.coverPath);
+                }
+                private boolean safeEq(String x, String y) {
+                    return x == null ? y == null : x.equals(y);
                 }
             };
 
-    public AlbumAdapter(Context context, OnAlbumClickListener listener) {
+    public AlbumAdapter(Context context, OnAlbumClick listener) {
         this.context = context;
         this.listener = listener;
-        // ★ FIX: use the RecyclerView.Adapter overload. The old code
-        //   passed `(ListUpdateCallback) this` and crashed at runtime
-        //   because AlbumAdapter isn't a ListUpdateCallback.
         this.differ = new AsyncListDiffer<>(this, DIFF);
     }
 
-    public void submitList(List<GalleryIndexCache.AlbumRecord> items) {
-        differ.submitList(items == null
-                ? Collections.<GalleryIndexCache.AlbumRecord>emptyList()
-                : Collections.unmodifiableList(new ArrayList<>(items)));
+    public void submit(List<AlbumRecord> albums) {
+        differ.submitList(albums == null
+                ? Collections.<AlbumRecord>emptyList()
+                : Collections.unmodifiableList(new ArrayList<>(albums)));
     }
 
     @Override
@@ -86,83 +83,78 @@ public class AlbumAdapter extends RecyclerView.Adapter<AlbumAdapter.ViewHolder> 
 
     @NonNull
     @Override
-    public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-        View v = LayoutInflater.from(context)
-                .inflate(R.layout.item_album, parent, false);
-        return new ViewHolder(v);
+    public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+        View v = LayoutInflater.from(context).inflate(R.layout.item_album, parent, false);
+        return new VH(v);
     }
 
     @Override
-    public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
-        GalleryIndexCache.AlbumRecord album = differ.getCurrentList().get(position);
+    public void onBindViewHolder(@NonNull VH h, int position) {
+        AlbumRecord album = differ.getCurrentList().get(position);
 
-        holder.albumName.setText(album.displayName);
-        holder.albumCover.setTag(album.path);
+        h.name.setText(album.displayName);
+        h.cover.setTag(album.path);
 
-        Bitmap cached = COVER_CACHE.get(album.path);
-        if (cached != null) {
-            holder.albumCover.setImageBitmap(cached);
+        Bitmap cached = COVERS.get(album.path);
+        if (cached != null && !cached.isRecycled()) {
+            h.cover.setImageBitmap(cached);
             return;
         }
 
-        if (album.coverPath != null && !album.coverPath.isEmpty()) {
-            holder.albumCover.setImageResource(android.R.drawable.ic_menu_gallery);
+        h.cover.setImageResource(android.R.drawable.ic_menu_gallery);
+
+        if (album.coverPath != null) {
             final String coverPath = album.coverPath;
             final String albumPath = album.path;
             executor.execute(() -> {
-                Bitmap bmp = decodeThumb(coverPath);
+                Bitmap bmp = decode(coverPath);
                 if (bmp != null) {
-                    COVER_CACHE.put(albumPath, bmp);
-                    mainHandler.post(() -> {
-                        Object tag = holder.albumCover.getTag();
+                    COVERS.put(albumPath, bmp);
+                    main.post(() -> {
+                        Object tag = h.cover.getTag();
                         if (albumPath.equals(tag)) {
-                            holder.albumCover.setImageBitmap(bmp);
+                            h.cover.setImageBitmap(bmp);
                         }
                     });
                 }
             });
-        } else {
-            holder.albumCover.setImageResource(android.R.drawable.ic_menu_gallery);
         }
 
-        holder.itemView.setOnClickListener(v -> {
-            try {
-                v.startAnimation(AnimationUtils.loadAnimation(
-                        v.getContext(), R.anim.bounce_animation));
-            } catch (Exception ignored) {}
-            if (listener != null) listener.onAlbumClick(album);
+        h.itemView.setOnClickListener(v -> {
+            if (listener != null) listener.onClick(album);
         });
     }
 
-    private Bitmap decodeThumb(String path) {
+    private Bitmap decode(String path) {
         try {
-            BitmapFactory.Options b = new BitmapFactory.Options();
-            b.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(path, b);
-            if (b.outWidth <= 0 || b.outHeight <= 0) return null;
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(path, bounds);
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
 
-            int target = 256;
             int sample = 1;
-            while (b.outWidth / sample > target * 2
-                    && b.outHeight / sample > target * 2) sample *= 2;
+            while (bounds.outWidth / (sample * 2) > 256
+                    && bounds.outHeight / (sample * 2) > 256) {
+                sample *= 2;
+            }
 
-            BitmapFactory.Options o = new BitmapFactory.Options();
-            o.inSampleSize = sample;
-            o.inPreferredConfig = Bitmap.Config.RGB_565;
-            return BitmapFactory.decodeFile(path, o);
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = sample;
+            opts.inPreferredConfig = Bitmap.Config.RGB_565;
+            return BitmapFactory.decodeFile(path, opts);
         } catch (Exception e) {
             return null;
         }
     }
 
-    public static class ViewHolder extends RecyclerView.ViewHolder {
-        ImageView albumCover;
-        TextView albumName;
+    static class VH extends RecyclerView.ViewHolder {
+        final ImageView cover;
+        final TextView name;
 
-        ViewHolder(View itemView) {
-            super(itemView);
-            albumCover = itemView.findViewById(R.id.album_cover);
-            albumName = itemView.findViewById(R.id.album_name);
+        VH(View v) {
+            super(v);
+            cover = v.findViewById(R.id.album_cover);
+            name = v.findViewById(R.id.album_name);
         }
     }
 }
