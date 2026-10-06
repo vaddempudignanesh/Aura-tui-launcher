@@ -3,6 +3,7 @@ package vaddempudi.gnanesh.syntaxcli.browser;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.os.Build;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -170,8 +171,14 @@ public class AuraDownloadHistory {
             i.setAction(ACTION_CONTROL);
             i.putExtra(EXTRA_ACTION, action);
             i.putExtra(EXTRA_GID, gid);
-            appCtx.startService(i);
-        } catch (Exception ignored) {}
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                appCtx.startForegroundService(i);
+            } else {
+                appCtx.startService(i);
+            }
+        } catch (Exception e) {
+            android.util.Log.e("AuraDL", "dispatchControl failed", e);
+        }
     }
 
     public void clearStopped() {

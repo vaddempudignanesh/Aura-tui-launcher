@@ -43,12 +43,25 @@ public class AuraDownloadService extends Service {
 
         createNotificationChannel();
 
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && AuraDownloadHistory.ACTION_CONTROL.equals(intent.getAction())) {
+            startForegroundWithId(9000, "Download control");
+            // Immediately demote — the real notification for the download
+            // already exists. stopForeground(false) keeps it visible.
+            stopForeground(false);
+        }
+
         if (AuraDownloadHistory.ACTION_CONTROL.equals(intent.getAction())) {
             String action = intent.getStringExtra(AuraDownloadHistory.EXTRA_ACTION);
-            String gid = intent.getStringExtra(AuraDownloadHistory.EXTRA_GID);
+            String gid    = intent.getStringExtra(AuraDownloadHistory.EXTRA_GID);
             handleControl(action, gid);
+            if (ENGINES.isEmpty()) {
+                stopSelf(startId);
+            }
             return START_STICKY;
         }
+
 
         String urlString = intent.getStringExtra(EXTRA_DOWNLOAD_URL);
         if (urlString == null) return START_STICKY;
@@ -566,8 +579,18 @@ public class AuraDownloadService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
-        PendingIntent pi = PendingIntent.getService(
-                this, (cmd + gid).hashCode(), i, flags);
+        PendingIntent pi;
+         flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            pi = PendingIntent.getForegroundService(
+                    this, (cmd + gid).hashCode(), i, flags);
+        } else {
+            pi = PendingIntent.getService(
+                    this, (cmd + gid).hashCode(), i, flags);
+        }
 
         int icon;
         switch (cmd) {

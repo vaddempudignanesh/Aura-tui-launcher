@@ -15,6 +15,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.text.InputType;
+import android.text.style.BackgroundColorSpan;
 import android.util.Log;
 import android.view.ActionMode;
 import android.view.GestureDetector;
@@ -72,7 +74,6 @@ import vaddempudi.gnanesh.syntaxcli.managers.xml.XMLPrefsManager;
 import vaddempudi.gnanesh.syntaxcli.managers.xml.options.Theme;
 import vaddempudi.gnanesh.syntaxcli.managers.xml.options.Ui;
 
-
 public class AuraBrowserActivity extends AppCompatActivity {
 
     public static final String EXTRA_URL       = "aura_url";
@@ -81,9 +82,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     private Dialog downloadPanelDialog = null;
 
-    // ── File chooser request codes ────────────────────────────────────
     private static final int REQ_FILE_CHOOSER          = 1001;
     private static final int REQ_CAMERA_CAPTURE        = 1002;
+    private static final int REQ_DEFAULT_BROWSER       = 4200;
 
     private volatile boolean pendingUserLoad = false;
 
@@ -109,27 +110,34 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private int blockedPopupsThisSession = 0;
     private ActionMode currentSelectionActionMode;
 
-    // ── URL bar typing-lock ───────────────────────────────────────────
-    private boolean urlBarUserEditing = false;
+    private static final int  STATE_DISPLAY  = 0;
+    private static final int  STATE_SELECTED = 1;
+    private static final int  STATE_EDIT     = 2;
+    private static final long DOUBLE_TAP_WINDOW_MS   = 900L;
+    private static final int  DOUBLE_TAP_MAX_DIST_PX = 80;
 
-    // ── URL bar tap cycle: select-all → cursor → cursor ───────────────
-    // First tap on the address bar selects everything (browser-style).
-    // Second tap clears the selection and places a blinking cursor so
-    // the user can edit precisely.
-    private boolean urlBarJustSelectedAll = false;
+    private int   urlBarState = STATE_DISPLAY;
+    private long  urlBarSelTapTime = -1L;
+    private float urlBarSelTapX, urlBarSelTapY;
+    private float urlBarDownX, urlBarDownY;
+    private long  urlBarDownTime;
+    private boolean urlBarLongPressFired = false;
 
-    // ── File chooser callback state ───────────────────────────────────
+    private BackgroundColorSpan urlBarHighlightSpan = null;
+    private android.graphics.drawable.Drawable urlBarOriginalBg = null;
+    private final Handler urlBarHandler = new Handler(Looper.getMainLooper());
+    private final Runnable urlBarLongPressRunnable = () -> {
+        urlBarLongPressFired = true;
+        etUrl.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+        enterSelected(-1L, 0f, 0f);
+    };
+
     private ValueCallback<Uri[]> filePathCallback;
     private Uri cameraOutputUri;
     private File cameraOutputFile;
     private static final String PREF_ASKED_DEFAULT_BROWSER =
             "aura_asked_default_browser_v1";
 
-    private static final int REQ_DEFAULT_BROWSER = 4200;
-    // ═══════════════════════════════════════════════════════════════════
-    // DarkReader — injected via addDocumentStartJavaScript so it runs
-    // BEFORE any page script, in every frame, on every page.
-    // ═══════════════════════════════════════════════════════════════════
     private static final String DARKREADER_ASSET = "darkreader.min.js";
     private static final String BRIDGE_NAME = "__AuraDarkReaderBridge";
     private static final String APPLIED_MARKER = "data-aura-dr-applied";
@@ -143,21 +151,17 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     "if(window.__AURA_DR_BOOTSTRAP_DONE__)return;" +
                     "try{Object.defineProperty(window,'__AURA_DR_BOOTSTRAP_DONE__',{" +
                     "value:true,configurable:false,writable:false});}catch(e){}" +
-
                     "var IS_IFRAME=false;" +
                     "try{IS_IFRAME=(window.top!==window.self);}catch(e){IS_IFRAME=true;}" +
                     "var MARKER=IS_IFRAME?'" + IFRAME_APPLIED_MARKER + "':'" + APPLIED_MARKER + "';" +
-
                     "function applied(){" +
                     "try{return document.documentElement&&document.documentElement.getAttribute(MARKER)==='1';}" +
                     "catch(e){return false;}" +
                     "}" +
-
                     "function source(){" +
                     "try{var b=window." + BRIDGE_NAME + ";return b?String(b.getSource()||''):'';}" +
                     "catch(e){return '';}" +
                     "}" +
-
                     "function trustedEval(code){" +
                     "try{" +
                     "if(window.trustedTypes&&trustedTypes.createPolicy){" +
@@ -171,7 +175,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     "}catch(e){}" +
                     "return (0,eval)(code);" +
                     "}" +
-
                     "function enable(){" +
                     "if(applied())return true;" +
                     "if(!document.documentElement)return false;" +
@@ -197,7 +200,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     "return true;" +
                     "}catch(e){return false;}" +
                     "}" +
-
                     "function disable(){" +
                     "try{" +
                     "if(window.DarkReader&&typeof window.DarkReader.disable==='function'){" +
@@ -207,11 +209,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     "if(h)h.removeAttribute(MARKER);" +
                     "}catch(e){}" +
                     "}" +
-
                     "window.__auraDarkReaderControl=function(mode){" +
                     "if(mode){enable();}else{disable();}" +
                     "};" +
-
                     "function ready(fn){" +
                     "if(document.documentElement&&(document.head||document.readyState!=='loading')){" +
                     "fn();return;" +
@@ -224,7 +224,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     "});" +
                     "setTimeout(once,0);" +
                     "}" +
-
                     "function retry(){" +
                     "var attempts=0;" +
                     "var timer=setInterval(function(){" +
@@ -235,16 +234,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     "enable();" +
                     "},500);" +
                     "}" +
-
                     "ready(function(){" +
                     "if(window.__auraDarkReaderDesired!==false)enable();" +
                     "retry();" +
                     "});" +
                     "})();";
 
-
     private final class DarkReaderBridge {
-
         @JavascriptInterface
         public String getSource() {
             String cached = darkReaderSource;
@@ -274,7 +270,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         }
     }
-
 
     private static class Tab {
         WebView webView;
@@ -338,24 +333,15 @@ public class AuraBrowserActivity extends AppCompatActivity {
         tabCountView     = findViewById(R.id.aura_tab_count);
         android.content.SharedPreferences prefs =
                 getSharedPreferences(PREFS_BROWSER, MODE_PRIVATE);
-        forceDark = prefs.getBoolean(PREF_DARK, true);   // default = true
+        forceDark = prefs.getBoolean(PREF_DARK, true);
         updateDarkIconTint();
 
-        etUrl.addTextChangedListener(new android.text.TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
-            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {
-                if (etUrl.hasFocus()) urlBarUserEditing = true;
-            }
-            @Override public void afterTextChanged(android.text.Editable s) {}
-        });
-
         etUrl.setOnEditorActionListener((v, actionId, event) -> {
-            if (actionId == EditorInfo.IME_ACTION_GO
+            boolean go = actionId == EditorInfo.IME_ACTION_GO
                     || actionId == EditorInfo.IME_ACTION_DONE
-                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
-                loadFromBar();
-                return true;
-            }
+                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                    && event.getAction() == KeyEvent.ACTION_DOWN);
+            if (go) { dismissUrlBarPopup(); loadFromBar(); return true; }
             return false;
         });
 
@@ -425,10 +411,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         cleanupOrphanedIncognitoProfiles();
 
-// ★ Make dark-mode persistent across process death:
-//   the shared-pref value is authoritative; the TabStore value is the
-//   belt-and-braces backup for the case where the local pref wasn't
-//   written before a crash.
         boolean storedDark = TabStore.loadDarkMode(this, forceDark);
         if (storedDark != forceDark) {
             forceDark = storedDark;
@@ -441,24 +423,17 @@ public class AuraBrowserActivity extends AppCompatActivity {
         boolean startIncognito = intent != null && intent.getBooleanExtra(EXTRA_INCOGNITO, false);
         String startUrl = resolveUrlFromIntent(intent);
 
-// ★ Two entry modes:
-//   A) Caller passed an explicit URL/incognito → single fresh tab, ignore history.
-//   B) Cold launch with no intent data → restore last session's tabs.
         boolean explicitOpen = (startUrl != null && !startUrl.trim().isEmpty()) || startIncognito;
 
         if (explicitOpen) {
-            // We're being asked to open a specific URL — clear the stored session
-            // so it doesn't fight with what the user is asking for now.
             TabStore.clear(this);
             newTab(startUrl, startIncognito);
         } else {
             TabStore.Snapshot snap = TabStore.load(this);
 
             if (snap.urls.isEmpty()) {
-                // First launch ever.
                 newTab(null, false);
             } else {
-                // ★ Restore every tab in order, then jump to the last-active one.
                 for (String u : snap.urls) {
                     newTab(u, false);
                 }
@@ -466,14 +441,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 if (idx != currentTabIndex) switchToTab(idx);
             }
         }
-        // After the initial tab is set up:
         new Handler(Looper.getMainLooper()).postDelayed(
                 this::maybeRequestDefaultBrowserRole, 800);
     }
 
-
     private void requestDefaultBrowserNow() {
-        // Always request — user explicitly asked.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 android.app.role.RoleManager rm =
@@ -495,6 +467,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     Toast.LENGTH_LONG).show();
         }
     }
+
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
@@ -504,73 +477,219 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (url == null) return;
 
         boolean incognito = intent.getBooleanExtra(EXTRA_INCOGNITO, false);
-
-        // If the browser is already open, open the new URL as a NEW TAB
-        // instead of reloading the current one — that matches every real
-        // browser's behaviour and keeps the user's existing tabs intact.
         newTab(url, incognito);
     }
 
     private android.widget.PopupWindow urlBarPopup = null;
 
     private void installUrlBarTextActions() {
-        etUrl.setLongClickable(true);
-        etUrl.setTextIsSelectable(true);
+        urlBarOriginalBg = etUrl.getBackground();
 
-        etUrl.setOnClickListener(v -> {
-            urlBarUserEditing = true;
-            if (!etUrl.hasFocus()) {
-                etUrl.requestFocus();
-            }
-            if (etUrl.getText() != null && etUrl.getText().length() > 0) {
-                etUrl.selectAll();
-            }
-            showUrlBarPopup();
-        });
+        topBar.setFocusableInTouchMode(true);
+        topBar.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
+
+        etUrl.setSelectAllOnFocus(false);
+
+        ActionMode.Callback blockSystemToolbar = new ActionMode.Callback() {
+            @Override public boolean onCreateActionMode(ActionMode m, android.view.Menu menu) { return false; }
+            @Override public boolean onPrepareActionMode(ActionMode m, android.view.Menu menu) { return false; }
+            @Override public boolean onActionItemClicked(ActionMode m, android.view.MenuItem i) { return false; }
+            @Override public void onDestroyActionMode(ActionMode m) {}
+        };
+        etUrl.setCustomSelectionActionModeCallback(blockSystemToolbar);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            etUrl.setCustomInsertionActionModeCallback(blockSystemToolbar);
+        }
 
         etUrl.setOnLongClickListener(v -> {
-            urlBarUserEditing = true;
-            if (!etUrl.hasFocus()) {
-                etUrl.requestFocus();
+            if (urlBarState == STATE_EDIT) {
+                etUrl.selectAll();
+                etUrl.postDelayed(this::showUrlBarPopup, 50);
             }
-            showUrlBarPopup();
             return true;
         });
 
-        etUrl.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                urlBarUserEditing = true;
-                if (!etUrl.hasFocus()) {
-                    etUrl.requestFocus();
-                    if (etUrl.getText() != null && etUrl.getText().length() > 0) {
-                        etUrl.selectAll();
-                    }
-                    showUrlBarPopup();
-                }
+        etUrl.setOnTouchListener((v, ev) -> {
+            if (urlBarState == STATE_EDIT) {
+                if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) dismissUrlBarPopup();
+                return false;
             }
-            return false;
+
+            int slop = android.view.ViewConfiguration.get(v.getContext()).getScaledTouchSlop();
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    urlBarDownX = ev.getX();
+                    urlBarDownY = ev.getY();
+                    urlBarDownTime = ev.getEventTime();
+                    urlBarLongPressFired = false;
+                    urlBarHandler.removeCallbacks(urlBarLongPressRunnable);
+                    urlBarHandler.postDelayed(urlBarLongPressRunnable,
+                            android.view.ViewConfiguration.getLongPressTimeout());
+                    return true;
+
+                case MotionEvent.ACTION_MOVE:
+                    if (Math.abs(ev.getX() - urlBarDownX) > slop
+                            || Math.abs(ev.getY() - urlBarDownY) > slop) {
+                        urlBarHandler.removeCallbacks(urlBarLongPressRunnable);
+                    }
+                    return true;
+
+                case MotionEvent.ACTION_CANCEL:
+                    urlBarHandler.removeCallbacks(urlBarLongPressRunnable);
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+                    urlBarHandler.removeCallbacks(urlBarLongPressRunnable);
+                    if (urlBarLongPressFired) { urlBarLongPressFired = false; return true; }
+                    if (Math.abs(ev.getX() - urlBarDownX) > slop
+                            || Math.abs(ev.getY() - urlBarDownY) > slop) return true;
+                    handleUrlBarTap(ev.getX(), ev.getY(), ev.getEventTime());
+                    return true;
+            }
+            return true;
         });
 
         etUrl.setOnFocusChangeListener((v, hasFocus) -> {
-            urlBarUserEditing = hasFocus;
-            if (!hasFocus) {
-                dismissUrlBarPopup();
+            if (!hasFocus && urlBarState == STATE_EDIT) {
+                exitToDisplay(true);
+                Tab t = currentTab();
+                if (t != null && t.url != null) etUrl.setText(t.url);
             }
         });
+
+        applyReadOnlyFlags();
+    }
+    private void handleUrlBarTap(float x, float y, long time) {
+        if (urlBarState == STATE_DISPLAY) {
+            enterEdit(x, y, true, false);
+            etUrl.selectAll();
+            etUrl.postDelayed(this::showUrlBarPopup, 250);
+        } else if (urlBarState == STATE_SELECTED) {
+            boolean anyTapOk = urlBarSelTapTime < 0;
+            boolean inWindow = (time - urlBarSelTapTime) <= DOUBLE_TAP_WINDOW_MS;
+            boolean inRange  = Math.abs(x - urlBarSelTapX) <= DOUBLE_TAP_MAX_DIST_PX
+                    && Math.abs(y - urlBarSelTapY) <= DOUBLE_TAP_MAX_DIST_PX;
+            if (anyTapOk || (inWindow && inRange)) enterEdit(x, y, true, false);
+            else exitToDisplay(true);
+        }
+    }
+
+    private void applyReadOnlyFlags() {
+        etUrl.setInputType(InputType.TYPE_NULL);
+        etUrl.setTextIsSelectable(false);
+        etUrl.setShowSoftInputOnFocus(false);
+        etUrl.setCursorVisible(false);
+        etUrl.setLongClickable(false);
+    }
+
+    private void enterSelected(long tapTime, float x, float y) {
+        dismissUrlBarPopup();
+        applyReadOnlyFlags();
+        releaseUrlFocus();
+
+        urlBarSelTapTime = tapTime;
+        urlBarSelTapX = x;
+        urlBarSelTapY = y;
+
+        android.text.Editable text = etUrl.getText();
+        removeUrlHighlight();
+        if (text != null && text.length() > 0) {
+            urlBarHighlightSpan = new BackgroundColorSpan(0x663399FF);
+            text.setSpan(urlBarHighlightSpan, 0, text.length(),
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        android.graphics.drawable.GradientDrawable tint =
+                new android.graphics.drawable.GradientDrawable();
+        tint.setColor(0x333399FF);
+        tint.setCornerRadius(dp(6));
+        etUrl.setBackground(tint);
+
+        urlBarState = STATE_SELECTED;
+        hideKeyboard();
+        showUrlBarPopup();
+    }
+
+    private void enterEdit(float x, float y, boolean useTapXY, boolean clearText) {
+        int offset = useTapXY ? offsetForTap(x, y) : 0;
+
+        dismissUrlBarPopup();
+        removeUrlHighlight();
+        etUrl.setBackground(urlBarOriginalBg);
+
+        urlBarState = STATE_EDIT;
+
+        etUrl.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        etUrl.setShowSoftInputOnFocus(true);
+        etUrl.setTextIsSelectable(true);
+        etUrl.setLongClickable(true);
+        etUrl.setCursorVisible(true);
+        etUrl.setFocusable(true);
+        etUrl.setFocusableInTouchMode(true);
+
+        if (clearText) { etUrl.setText(""); offset = 0; }
+
+        etUrl.requestFocus();
+        int len = etUrl.getText() == null ? 0 : etUrl.getText().length();
+        etUrl.setSelection(Math.max(0, Math.min(offset, len)));
+
+        etUrl.post(() -> {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                imm.restartInput(etUrl);
+                imm.showSoftInput(etUrl, InputMethodManager.SHOW_IMPLICIT);
+            }
+        });
+    }
+
+    private void exitToDisplay(boolean hideIme) {
+        urlBarState = STATE_DISPLAY;
+        dismissUrlBarPopup();
+        removeUrlHighlight();
+        etUrl.setBackground(urlBarOriginalBg);
+        applyReadOnlyFlags();
+        releaseUrlFocus();
+        if (hideIme) hideKeyboard();
+    }
+
+    private void removeUrlHighlight() {
+        android.text.Editable text = etUrl.getText();
+        if (text != null && urlBarHighlightSpan != null) text.removeSpan(urlBarHighlightSpan);
+        urlBarHighlightSpan = null;
+    }
+
+    private void releaseUrlFocus() {
+        etUrl.clearFocus();
+        topBar.requestFocus();
+    }
+
+    private void hideKeyboard() {
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) imm.hideSoftInputFromWindow(etUrl.getWindowToken(), 0);
+    }
+
+    private int offsetForTap(float x, float y) {
+        android.text.Layout l = etUrl.getLayout();
+        if (l == null) return etUrl.getText() == null ? 0 : etUrl.getText().length();
+        float lx = x - etUrl.getTotalPaddingLeft() + etUrl.getScrollX();
+        float ly = y - etUrl.getTotalPaddingTop()  + etUrl.getScrollY();
+        int line = l.getLineForVertical((int) ly);
+        return l.getOffsetForHorizontal(line, lx);
+    }
+
+    private boolean isPopupShowing() {
+        return urlBarPopup != null && urlBarPopup.isShowing();
     }
 
     private void showUrlBarPopup() {
         dismissUrlBarPopup();
         try {
-            int s = Math.max(0, etUrl.getSelectionStart());
-            int e = Math.max(0, etUrl.getSelectionEnd());
-            boolean hasSelection = e > s;
-            boolean hasText = etUrl.getText() != null && etUrl.getText().length() > 0;
-
-            if (!hasSelection && hasText) {
-                etUrl.selectAll();
-                hasSelection = true;
-            }
+            boolean selectedState = urlBarState == STATE_SELECTED || urlBarState == STATE_EDIT;
+            int len = etUrl.getText() == null ? 0 : etUrl.getText().length();
+            int a = Math.max(0, etUrl.getSelectionStart());
+            int b = Math.max(0, etUrl.getSelectionEnd());
+            int s = Math.min(a, b), e = Math.max(a, b);
+            boolean hasManualSel = e > s;
+            boolean hasText = len > 0;
 
             boolean hasClip = false;
             try {
@@ -581,9 +700,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
-            int padH = dp(4), padV = dp(2);
-            row.setPadding(padH, padV, padH, padV);
-
+            row.setPadding(dp(4), dp(2), dp(4), dp(2));
             android.graphics.drawable.GradientDrawable bg =
                     new android.graphics.drawable.GradientDrawable();
             bg.setColor(0xFF1E1E1E);
@@ -591,34 +708,52 @@ public class AuraBrowserActivity extends AppCompatActivity {
             bg.setStroke(dp(1), 0xFF333333);
             row.setBackground(bg);
 
-            if (hasSelection) addPopupItem(row, "Cut", 0xFFFFFFFF, 1, false);
-            if (hasSelection) addPopupItem(row, "Copy", 0xFFFFFFFF, 2, false);
-            addPopupItem(row, "Paste", hasClip ? 0xFFFFFFFF : 0xFF666666, 3, false);
-            if (hasText) addPopupItem(row, "Select all", 0xFF33FF33, 4, true);
-            addPopupItem(row, "Set as default", 0xFF66BBFF, 5, true);
-
-            android.widget.PopupWindow popup = new android.widget.PopupWindow(
-                    row,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    false);
-            popup.setOutsideTouchable(true);
-            popup.setFocusable(false);
-            popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                popup.setElevation(dp(6));
+            if (selectedState) {
+                addPopupItem(row, "Cut",   0xFFFFFFFF, 1, false);
+                addPopupItem(row, "Copy",  0xFFFFFFFF, 2, false);
+                addPopupItem(row, "Paste", hasClip ? 0xFFFFFFFF : 0xFF666666, 3, false);
+                addPopupItem(row, "Select all", 0xFF33FF33, 4, true);
+            } else {
+                if (hasManualSel) {
+                    addPopupItem(row, "Cut",  0xFFFFFFFF, 1, false);
+                    addPopupItem(row, "Copy", 0xFFFFFFFF, 2, false);
+                }
+                addPopupItem(row, "Paste", hasClip ? 0xFFFFFFFF : 0xFF666666, 3, false);
+                if (hasManualSel && (e - s) < len) {
+                    addPopupItem(row, "Select all", 0xFF33FF33, 4, true);
+                } else {
+                    addPopupItem(row, "Select all", 0xFF33FF33, 4, true);
+                }
             }
 
-            // Inside showUrlBarPopup()
+            final android.widget.PopupWindow popup = new android.widget.PopupWindow(
+                    row, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, false);
+            popup.setFocusable(false);
+            popup.setOutsideTouchable(true);
+            popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) popup.setElevation(dp(6));
+
+            popup.setTouchInterceptor((v, ev) -> {
+                if (ev.getAction() == MotionEvent.ACTION_OUTSIDE) {
+                    int[] loc = new int[2];
+                    etUrl.getLocationOnScreen(loc);
+                    float rx = ev.getRawX(), ry = ev.getRawY();
+                    return rx >= loc[0] && rx <= loc[0] + etUrl.getWidth()
+                            && ry >= loc[1] && ry <= loc[1] + etUrl.getHeight();
+                }
+                return false;
+            });
+
+            popup.setOnDismissListener(() -> {
+                if (urlBarPopup == popup) {
+                    urlBarPopup = null;
+                    if (urlBarState == STATE_SELECTED) exitToDisplay(false);
+                }
+            });
+
             row.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
-            int popupWidth = row.getMeasuredWidth();
-            int barWidth = etUrl.getWidth();
-            int xOffset = Math.max(0, (barWidth - popupWidth) / 2);
-
-// Change yOffset to place it below the address bar instead of above
-            int yOffset = dp(4);
-
-            popup.showAsDropDown(etUrl, xOffset, yOffset);
+            int xOffset = Math.max(0, (etUrl.getWidth() - row.getMeasuredWidth()) / 2);
+            popup.showAsDropDown(etUrl, xOffset, dp(4));
             urlBarPopup = popup;
         } catch (Exception ex) {
             Log.w("AuraBrowser", "showUrlBarPopup failed", ex);
@@ -627,7 +762,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     private void addPopupItem(LinearLayout row, String label, int color,
                               int actionId, boolean isLast) {
-        // Insert a divider BEFORE every item except the first.
         if (row.getChildCount() > 0) {
             View sep = new View(this);
             LinearLayout.LayoutParams sepLp = new LinearLayout.LayoutParams(
@@ -659,12 +793,72 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     private void dismissUrlBarPopup() {
-        try {
-            if (urlBarPopup != null && urlBarPopup.isShowing()) {
-                urlBarPopup.dismiss();
-            }
-        } catch (Exception ignored) {}
+        android.widget.PopupWindow p = urlBarPopup;
         urlBarPopup = null;
+        try { if (p != null && p.isShowing()) p.dismiss(); } catch (Exception ignored) {}
+    }
+
+    private void handleUrlBarTextAction(int actionId) {
+        try {
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            boolean selectedState = urlBarState == STATE_SELECTED;
+            android.text.Editable text = etUrl.getText();
+            int a = Math.max(0, etUrl.getSelectionStart());
+            int b = Math.max(0, etUrl.getSelectionEnd());
+            int s = Math.min(a, b), e = Math.max(a, b);
+
+            switch (actionId) {
+                case 1: {
+                    if (text != null && text.length() > 0) {
+                        if (e > s) {
+                            // Cut selected portion
+                            if (cm != null) cm.setPrimaryClip(
+                                    android.content.ClipData.newPlainText("URL", text.subSequence(s, e)));
+                            text.delete(s, e);
+                        } else {
+                            // No selection — treat as cut-all
+                            if (cm != null) cm.setPrimaryClip(
+                                    android.content.ClipData.newPlainText("URL", text.toString()));
+                            text.clear();
+                        }
+                    }
+                    break;
+                }
+                case 2: {
+                    if (text != null && text.length() > 0) {
+                        CharSequence src = e > s ? text.subSequence(s, e) : text.toString();
+                        if (cm != null)
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("URL", src));
+                    }
+                    break;
+                }
+                case 3: {
+                    if (cm != null && cm.hasPrimaryClip()) {
+                        CharSequence clip = cm.getPrimaryClip().getItemAt(0).coerceToText(this);
+                        if (clip != null && text != null) {
+                            // Replace selection (or insert at cursor if no selection)
+                            text.replace(s, e, clip);
+                            // Move cursor to end of pasted text
+                            etUrl.setSelection(s + clip.length());
+                        }
+                    }
+                    break;
+                }
+                case 4: {
+                    etUrl.selectAll();
+                    if (selectedState) showUrlBarPopup();
+                    break;
+                }
+                case 5: {
+                    exitToDisplay(true);
+                    requestDefaultBrowserNow();
+                    break;
+                }
+            }
+        } catch (Exception ex) {
+            Log.w("AuraBrowser", "URL bar action failed", ex);
+        }
     }
 
     private void maybeRequestDefaultBrowserRole() {
@@ -691,8 +885,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         }
 
-        // Fallback (older Android, or RoleManager unavailable): open the
-        // "Default apps" settings screen so the user can pick manually.
         try {
             Intent settings = new Intent(
                     android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS);
@@ -700,116 +892,15 @@ public class AuraBrowserActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
     }
 
-    private void showUrlBarTextMenu() {
-        int selStart = Math.max(0, etUrl.getSelectionStart());
-        int selEnd   = Math.max(0, etUrl.getSelectionEnd());
-        boolean hasSelection = selEnd > selStart;
-        boolean hasText      = etUrl.getText() != null && etUrl.getText().length() > 0;
-        boolean hasClip      = false;
-        try {
-            android.content.ClipboardManager cm =
-                    (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            hasClip = cm != null && cm.hasPrimaryClip();
-        } catch (Exception ignored) {}
-
-        final java.util.List<CharSequence> labels  = new java.util.ArrayList<>();
-        final java.util.List<Integer>      actions = new java.util.ArrayList<>();
-
-        if (hasSelection) { labels.add("Cut");          actions.add(1); }
-        if (hasSelection) { labels.add("Copy");         actions.add(2); }
-        if (hasClip)      { labels.add("Paste");        actions.add(3); }
-        if (hasText)      { labels.add("Select all");   actions.add(4); }
-
-        if (labels.isEmpty()) {
-            labels.add("Select all");
-            actions.add(4);
-        }
-
-        new AlertDialog.Builder(this)
-                .setTitle("Address bar")
-                .setItems(labels.toArray(new CharSequence[0]), (d, which) ->
-                        handleUrlBarTextAction(actions.get(which)))
-                .show();
-    }
-
-    private void handleUrlBarTextAction(int actionId) {
-        try {
-            android.content.ClipboardManager cm =
-                    (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-
-            switch (actionId) {
-                case 1: {   // Cut
-                    int s = Math.max(0, etUrl.getSelectionStart());
-                    int e = Math.max(0, etUrl.getSelectionEnd());
-                    if (e > s) {
-                        CharSequence sel = etUrl.getText().subSequence(s, e);
-                        if (cm != null) {
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("URL", sel));
-                        }
-                        etUrl.getText().delete(s, e);
-                    }
-                    break;
-                }
-                case 2: {   // Copy
-                    int s = Math.max(0, etUrl.getSelectionStart());
-                    int e = Math.max(0, etUrl.getSelectionEnd());
-                    if (e > s) {
-                        CharSequence sel = etUrl.getText().subSequence(s, e);
-                        if (cm != null) {
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("URL", sel));
-                        }
-                    }
-                    break;
-                }
-                case 3: {   // Paste
-                    if (cm != null && cm.hasPrimaryClip()) {
-                        CharSequence clip = cm.getPrimaryClip()
-                                .getItemAt(0).coerceToText(this);
-                        if (clip != null) {
-                            int s = Math.max(0, etUrl.getSelectionStart());
-                            int e = Math.max(0, etUrl.getSelectionEnd());
-                            etUrl.getText().replace(s, e, clip);
-
-                            // Automatically trigger URL loading after paste
-                            loadFromBar();
-                        }
-                    }
-                    break;
-                }
-                case 4: {   // Select all
-                    etUrl.selectAll();
-                    break;
-                }
-
-                case 5: {   // "Make default browser"
-                    requestDefaultBrowserNow();
-                    break;
-                }
-            }
-        } catch (Exception e) {
-            Log.w("AuraBrowser", "URL bar action failed", e);
-        }
-    }
-
-    /**
-     * Resolves the URL that this activity was launched to display.
-     * Handles:
-     *   • EXTRA_URL (explicit — from our own launcher commands)
-     *   • ACTION_VIEW with getData() (any external app: WhatsApp, Gmail, ...)
-     *   • ACTION_WEB_SEARCH with SearchManager.QUERY (global search / "google X")
-     *   • ACTION_SEND with a text/plain body that contains a URL
-     */
     private String resolveUrlFromIntent(Intent intent) {
         if (intent == null) return null;
 
-        // 1. Explicit extra (highest priority — our own callers)
         String extra = intent.getStringExtra(EXTRA_URL);
         if (extra != null && !extra.trim().isEmpty()) return extra.trim();
 
         String action = intent.getAction();
         if (action == null) return null;
 
-        // 2. Standard external app launch: whatsapp://... -> ACTION_VIEW
         if (Intent.ACTION_VIEW.equals(action)) {
             Uri data = intent.getData();
             if (data != null) {
@@ -818,7 +909,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         }
 
-        // 3. Global search / "search the web for X"
         if (Intent.ACTION_WEB_SEARCH.equals(action)
                 || "com.google.android.gms.actions.SEARCH_ACTION".equals(action)
                 || Intent.ACTION_SEARCH.equals(action)) {
@@ -826,21 +916,16 @@ public class AuraBrowserActivity extends AppCompatActivity {
             if (q == null) q = intent.getStringExtra("query");
             if (q == null) q = intent.getStringExtra(Intent.EXTRA_TEXT);
             if (q != null && !q.trim().isEmpty()) {
-                return "https://www.google.com/search?q="
-                        + Uri.encode(q.trim());
+                return "https://www.google.com/search?q=" + Uri.encode(q.trim());
             }
         }
 
-        // 4. Share sheet: "Share link to browser"
         if (Intent.ACTION_SEND.equals(action)) {
             String shared = intent.getStringExtra(Intent.EXTRA_TEXT);
             if (shared != null) {
-                // Extract the first http(s):// URL from the shared text.
                 java.util.regex.Matcher m = java.util.regex.Pattern
-                        .compile("https?://\\S+")
-                        .matcher(shared);
+                        .compile("https?://\\S+").matcher(shared);
                 if (m.find()) return m.group();
-                // No URL found → search the whole text.
                 return "https://www.google.com/search?q=" + Uri.encode(shared);
             }
         }
@@ -873,16 +958,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     private void setUrlBarText(String url) {
-        if (urlBarUserEditing || etUrl.hasFocus()) return;
+        if (urlBarState != STATE_DISPLAY) return;
         etUrl.setText(url != null ? url : DEFAULT_HOME);
     }
-
 
     private void toggleForceDark() {
         forceDark = !forceDark;
 
-        // ★ Sync save to BOTH stores so a crash or process-kill cannot
-        //   revert the choice. commit() is synchronous and durable.
         getSharedPreferences(PREFS_BROWSER, MODE_PRIVATE)
                 .edit().putBoolean(PREF_DARK, forceDark).commit();
         TabStore.saveDarkMode(this, forceDark);
@@ -890,6 +972,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         updateDarkIconTint();
         applyDarkReaderToAllTabs();
     }
+
     private void applyDarkReaderToAllTabs() {
         for (Tab t : tabs) {
             if (t.webView == null) continue;
@@ -900,9 +983,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                             "window.__auraDarkReaderControl(" + (forceDark ? "true" : "false") + ");" +
                             "}" +
                             "}catch(e){}})();";
-            try {
-                t.webView.evaluateJavascript(js, null);
-            } catch (Throwable ignored) {}
+            try { t.webView.evaluateJavascript(js, null); } catch (Throwable ignored) {}
         }
     }
 
@@ -910,15 +991,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         int tint = forceDark ? 0xFFFFAA00 : 0xFF33FF33;
         btnDarkMode.setColorFilter(tint);
         btnDarkMode.setImageResource(forceDark
-                ? R.drawable.aura_ic_sun    // showing sun means "tap to go light"
-                : R.drawable.aura_ic_moon); // showing moon means "tap to go dark"
+                ? R.drawable.aura_ic_sun
+                : R.drawable.aura_ic_moon);
     }
-
-
-
-    // ═══════════════════════════════════════════════════════════════════
-    // FILE / MEDIA / CAMERA PICKER
-    // ═══════════════════════════════════════════════════════════════════
 
     private boolean handleFileChooser(ValueCallback<Uri[]> callback,
                                       WebChromeClient.FileChooserParams params) {
@@ -993,9 +1068,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     hasAccept = true;
                 }
             }
-            if (sb.length() > 0) {
-                mimeFilter = sb.substring(0, sb.length() - 1);
-            }
+            if (sb.length() > 0) mimeFilter = sb.substring(0, sb.length() - 1);
         }
 
         if (hasAccept) intent.setType(mimeFilter);
@@ -1027,9 +1100,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             cameraOutputFile = new File(dir, "aura_" + ts + ".jpg");
 
             cameraOutputUri = FileProvider.getUriForFile(
-                    this,
-                    getPackageName() + ".fileprovider",
-                    cameraOutputFile);
+                    this, getPackageName() + ".fileprovider", cameraOutputFile);
 
             Intent capture = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
             capture.putExtra(MediaStore.EXTRA_OUTPUT, cameraOutputUri);
@@ -1081,10 +1152,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         super.onActivityResult(requestCode, resultCode, data);
     }
-
-    // ═════════════════════════════════════════════════════════════
-    //  TABS
-    // ═════════════════════════════════════════════════════════════
 
     private void showTabSheet() {
         if (tabs.isEmpty()) return;
@@ -1242,32 +1309,21 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 FrameLayout.LayoutParams.MATCH_PARENT));
         wv.setBackgroundColor(0xFF000000);
 
-        // ★ Install the DarkReader bridge BEFORE any navigation.
         try {
             wv.addJavascriptInterface(new DarkReaderBridge(), BRIDGE_NAME);
         } catch (Throwable t) {
             Log.e("AURA-DARK", "Bridge install failed", t);
         }
 
-        // ★ Register the bootstrap as a document-start script. WebView will
-        //   execute it in EVERY frame (top + iframes) BEFORE the page's own
-        //   scripts, BEFORE CSP is applied, BEFORE Trusted Types is enforced.
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             try {
                 WebViewCompat.addDocumentStartJavaScript(
-                        wv,
-                        DARKREADER_BOOTSTRAP,
-                        Collections.singleton("*")
-                );
+                        wv, DARKREADER_BOOTSTRAP, Collections.singleton("*"));
             } catch (Throwable t) {
                 Log.w("AURA-DARK", "addDocumentStartJavaScript failed", t);
             }
-        } else {
-            Log.w("AURA-DARK", "DOCUMENT_START_SCRIPT unsupported; dark mode may be partial");
         }
 
-        // ★ Blob download bridge — must be added BEFORE the page loads so
-//   window.__AuraBlobBridge exists by the time the page builds a blob URL.
         try {
             wv.addJavascriptInterface(new AuraBlobBridge(this), "__AuraBlobBridge");
         } catch (Throwable t) {
@@ -1344,11 +1400,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private void switchToTab(int index) {
         if (index < 0 || index >= tabs.size()) return;
 
+        if (urlBarState != STATE_DISPLAY) exitToDisplay(true);
+
         Tab old = currentTab();
         if (old != null) {
             old.webView.setVisibility(View.GONE);
-            // ★ Fix bug #5 — kill any audio/video playing in the tab we're
-            //   leaving, plus pause the WebView itself.
             try {
                 old.webView.evaluateJavascript(
                         "(function(){try{" +
@@ -1363,7 +1419,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         Tab t = tabs.get(index);
         t.webView.setVisibility(View.VISIBLE);
         t.webView.requestFocus();
-        // ★ Resume the WebView we just switched to.
         try { t.webView.onResume(); } catch (Throwable ignored) {}
         setUrlBarText(t.url != null ? t.url : DEFAULT_HOME);
 
@@ -1373,7 +1428,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         progressBar.setVisibility(View.GONE);
         btnRefresh.setImageResource(android.R.drawable.ic_popup_sync);
 
-        persistTabs();   // ★ ADD THIS LINE
+        persistTabs();
     }
 
     private void closeTab(int index) {
@@ -1408,7 +1463,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
     private void startNativeDownload(String url, String userAgent,
                                      String contentDisposition, String mimeType) {
 
-        // ★ Blob URL — handled entirely inside the WebView.
         if (url != null && url.startsWith("blob:")) {
             startBlobDownload(url, contentDisposition, mimeType);
             return;
@@ -1428,14 +1482,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 startService(svc);
             }
 
-            // ★ Auto-open the download panel so the user sees live progress
-            //   without having to tap the download icon. If it's already
-            //   open, do nothing (avoid stacking dialogs).
             runOnUiThread(() -> {
-                if (downloadPanelDialog != null && downloadPanelDialog.isShowing()) {
-                    return;
-                }
-
+                if (downloadPanelDialog != null && downloadPanelDialog.isShowing()) return;
             });
 
         } catch (Exception e) {
@@ -1468,14 +1516,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 if (ext != null) suggestedName += "." + ext;
             }
         }
-        // Sanitize
         suggestedName = suggestedName.replaceAll("[\\\\/:*?\"<>|]", "_");
 
         final String fileName = suggestedName;
         final String gid = AuraBlobBridge.newGid();
 
-        // ★ Do the fetch in JS, push chunks through the bridge.
-        //   No HttpURLConnection, no 404, no "unknown protocol".
         String js =
                 "(function(){" +
                         "var gid=" + jsStringLiteral(gid) + ";" +
@@ -1523,7 +1568,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         wv.evaluateJavascript(js, null);
 
-        // Auto-open the panel — same as the normal download path.
         runOnUiThread(() -> {
             if (downloadPanelDialog != null && downloadPanelDialog.isShowing()) return;
             new Handler(Looper.getMainLooper()).postDelayed(
@@ -1542,16 +1586,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
         if (host == null) return null;
         host = host.toLowerCase(Locale.US);
         if (host.startsWith("www.")) host = host.substring(4);
-        // Very small public-suffix heuristic: keep the last two labels
-        // (works for .com, .org, .net, .in, .co.uk because we also
-        // peek at the third-to-last label).
         String[] parts = host.split("\\.");
         if (parts.length < 2) return host;
 
-        // Handle common two-part suffixes
         String last = parts[parts.length - 1];
         String secondLast = parts[parts.length - 2];
-        String[] ccTwoPart = { "co", "com", "org", "net", "gov", "ac", "edu" };
         if ((last.length() == 2)
                 && (secondLast.equals("co") || secondLast.equals("com")
                 || secondLast.equals("org") || secondLast.equals("net")
@@ -1562,6 +1601,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
         return secondLast + "." + last;
     }
+
     private void showDownloadPanel() {
         if (downloadPanelDialog != null && downloadPanelDialog.isShowing()) return;
 
@@ -1575,7 +1615,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         root.setBackgroundColor(0xFF0A0A0A);
         root.setPadding(dp(12), dp(12), dp(12), dp(12));
 
-        // ── Header ─────────────────────────────────────────────────
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
@@ -1595,13 +1634,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
         clearBtn.setTextSize(12);
         clearBtn.setPadding(dp(10), dp(6), dp(10), dp(6));
         clearBtn.setBackgroundColor(0xFF1A1A1A);
-        clearBtn.setOnClickListener(v -> {
-            AuraDownloadHistory.get(this).clearStopped();
-        });
+        clearBtn.setOnClickListener(v -> AuraDownloadHistory.get(this).clearStopped());
         header.addView(clearBtn);
         root.addView(header);
 
-        // Thin divider
         View div = new View(this);
         div.setBackgroundColor(0xFF1F1F1F);
         LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(
@@ -1610,7 +1646,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         div.setLayoutParams(divLp);
         root.addView(div);
 
-        // ── Scrollable list ───────────────────────────────────────
         ScrollView scroll = new ScrollView(this);
         scroll.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(420)));
@@ -1667,15 +1702,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
             if (downloadPanelDialog == d) downloadPanelDialog = null;
         });
         dialog.show();
-
     }
 
     private static final String EMPTY_TAG = "__aura_empty__";
 
     private void renderDownloadList(LinearLayout list, Dialog dialog, JSONArray arr) {
-        // ── Empty state ─────────────────────────────────────────────
         if (arr.length() == 0) {
-            // Only rebuild if we don't already show the empty state.
             if (list.getChildCount() == 1
                     && EMPTY_TAG.equals(list.getChildAt(0).getTag())) {
                 return;
@@ -1683,7 +1715,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
             list.removeAllViews();
 
             LinearLayout empty = new LinearLayout(this);
-            empty.setTag(EMPTY_TAG);                    // ← tagged so we can identify it
+            empty.setTag(EMPTY_TAG);
             empty.setOrientation(LinearLayout.VERTICAL);
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(0, dp(40), 0, dp(40));
@@ -1715,13 +1747,11 @@ public class AuraBrowserActivity extends AppCompatActivity {
             return;
         }
 
-        // ── Non-empty: drop the empty state if present ─────────────
         if (list.getChildCount() == 1
                 && EMPTY_TAG.equals(list.getChildAt(0).getTag())) {
             list.removeAllViews();
         }
 
-        // Gids that SHOULD be present after this render
         java.util.Set<String> incoming = new java.util.HashSet<>();
         for (int i = 0; i < arr.length(); i++) {
             try {
@@ -1729,7 +1759,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
         }
 
-        // Remove rows whose gid is gone
         for (int i = list.getChildCount() - 1; i >= 0; i--) {
             View v = list.getChildAt(i);
             Object tag = v.getTag();
@@ -1738,7 +1767,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             }
         }
 
-        // Insert / update rows
         for (int i = 0; i < arr.length(); i++) {
             try {
                 JSONObject job = arr.getJSONObject(i);
@@ -1774,7 +1802,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         card.setLayoutParams(lp);
         card.setBackgroundColor(0xFF131313);
 
-        // Filename row
         LinearLayout nameRow = new LinearLayout(this);
         nameRow.setOrientation(LinearLayout.HORIZONTAL);
         nameRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -1798,7 +1825,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         card.addView(nameRow);
 
-        // Stats row (progress text: "45% • 2.3 MB/s • 1.8 / 4 GB")
         TextView tvStats = new TextView(this);
         tvStats.setId(View.generateViewId());
         tvStats.setTextSize(12);
@@ -1806,14 +1832,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
         tvStats.setPadding(0, dp(6), 0, dp(6));
         card.addView(tvStats);
 
-        // Timers row (Elapsed / ETA)
         TextView tvTimers = new TextView(this);
         tvTimers.setId(View.generateViewId());
         tvTimers.setTextSize(11);
         tvTimers.setTextColor(0xFF666666);
         tvTimers.setPadding(0, 0, 0, dp(6));
         card.addView(tvTimers);
-        // Progress bar
+
         ProgressBar bar = new ProgressBar(this, null,
                 android.R.attr.progressBarStyleHorizontal);
         bar.setId(View.generateViewId());
@@ -1823,7 +1848,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         bar.setProgressDrawable(makeProgressDrawable());
         card.addView(bar);
 
-        // Error line (hidden by default)
         TextView tvErr = new TextView(this);
         tvErr.setId(View.generateViewId());
         tvErr.setTextSize(11);
@@ -1832,7 +1856,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         tvErr.setVisibility(View.GONE);
         card.addView(tvErr);
 
-        // Actions
         LinearLayout actions = new LinearLayout(this);
         actions.setId(View.generateViewId());
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -1844,9 +1867,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
     }
 
     private android.graphics.drawable.Drawable makeProgressDrawable() {
-        // Build a LayerDrawable entirely from scratch so we never touch
-        // Resources.getDrawable(int), which throws on themes that don't
-        // define progressBarStyleHorizontal.
         android.graphics.drawable.GradientDrawable bg =
                 new android.graphics.drawable.GradientDrawable();
         bg.setColor(0xFF222222);
@@ -1866,7 +1886,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 new android.graphics.drawable.LayerDrawable(
                         new android.graphics.drawable.Drawable[]{ bg, progress });
 
-        // The progress layer is index 1, background index 0.
         ld.setId(0, android.R.id.background);
         ld.setId(1, android.R.id.progress);
 
@@ -1891,7 +1910,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         catch (Exception ignored) {}
         if (!"active".equals(status)) speed = 0;
 
-        // ★ Child indices must match createDownloadCard exactly
         LinearLayout nameRow      = (LinearLayout) layout.getChildAt(0);
         TextView tvName           = (TextView) nameRow.getChildAt(0);
         TextView tvStatusChip     = (TextView) nameRow.getChildAt(1);
@@ -1903,7 +1921,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         tvName.setText(name);
 
-        // ── Status chip ──────────────────────────────────────────
         String chipText;
         int chipBg, chipFg;
         switch (status) {
@@ -1922,7 +1939,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         tvStatusChip.setTextColor(chipFg);
         tvStatusChip.setBackgroundColor(chipBg);
 
-        // ── Stats ────────────────────────────────────────────────
         String stats;
         if ("active".equals(status)) {
             stats = pct + "%  •  " + humanSpeed(speed)
@@ -1936,7 +1952,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
         tvStats.setText(stats);
 
-        // ── Timers ───────────────────────────────────────────────
         String timers;
         switch (status) {
             case "active":
@@ -1959,11 +1974,9 @@ public class AuraBrowserActivity extends AppCompatActivity {
         tvTimers.setText(timers);
         tvTimers.setVisibility(timers.isEmpty() ? View.GONE : View.VISIBLE);
 
-        // ── Progress bar ─────────────────────────────────────────
         bar.setProgress(pct);
         bar.setVisibility("complete".equals(status) ? View.GONE : View.VISIBLE);
 
-        // ── Error line ───────────────────────────────────────────
         if ("error".equals(status)) {
             String errMsg = job.optString("errorMessage", "");
             tvErr.setText("⚠ " + (errMsg.isEmpty() ? "Download stopped" : errMsg));
@@ -1972,9 +1985,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             tvErr.setVisibility(View.GONE);
         }
 
-        // ── Action buttons ───────────────────────────────────────
-        // ★ Always rebuild. This guarantees Pause / Resume / Cancel /
-        //   Open appear on every card, every render.
         actions.removeAllViews();
 
         final String g = gid;
@@ -1997,7 +2007,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             actions.addView(makeActionButton("✕  Remove", 0xFFFF6666, () ->
                     AuraDownloadHistory.get(this).remove(g)));
         } else {
-            // Unknown / waiting — show Cancel as a safe default.
             actions.addView(makeActionButton("✕  Cancel", 0xFFFF6666, () ->
                     AuraDownloadHistory.get(this).remove(g)));
         }
@@ -2022,6 +2031,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         long h = m / 60;
         return h + "h " + (m % 60) + "m";
     }
+
     private TextView makeActionButton(String label, int color, Runnable onClick) {
         TextView tv = new TextView(this);
         tv.setText(label);
@@ -2035,7 +2045,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
         tv.setLayoutParams(lp);
         tv.setOnClickListener(v -> {
             onClick.run();
-            // Immediate visual feedback
             tv.setAlpha(0.5f);
             tv.postDelayed(() -> tv.setAlpha(1f), 150);
         });
@@ -2060,231 +2069,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             return String.format(Locale.US, "%.1f MB", b / (1024.0 * 1024.0));
         return String.format(Locale.US, "%.2f GB",
                 b / (1024.0 * 1024.0 * 1024.0));
-    }
-
-    private View createDownloadRow(JSONObject job, Dialog dialog) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(8), dp(8), dp(8), dp(8));
-        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rp.setMargins(0, dp(3), 0, dp(3));
-        row.setLayoutParams(rp);
-        row.setBackgroundColor(0xFF111111);
-
-        TextView tvName = new TextView(this);
-        tvName.setId(View.generateViewId());
-        tvName.setTextColor(0xFFEEEEEE);
-        tvName.setTextSize(12);
-        tvName.setMaxLines(1);
-        tvName.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        row.addView(tvName);
-
-        TextView tvInfo = new TextView(this);
-        tvInfo.setId(View.generateViewId());
-        tvInfo.setTextColor(0xFF999999);
-        tvInfo.setTextSize(11);
-        row.addView(tvInfo);
-
-        TextView tvErr = new TextView(this);
-        tvErr.setId(View.generateViewId());
-        tvErr.setTextColor(0xFFFF6666);
-        tvErr.setTextSize(10);
-        tvErr.setPadding(0, dp(3), 0, 0);
-        tvErr.setVisibility(View.GONE);
-        row.addView(tvErr);
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setPadding(0, dp(6), 0, 0);
-        actions.setId(View.generateViewId());
-        row.addView(actions);
-
-        updateDownloadRow(row, job);
-        return row;
-    }
-
-    private void updateDownloadRow(View row, JSONObject job) {
-        if (!(row instanceof LinearLayout)) return;
-        LinearLayout layout = (LinearLayout) row;
-        if (layout.getChildCount() < 4) return;
-
-        String gid = job.optString("gid", "");
-        String status = job.optString("status", "unknown");
-        String name = job.optString("name", "unknown");
-        long completed = job.optLong("completedLength", 0);
-        long total = job.optLong("totalLength", 0);
-        int pct = total > 0 ? (int) ((completed * 100) / total) : 0;
-        long spd = 0;
-        try { spd = Long.parseLong(job.optString("downloadSpeed", "0")); } catch (Exception ignored) {}
-        if (!"active".equals(status)) spd = 0;
-
-        TextView tvName = (TextView) layout.getChildAt(0);
-        TextView tvInfo = (TextView) layout.getChildAt(1);
-        TextView tvErr  = (TextView) layout.getChildAt(2);
-        LinearLayout actions = (LinearLayout) layout.getChildAt(3);
-
-        tvName.setText(name);
-
-        String statusIcon;
-        switch (status) {
-            case "active":  statusIcon = "⬇"; break;
-            case "paused":  statusIcon = "⏸"; break;
-            case "waiting": statusIcon = "⏳"; break;
-            case "complete": statusIcon = "✅"; break;
-            case "error":   statusIcon = "❌"; break;
-            case "removed": statusIcon = "🗑"; break;
-            default:        statusIcon = "•"; break;
-        }
-        // ── Real-time: always show current speed ─────────────────────
-        tvInfo.setText(statusIcon + "  " + pct + "%  •  " + formatSpeed(spd));
-
-        if ("error".equals(status)) {
-            String errMsg = job.optString("errorMessage", "");
-            tvErr.setText("⚠ " + (errMsg.isEmpty() ? "Download failed" : errMsg));
-            tvErr.setVisibility(View.VISIBLE);
-        } else {
-            tvErr.setVisibility(View.GONE);
-        }
-
-        // Rebuild actions only if the button set needs to change.
-        String wantedKey = status;
-        Object currentKey = actions.getTag();
-        if (!wantedKey.equals(currentKey)) {
-            actions.setTag(wantedKey);
-            actions.removeAllViews();
-
-            final String g = gid;
-            if ("active".equals(status)) {
-                actions.addView(makeActionButton("⏸ Pause", () ->
-                        AuraDownloadHistory.get(this).pause(g)));
-            } else if ("paused".equals(status) || "error".equals(status)) {
-                actions.addView(makeActionButton("▶ Resume", () ->
-                        AuraDownloadHistory.get(this).unpause(g)));
-            } else if ("complete".equals(status)) {
-                actions.addView(makeActionButton("📂 Open", () -> {
-                    String path = job.optString("savePath", "");
-                    if (!path.isEmpty()) openFile(new File(path));
-                }));
-            }
-
-            if (!"complete".equals(status)) {
-                actions.addView(makeActionButton("✕ Remove", () ->
-                        AuraDownloadHistory.get(this).remove(g)));
-            }
-        }
-    }
-
-    private void addDownloadRow(LinearLayout list, Dialog dialog, JSONObject job) {
-        try {
-            String gid = job.optString("gid", "");
-            String status = job.optString("status", "unknown");
-            String name = job.optString("name", "unknown");
-
-            long completed = job.optLong("completedLength", 0);
-            long total = job.optLong("totalLength", 0);
-            int pct = total > 0 ? (int) ((completed * 100) / total) : 0;
-            String speed = job.optString("downloadSpeed", "0");
-
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.VERTICAL);
-            row.setPadding(dp(8), dp(8), dp(8), dp(8));
-            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            rp.setMargins(0, dp(3), 0, dp(3));
-            row.setLayoutParams(rp);
-            row.setBackgroundColor(0xFF111111);
-
-            TextView tvName = new TextView(this);
-            tvName.setText(name);
-            tvName.setTextColor(0xFFEEEEEE);
-            tvName.setTextSize(12);
-            tvName.setMaxLines(1);
-            tvName.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            row.addView(tvName);
-
-            TextView tvInfo = new TextView(this);
-            String statusIcon;
-            switch (status) {
-                case "active":  statusIcon = "⬇"; break;
-                case "paused":  statusIcon = "⏸"; break;
-                case "waiting": statusIcon = "⏳"; break;
-                case "complete": statusIcon = "✅"; break;
-                case "error":   statusIcon = "❌"; break;
-                case "removed": statusIcon = "🗑"; break;
-                default:        statusIcon = "•"; break;
-            }
-            long spd = 0;
-            try { spd = Long.parseLong(speed); } catch (Exception ignored) {}
-            if (!"active".equals(status)) spd = 0;
-            tvInfo.setText(statusIcon + "  " + pct + "%  •  " + formatSpeed(spd));
-            tvInfo.setTextColor(0xFF999999);
-            tvInfo.setTextSize(11);
-            row.addView(tvInfo);
-
-            if ("error".equals(status)) {
-                String errMsg = job.optString("errorMessage", "");
-                TextView tvErr = new TextView(this);
-                tvErr.setText("⚠ " + (errMsg.isEmpty() ? "Download failed" : errMsg));
-                tvErr.setTextColor(0xFFFF6666);
-                tvErr.setTextSize(10);
-                tvErr.setPadding(0, dp(3), 0, 0);
-                row.addView(tvErr);
-            }
-
-            LinearLayout actions = new LinearLayout(this);
-            actions.setOrientation(LinearLayout.HORIZONTAL);
-            actions.setPadding(0, dp(6), 0, 0);
-
-            final String g = gid;
-            final String s = status;
-
-            if ("active".equals(s)) {
-                actions.addView(makeActionButton("⏸ Pause", () ->
-                        new Thread(() -> AuraDownloadHistory.get(this).pause(g)).start()));
-            } else if ("paused".equals(s)) {
-                actions.addView(makeActionButton("▶ Resume", () ->
-                        new Thread(() -> AuraDownloadHistory.get(this).unpause(g)).start()));
-            } else if ("complete".equals(s)) {
-                actions.addView(makeActionButton("📂 Open", () -> {
-                    String path = job.optString("savePath", "");
-                    if (!path.isEmpty()) openFile(new File(path));
-                }));
-            }
-
-            if (!"removed".equals(s)) {
-                actions.addView(makeActionButton("✕ Remove", () ->
-                        new Thread(() -> AuraDownloadHistory.get(this).remove(g)).start()));
-            }
-
-            row.addView(actions);
-            list.addView(row);
-
-        } catch (Exception ignored) {}
-    }
-
-    private TextView makeActionButton(String label, Runnable onClick) {
-        TextView tv = new TextView(this);
-        tv.setText(label);
-        tv.setTextColor(0xFF33FF33);
-        tv.setTextSize(12);
-        tv.setPadding(dp(10), dp(6), dp(10), dp(6));
-        tv.setBackgroundColor(0xFF1A1A1A);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.setMarginEnd(dp(6));
-        tv.setLayoutParams(lp);
-        tv.setOnClickListener(v -> onClick.run());
-        return tv;
-    }
-
-    private String formatSpeed(long bytesPerSec) {
-        if (bytesPerSec <= 0) return "—";
-        if (bytesPerSec < 1024) return bytesPerSec + " B/s";
-        if (bytesPerSec < 1024 * 1024)
-            return String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024.0);
-        return String.format(Locale.US, "%.1f MB/s",
-                bytesPerSec / (1024.0 * 1024.0));
     }
 
     private void openFile(File f) {
@@ -2352,48 +2136,44 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                // ★ Address-bar navigation — always allow, don't run hijack checks.
-                if (pendingUserLoad) {
-                    return false;
-                }
+                if (pendingUserLoad) return false;
 
                 Uri u = request.getUrl();
-                String current = view.getUrl();
+                String urlStr = u == null ? null : u.toString();
+                if (urlStr == null) return false;
 
+                if (isDownloadableUrl(urlStr)) {
+                    startNativeDownload(urlStr, view.getSettings().getUserAgentString(),
+                            null, guessMimeFromUrl(urlStr));
+                    return true;
+                }
+
+                String current = view.getUrl();
                 if (u != null && current != null) {
                     try {
                         String fromHost = Uri.parse(current).getHost();
                         String toHost   = u.getHost();
-                        if (isSameRegistrableDomain(fromHost, toHost)) {
-                            return false;
-                        }
+                        if (isSameRegistrableDomain(fromHost, toHost)) return false;
                     } catch (Exception ignored) {}
                 }
-
                 return baseSecurity.shouldOverrideUrlLoading(view, request);
             }
 
             @SuppressWarnings("deprecation")
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                // ★ Same bypass for the deprecated overload.
-                if (pendingUserLoad) {
-                    return false;
-                }
+                if (pendingUserLoad) return false;
 
                 String current = view.getUrl();
                 if (url != null && current != null) {
                     try {
                         String fromHost = Uri.parse(current).getHost();
                         String toHost   = Uri.parse(url).getHost();
-                        if (isSameRegistrableDomain(fromHost, toHost)) {
-                            return false;
-                        }
+                        if (isSameRegistrableDomain(fromHost, toHost)) return false;
                     } catch (Exception ignored) {}
                 }
                 return baseSecurity.shouldOverrideUrlLoading(view, url);
             }
-
 
             @Override
             public WebResourceResponse shouldInterceptRequest(
@@ -2416,9 +2196,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                     isPageLoading = true;
                     btnRefresh.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
                 }
-                if (pendingUserLoad) {
-                    pendingUserLoad = false;
-                }
+                if (pendingUserLoad) pendingUserLoad = false;
                 updateTabUrl(view, url);
                 baseSecurity.onPageStarted(view, url, favicon);
             }
@@ -2438,9 +2216,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 }
                 updateTabUrl(view, url);
 
-                // ★ Bug #3 fallback: if DOCUMENT_START_SCRIPT is
-                //   unsupported, the bootstrap may never have run for
-                //   this page. Force one injection now.
                 try {
                     final String js =
                             "(function(){try{" +
@@ -2494,7 +2269,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         installLongPressMenu(wv);
 
-        // ★ Wired to the new native downloader ★
         wv.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
             if (contentLength > 0 && contentLength < 4096
                     && mimeType != null && mimeType.startsWith("image/")) {
@@ -2509,10 +2283,42 @@ public class AuraBrowserActivity extends AppCompatActivity {
         return new SecureWebViewLayer.HostTracker();
     }
 
+    private static boolean isDownloadableUrl(String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase(Locale.US);
+        int q = lower.indexOf('?');
+        String path = q >= 0 ? lower.substring(0, q) : lower;
+        String[] exts = {".pdf", ".zip", ".rar", ".7z", ".tar", ".gz", ".apk",
+                ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+                ".epub", ".torrent", ".iso", ".bin", ".exe", ".msi",
+                ".dmg", ".crx", ".xpi"};
+        for (String e : exts) if (path.endsWith(e)) return true;
+        return false;
+    }
+
+    private static String guessMimeFromUrl(String url) {
+        if (url == null) return null;
+        String lower = url.toLowerCase(Locale.US);
+        int q = lower.indexOf('?');
+        if (q >= 0) lower = lower.substring(0, q);
+        if (lower.endsWith(".pdf"))  return "application/pdf";
+        if (lower.endsWith(".zip"))  return "application/zip";
+        if (lower.endsWith(".rar"))  return "application/x-rar-compressed";
+        if (lower.endsWith(".apk"))  return "application/vnd.android.package-archive";
+        if (lower.endsWith(".doc"))  return "application/msword";
+        if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (lower.endsWith(".xls"))  return "application/vnd.ms-excel";
+        if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (lower.endsWith(".ppt"))  return "application/vnd.ms-powerpoint";
+        if (lower.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        return "application/octet-stream";
+    }
+
     private WebView currentTabWebView() {
         Tab t = currentTab();
         return t != null ? t.webView : null;
     }
+
     private void updateTabUrl(WebView wv, String url) {
         for (Tab t : tabs) {
             if (t.webView == wv) {
@@ -2532,8 +2338,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
         String finalUrl = normalizeUrl(url);
 
-        // ★ Tell the security layer this navigation came from the user
-        //   typing in the address bar, not from a page-controlled redirect.
         pendingUserLoad = true;
 
         t.hostTracker.reset();
@@ -2541,13 +2345,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
         t.url = finalUrl;
         persistTabs();
 
-        urlBarUserEditing = false;
-        urlBarJustSelectedAll = false;
-
-        InputMethodManager imm =
-                (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) imm.hideSoftInputFromWindow(etUrl.getWindowToken(), 0);
-        etUrl.clearFocus();
+        exitToDisplay(true);
     }
 
     private String normalizeUrl(String input) {
@@ -2558,6 +2356,22 @@ public class AuraBrowserActivity extends AppCompatActivity {
         }
         if (u.contains(".") && !u.contains(" ")) return "https://" + u;
         return "https://www.google.com/search?q=" + Uri.encode(u);
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN
+                && !event.isCtrlPressed() && !event.isAltPressed()) {
+            int kc = event.getKeyCode();
+            boolean typing = event.isPrintingKey()
+                    || kc == KeyEvent.KEYCODE_DEL || kc == KeyEvent.KEYCODE_FORWARD_DEL;
+            if (typing && urlBarState == STATE_SELECTED) {
+                enterEdit(0, 0, false, true);
+            } else if (typing && urlBarState == STATE_EDIT && isPopupShowing()) {
+                dismissUrlBarPopup();
+            }
+        }
+        return super.dispatchKeyEvent(event);
     }
 
     private void installLongPressMenu(WebView wv) {
@@ -2571,11 +2385,13 @@ public class AuraBrowserActivity extends AppCompatActivity {
         final float[] downXY = new float[2];
         final boolean[] longPressFired = {false};
 
-        final int longPressTimeout = android.view.ViewConfiguration.getLongPressTimeout();
+        final int longPressTimeout =
+                android.view.ViewConfiguration.getLongPressTimeout();
 
         wv.setOnTouchListener((v, event) -> {
-            switch (event.getActionMasked()) {
+            boolean handled = wv.onTouchEvent(event);
 
+            switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     downXY[0] = event.getX();
                     downXY[1] = event.getY();
@@ -2590,7 +2406,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         handleLongPressAt(wv, downXY[0], downXY[1]);
                     };
                     longPressHandler.postDelayed(pendingLongPress[0], longPressTimeout);
-                    return false;
+                    break;
 
                 case MotionEvent.ACTION_MOVE: {
                     float dx = Math.abs(event.getX() - downXY[0]);
@@ -2601,7 +2417,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         longPressHandler.removeCallbacks(pendingLongPress[0]);
                         pendingLongPress[0] = null;
                     }
-                    return false;
+                    break;
                 }
 
                 case MotionEvent.ACTION_UP:
@@ -2614,9 +2430,10 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         longPressFired[0] = false;
                         return true;
                     }
-                    return false;
+                    break;
             }
-            return false;
+
+            return handled;
         });
     }
 
@@ -2626,7 +2443,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
             int type = hit != null ? hit.getType() : WebView.HitTestResult.UNKNOWN_TYPE;
             String extra = hit != null ? hit.getExtra() : null;
 
-            // ── 1. Plain anchor: extra IS the href ─────────────────────
             if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE) {
                 if (extra != null && !extra.isEmpty()) {
                     showLinkMenu(wv, extra, null);
@@ -2634,16 +2450,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 }
             }
 
-            // ── 2. Image inside an anchor: extra is the IMG src, we
-            //      must walk the DOM to find the enclosing <a href>.
             if (type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
                 if (extra != null && !extra.isEmpty()) {
-                    // Ask the page to resolve the anchor around this image.
                     String js =
                             "(function(){" +
                                     "  try {" +
                                     "    var imgSrc = " + jsStringLiteral(extra) + ";" +
-                                    // Find the image element by src
                                     "    var imgs = document.querySelectorAll('img');" +
                                     "    var img = null;" +
                                     "    for (var i = 0; i < imgs.length; i++) {" +
@@ -2652,7 +2464,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                                     "      }" +
                                     "    }" +
                                     "    if (!img) return JSON.stringify({a:'',i:imgSrc,t:''});" +
-                                    // Walk up to the nearest <a href>
                                     "    var a = img.closest ? img.closest('a[href]') : null;" +
                                     "    if (!a) {" +
                                     "      var p = img.parentNode;" +
@@ -2686,7 +2497,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                         if (!anchorUrl.isEmpty()) {
                             showLinkMenu(wv, anchorUrl, imageUrl);
                         } else {
-                            // No anchor found — treat the image itself as the target
                             showLinkMenu(wv, imageUrl, imageUrl);
                         }
                     });
@@ -2694,7 +2504,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 }
             }
 
-            // ── 3. Plain image: no anchor, offer image actions ─────────
             if (type == WebView.HitTestResult.IMAGE_TYPE) {
                 if (extra != null && !extra.isEmpty()) {
                     showImageMenu(wv, extra);
@@ -2702,7 +2511,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
                 }
             }
 
-            // ── 4. Fallback: text word at the touch point ──────────────
             String js =
                     "(function(){" +
                             "  try{" +
@@ -2797,30 +2605,20 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
                     final String finalText = linkText;
 
-                    // Build the item list dynamically so "Open image" only
-                    // appears when we actually detected an image.
                     java.util.List<CharSequence> items = new java.util.ArrayList<>();
                     final java.util.List<Integer> actions = new java.util.ArrayList<>();
 
-                    // If we have BOTH an anchor URL and an image URL, and
-                    // they differ, offer both "open link" and "open image".
                     boolean hasImage = imgUrl != null && !imgUrl.equals(anchorUrl);
 
-                    if (hasImage) {
-                        items.add("Open image");          actions.add(0);
-                    }
+                    if (hasImage) { items.add("Open image"); actions.add(0); }
                     items.add("Open link");               actions.add(1);
                     items.add("Open link in new tab");    actions.add(2);
                     items.add("Open link in incognito");  actions.add(3);
                     items.add("Download link");           actions.add(4);
-                    if (hasImage) {
-                        items.add("Download image");      actions.add(5);
-                    }
+                    if (hasImage) { items.add("Download image"); actions.add(5); }
                     items.add("Copy link URL");           actions.add(6);
                     items.add("Copy link text");          actions.add(7);
                     items.add("Share link");              actions.add(8);
-
-                    final boolean fHasImage = hasImage;
 
                     new AlertDialog.Builder(AuraBrowserActivity.this)
                             .setTitle(trimForMenu(anchorUrl))
@@ -2828,33 +2626,15 @@ public class AuraBrowserActivity extends AppCompatActivity {
                                     (d, which) -> {
                                         int action = actions.get(which);
                                         switch (action) {
-                                            case 0:  // Open image
-                                                wv.loadUrl(imgUrl);
-                                                break;
-                                            case 1:  // Open link
-                                                wv.loadUrl(anchorUrl);
-                                                break;
-                                            case 2:  // New tab
-                                                newTab(anchorUrl, false);
-                                                break;
-                                            case 3:  // Incognito
-                                                newTab(anchorUrl, true);
-                                                break;
-                                            case 4:  // Download link
-                                                startNativeDownload(anchorUrl, null, null, null);
-                                                break;
-                                            case 5:  // Download image
-                                                startNativeDownload(imgUrl, null, null, null);
-                                                break;
-                                            case 6:  // Copy link URL
-                                                copyToClipboard("URL", anchorUrl);
-                                                break;
-                                            case 7:  // Copy link text
-                                                copyToClipboard("Link text", finalText);
-                                                break;
-                                            case 8:  // Share link
-                                                shareText(anchorUrl);
-                                                break;
+                                            case 0: wv.loadUrl(imgUrl); break;
+                                            case 1: wv.loadUrl(anchorUrl); break;
+                                            case 2: newTab(anchorUrl, false); break;
+                                            case 3: newTab(anchorUrl, true); break;
+                                            case 4: startNativeDownload(anchorUrl, null, null, null); break;
+                                            case 5: startNativeDownload(imgUrl, null, null, null); break;
+                                            case 6: copyToClipboard("URL", anchorUrl); break;
+                                            case 7: copyToClipboard("Link text", finalText); break;
+                                            case 8: shareText(anchorUrl); break;
                                         }
                                     })
                             .show();
@@ -2966,6 +2746,8 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        if (urlBarState != STATE_DISPLAY) { exitToDisplay(true); return; }
+
         Tab t = currentTab();
         if (t != null && t.webView.canGoBack()) {
             t.webView.goBack();
@@ -2975,13 +2757,12 @@ public class AuraBrowserActivity extends AppCompatActivity {
             super.onBackPressed();
         }
     }
+
     @Override
     protected void onPause() {
         super.onPause();
         for (Tab t : tabs) {
             try { t.webView.onPause(); } catch (Throwable ignored) {}
-            // ★ Stop any video/audio even when only the app (not the tab)
-            //   loses focus.
             try {
                 t.webView.evaluateJavascript(
                         "(function(){try{" +
@@ -2990,7 +2771,7 @@ public class AuraBrowserActivity extends AppCompatActivity {
                                 "}catch(e){}})();", null);
             } catch (Throwable ignored) {}
         }
-        persistTabs();   // ★ save session on background
+        persistTabs();
     }
 
     @Override
@@ -3003,8 +2784,6 @@ public class AuraBrowserActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        // ★ Persist tab URLs BEFORE tearing down the WebViews. This is
-        //   what makes tabs survive a process kill / reboot.
         persistTabs();
 
         for (Tab t : tabs) {

@@ -134,6 +134,19 @@
         </service>
 
         <service
+            android:name=".ime.BasicImeService"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_INPUT_METHOD"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
+        </service>
+
+        <service
             android:name=".browser.AuraDownloadService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
